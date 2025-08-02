@@ -52,4 +52,4 @@ description_retriever = create_retrieval_chain(
 )
 # Create a function to call the chain
 def get_description(input):
-    return plot_retriever.invoke({"input": input})
+    return description_retriever.invoke({"input": input})
