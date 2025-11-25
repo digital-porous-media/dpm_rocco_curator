@@ -1,0 +1,52 @@
+[
+  {
+    "criterion": "Self-Contained Description",
+    "description": "Focuses on describing the dataset so it can be understood independently from related research products such as a published paper. ",
+    "max_score": 1
+  },
+  {
+    "criterion": "Context of Creation",
+    "description": "Describes the context in which the dataset was created (study goals).",
+    "max_score": 1
+  },
+  {
+    "criterion": "Porous Media Type",
+    "description": "Mentions the type(s) of porous media being investigated.",
+    "max_score": 1
+  },
+  {
+    "criterion": "Research Problem",
+    "description": "Addresses the research problem that the data is helping to solve (high level research question).",
+    "max_score": 1
+  },
+  {
+    "criterion": "Reuse and Beneficiaries",
+    "description": "Address how (reproducibility, generating new studies, validation, Machine Learning, understanding porous flow, etc.) and who will benefit from reusing the data (geoscientists, water resources managers, petroleum engineers, etc.).",
+    "max_score": 1
+  },
+  {
+    "criterion": "Methodology",
+    "description": "Describes the methodology for data collection (imaging, experimental, simulation, ML methodology that produced the data).",
+    "max_score": 1
+  },
+  {
+    "criterion": "Contents and Organization",
+    "description": "Provides an overview of the contents and organization of the dataset (types of files, documentation material, structure of the folder.)",
+    "max_score": 1
+  },
+  {
+    "criterion": "Quality Control",
+    "description": "Indicates if the data was quality controlled and how. ",
+    "max_score": 1
+  },
+  {
+    "criterion": "Clarity and Accessibility",
+    "description": "Keeps descriptions clear and accessible for experts as well as general audiences. Avoid acronyms or spell them out.",
+    "max_score": 1
+  },
+  {
+    "criterion": "Keywords",
+    "description": "Includes keywords that will help others search for the data. ",
+    "max_score": 1
+  }
+]

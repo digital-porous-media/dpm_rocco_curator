@@ -1,0 +1,50 @@
+[
+  {
+    "description": "Physical processes in porous materials are of research interest due to their inherent geometric complexity. The equations that describe these processes are well-understood; however, approximating them numerically often requires extensive computational resources. Here we present transport simulation results and geometric features carried-out on samples hosted on the Digital Rocks Portal.  We hope that the scale and diversity of this dataset can offer unparalleled opportunities to researchers who are benchmarking simulators, training machine learning models, and developing correlations to acquire new insights into physical processes in porous media.",
+    "rubric_breakdown": [
+      {"criterion": "Self-Contained Description", "score": 0.5, "explanation": "Partially explains the data, independent from the project itself."},
+      {"criterion": "Context of Creation", "score": 0, "explanation": "Lacks context to the study."},
+      {"criterion": "Porous Media Type", "score": 0, "explanation": "Fails to mention the porous media involved."},
+      {"criterion": "Research Problem", "score": 0, "explanation": "Does not address the research problem that would be solved."},
+      {"criterion": "Reuse and Beneficiaries", "score": 1, "explanation": "Addresses who may benefit from reuse."},
+      {"criterion": "Methodology", "score": 0.5, "explanation": "Covers some methodological practices."},
+      {"criterion": "Contents and Organization", "score": 0, "explanation": "Does not provide overview of organization, scope, and context."},
+      {"criterion": "Quality Control", "score": 0, "explanation": "Fails to indicate if the data was quality controlled."},
+      {"criterion": "Clarity and Accessibility", "score": 1, "explanation": "Clear use of language."},
+      {"criterion": "Keywords", "score": 1, "explanation": "Use of keywords."}
+    ],
+    "comments": null
+  },
+  {
+    "description": "These data sets contain reconstructed micro-CT images of trapped nitrogen gas in porous media during the dissolution process and the formation of dissolution fingering. In total, eight data sets are available. Each data set contains the reconstructed micro-CT images obtained in different observation time during dissolution process. Seven of the data sets were performed by packing various granular particle sizes and ranges inside a 10-mm-diameter-cylindrical-container. Another data set was performed by packing granular particles inside a 20-mm-diameter-cylindrical-container. The dissolution fingering formation can be observed in some of the data sets in the packing inside a 10-mm-diameter-cylindrical-container. Clearer dissolution fingering formation can be observed inside a 20-mm-diameter-cylindrical-container. These datasets were presented and utilized in the paper of 'Effects of Dissolution Fingering on Mass Transfer Rate in Three-Dimensional Porous Media' (see Related Publications) in Water Resources Research in 2021. Full details of the experimental setup, procedure, and imaging analysis can be found in the paper and supporting information.",
+    "rubric_breakdown": [
+      {"criterion": "Self-Contained Description", "score": 1, "explanation": "Focuses on the dataset and not the research project."},
+      {"criterion": "Context of Creation", "score": 0, "explanation": "Lacks context to the study."},
+      {"criterion": "Porous Media Type", "score": 0.5, "explanation": "Some mention (though limited) of the porous media involved."},
+      {"criterion": "Research Problem", "score": 0, "explanation": "Does not address the research problem that would be solved."},
+      {"criterion": "Reuse and Beneficiaries", "score": 0, "explanation": "Does not acknowledge who would benefit from reuse."},
+      {"criterion": "Methodology", "score": 1, "explanation": "Sufficient description of methodology."},
+      {"criterion": "Contents and Organization", "score": 1, "explanation": "Description of how data is organized."},
+      {"criterion": "Quality Control", "score": 0, "explanation": "No indication if the data was quality controlled."},
+      {"criterion": "Clarity and Accessibility", "score": 1, "explanation": "Clear use of language, including not using acronyms."},
+      {"criterion": "Keywords", "score": 1, "explanation": "Use of keywords."}
+    ],
+    "comments": null
+  },
+  {
+    "description": "Pore-scale digital images are usually obtained from micro computed tomography (micro-CT) data that has been segmented into void and grain space. Image segmentation is a critical process for digital rock analyses that can influence pore-scale characterisation studies and/or the numerical simulation of petrophysical properties. This project is to study on the sandstone micro-CT image segmentation by using convolutional neural network.",
+    "rubric_breakdown": [
+      {"criterion": "Self-Contained Description", "score": 0, "explanation": "Fails to describe the dataset."},
+      {"criterion": "Context of Creation", "score": 0, "explanation": "Lacks context to the study."},
+      {"criterion": "Porous Media Type", "score": 1, "explanation": "Mentions the materials involved."},
+      {"criterion": "Research Problem", "score": 0, "explanation": "Does not address the research problem."},
+      {"criterion": "Reuse and Beneficiaries", "score": 0, "explanation": "Does not identify who could reuse the data."},
+      {"criterion": "Methodology", "score": 0.5, "explanation": "Attempts (though insufficiently) to explain the methodology."},
+      {"criterion": "Contents and Organization", "score": 0.5, "explanation": "Begins to describe the data's contents."},
+      {"criterion": "Quality Control", "score": 0, "explanation": "No indication if the data was quality controlled."},
+      {"criterion": "Clarity and Accessibility", "score": 0, "explanation": "Unclear language."},
+      {"criterion": "Keywords", "score": 0, "explanation": "Fails to use keywords."}
+    ],
+    "comments": null
+  }
+]
