@@ -43,7 +43,7 @@ class RoccoClient:
         if context:
             messages.append({"role": "system", "content": context})
         messages.append({"role": "user", "content": prompt})
-        
+
         call_params = {"model": self.model, 
                        "messages": messages,
                        "timeout": self.timeout}
@@ -52,6 +52,7 @@ class RoccoClient:
         
         try:
             self.logger.info(f"Sending prompt to model {self.model}...")
+            
             response = self.client.chat.completions.create(
                 **call_params
             )
@@ -61,8 +62,6 @@ class RoccoClient:
         except Exception as e:
             self.logger.error(f"Error sending prompt: {str(e)}")
             return
-    
-    
 
 if __name__ == "__main__":
     import os

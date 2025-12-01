@@ -53,10 +53,13 @@ class DescriptionEvaluator:
     def evaluate(self, draft_text: str) -> EvaluatorOutput: #, context: Optional[list[str]]=[""]) -> EvaluatorOutput:
         """Call the LLM and return structured evaluation"""
         prompt = self.build_prompt(draft_text)
-        raw_resp = self.model.send_prompt(prompt)        
+        raw_resp = self.model.send_prompt(prompt) 
+        # print(raw_resp)       
         # Try to parse as JSON first (if your prompt requests JSON output)
         try:
-            data = json.loads(raw_resp)
+            print(type(raw_resp))
+            data = json.loads(raw_resp.strip())
+            print(type(data))
             rubric_breakdown = [
                 RubricItem(
                     criterion=item["criterion"],
@@ -73,13 +76,27 @@ class DescriptionEvaluator:
                 comments=comments
             )
         except Exception:
+            print("Failed to parse JSON from response.")
+            
             # Fallback: parse numbered list
             rubric_breakdown = []
             total_score = 0
             # Example regex for "1. 0.5 points for..."
-            matches = re.findall(r"(\d+)\.\s*([\d.]+)\s*points?\s*for\s*(.+)", raw_resp)
-            for idx, score, explanation in matches:
-                criterion = self.rubric[int(idx)-1]["criterion"]
+            item_regex = re.compile(
+                r'\{"criterion":\s*"([^"]+)",\s*"score":\s*([\d.]+),\s*"explanation":\s*"([^"]*)"\s*\}',
+                re.MULTILINE
+            )
+            matches = []
+            for match in item_regex.finditer(raw_resp):
+                criterion = match.group(1)
+                score = float(match.group(2))
+                explanation = match.group(3)
+                matches.append((criterion, score, explanation))
+                
+                
+            rubric_breakdown = []
+            total_score = 0
+            for criterion, score, explanation in matches:
                 score = float(score)
                 rubric_breakdown.append(RubricItem(criterion, score, explanation))
                 total_score += score
