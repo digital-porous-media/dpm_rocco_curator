@@ -46,7 +46,7 @@
   },
   {
     "criterion": "Keywords",
-    "description": "Includes keywords that will help others search for the data. ",
+    "description": "Includes porous media type, imaging method, and research methodology as keywords either explicitly or implicitly that will help others search for the data.",
     "max_score": 1
   }
 ]

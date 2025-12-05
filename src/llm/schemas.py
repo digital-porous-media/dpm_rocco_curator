@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 @dataclass
@@ -19,7 +19,13 @@ class EvaluatorOutput:
 class EditorOutput:
     original_text: str
     suggested_text: str
-    rationale: Optional[str] = None
+    rationale: str
+    citation: Optional[List[Citation]] = field(default_factory=list)
+@dataclass
+class Citation:
+    statement: str
+    source: str  # Original description or context chunk
+    quote: str  # Support statement
     
 @dataclass
 class PDFChunk:

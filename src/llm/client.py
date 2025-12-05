@@ -3,9 +3,9 @@ import os
 from typing import Optional, Dict, Any, List
 import openai
 
-class RoccoClient:
+class LLMClient:
     """
-    Base Rocco client for interacting with LLM API (e.g., SambaNova)
+    Base LLM client for interacting with LLM API (e.g., SambaNova)
     """
         
     def __init__(self, api_url: str = None, api_key: str = None, model: str = None, timeout: int = 60):
@@ -63,17 +63,21 @@ class RoccoClient:
             self.logger.error(f"Error sending prompt: {str(e)}")
             return
 
-if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    logging.basicConfig(level=logging.INFO)
-    load_dotenv()
-    api_key = os.getenv("SAMBANOVA_API_KEY")
-    api_url = os.getenv("SAMBANOVA_API_URL")
-    client = RoccoClient(api_url=api_url, api_key=api_key)
-    params = {"temperature": 0.1, "top_p": 0.1}
-    result = client.send_prompt(
-        "Hello, how are you?",
-        params=params
-    )
-    print(result)
+class RoccoClient(LLMClient):
+    """
+    RoccoClient extends LLMClient for specific Rocco interactions.
+    """
+    def __init__(self, api_url: str = None, api_key: str = None, model: str = None, timeout: int = 60):
+        super().__init__(api_url, api_key, model, timeout)
+        
+    def evaluate_description(self, draft_text: str, rubric: Dict[str, Any], examples: List[Dict[str, Any]], context: Optional[List[str]] = None) -> str:
+        """
+        Evaluate a dataset description using the provided rubric and examples.
+        """
+        pass
+    
+    def improve_description(self, draft_text: str, context: Optional[List[str]] = None) -> str:
+        """
+        Improve a dataset description based on the provided context.
+        """
+        pass

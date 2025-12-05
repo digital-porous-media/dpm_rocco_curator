@@ -11,7 +11,7 @@
       {"criterion": "Contents and Organization", "score": 0, "explanation": "Does not provide overview of organization, scope, and context."},
       {"criterion": "Quality Control", "score": 0, "explanation": "Fails to indicate if the data was quality controlled."},
       {"criterion": "Clarity and Accessibility", "score": 1, "explanation": "Clear use of language."},
-      {"criterion": "Keywords", "score": 1, "explanation": "Use of keywords."}
+      {"criterion": "Keywords", "score": 1, "explanation": "Use relevant concepts as keywords."}
     ],
     "comments": null
   },

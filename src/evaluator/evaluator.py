@@ -1,8 +1,10 @@
 from src.llm.client import RoccoClient
 from src.llm.schemas import EvaluatorOutput, RubricItem
+from src.common.utils import _build_rubric, _build_few_shot_examples
 import json
 import re
 from typing import List, Dict, Any, Optional
+
 
 class DescriptionEvaluator:
     """Evaluates dataset descriptions against a rubric"""
@@ -14,8 +16,8 @@ class DescriptionEvaluator:
 
     def build_prompt(self, draft_text: str, context: Optional[list[str]]=None) -> str:
         """Combine rubric, examples, context, and draft into prompt"""
-        rubric_str = self._build_rubric(self.rubric)
-        examples_str = self._build_few_shot_examples(self.examples)
+        rubric_str = _build_rubric(self.rubric)
+        examples_str = _build_few_shot_examples(self.examples)
         
         # Use your system instructions and preface
         system_instructions = (
@@ -57,9 +59,7 @@ class DescriptionEvaluator:
         # print(raw_resp)       
         # Try to parse as JSON first (if your prompt requests JSON output)
         try:
-            print(type(raw_resp))
             data = json.loads(raw_resp.strip())
-            print(type(data))
             rubric_breakdown = [
                 RubricItem(
                     criterion=item["criterion"],
@@ -76,7 +76,7 @@ class DescriptionEvaluator:
                 comments=comments
             )
         except Exception:
-            print("Failed to parse JSON from response.")
+            # print("Failed to parse JSON from response.")
             
             # Fallback: parse numbered list
             rubric_breakdown = []
@@ -107,33 +107,12 @@ class DescriptionEvaluator:
             )
         return EvaluatorOutput(raw_resp)
 
-    @staticmethod
-    def _build_few_shot_examples(examples: List[Dict[str, Any]]) -> str:
-        """
-        Converts a list of example dicts into a formatted string for few-shot prompting.
-        Each example includes a description and a rubric breakdown with scores and explanations.
-        """
-        prompt_parts = []
-        for idx, ex in enumerate(examples, 1):
-            part = [f"EXAMPLE {idx}"]
-            part.append(f"Description: {ex['description']}")
-            part.append("Explanation:")
-            for i, item in enumerate(ex['rubric_breakdown'], 1):
-                score = item.get('score', '')
-                explanation = item.get('explanation', '')
-                part.append(f"{i}. {score} points for {explanation}")
-            prompt_parts.append("\n".join(part))
-        return "\n\n".join(prompt_parts)
-    
-    @staticmethod
-    def _build_rubric(rubric: List[Dict[str, Any]]) -> str:
-        """
-        Converts the rubric from JSON into a formatted string for prompting.
-        Each rubric item includes a criterion and its maximum score.
-        """
-        rubric_lines = []
-        for idx, item in enumerate(rubric, 1):
-            rubric_lines.append(f"{idx}. {item['criterion']}: {item['description']} (Max {item['max_score']})")
-        return "\n".join(rubric_lines)
-        
+    def print_evaluation_result(self, evaluation_output: EvaluatorOutput) -> None:
+        """Utility to print evaluation results"""
+        print(f"Total Score: {evaluation_output.total_score}")
+        print("Justifications:\n")
+        print("-" * 80)
+        for item in evaluation_output.rubric_breakdown:
+            print(f"Criterion: {item.criterion} \t Score: {item.score}")
+            print(f"Explanation: {item.explanation}\n")
     
