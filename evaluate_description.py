@@ -57,10 +57,39 @@ if __name__ == "__main__":
     editor = DescriptionEditor(model=client, rubric=rubric, vector_store_manager=vector_store_manager, use_rag=True, top_k_context=5)
     enhanced_description = editor.enhance(draft_text=description_string, draft_evaluation=evaluation, retrieve_context=True)
     
-    print(f"Original Description:\n{description_string}\n")
-    print(f"Enhanced Description:\n{enhanced_description.suggested_text}\n")
-    print(f"Justifications:\n {enhanced_description.rationale}")
-    print(f"Citations:\n {enhanced_description.citation}")
+    editor.print_enhancement_result(enhanced_description)
+    
     # Rerun the evaluation with the enhanced description
     reevaluation = grader.evaluate(draft_text=enhanced_description.suggested_text)
     grader.print_evaluation_result(reevaluation)
+    
+    # Provide some user feedback
+    user_feedback = "This dataset is organized into grayscale and segmented Samples. Each sample contains an image of the dry scan and images at various fractional flow levels."
+    
+    user_refinement1 = editor.enhance(
+        draft_text = enhanced_description.suggested_text,
+        draft_evaluation=reevaluation,
+        user_feedback=user_feedback
+    )
+    
+    editor.print_enhancement_result(user_refinement1)
+    # Rerun the evaluation with the enhanced description
+    reevaluation = grader.evaluate(draft_text=user_refinement1.suggested_text)
+    grader.print_evaluation_result(reevaluation)
+    
+    
+    # Provide some user feedback
+    user_feedback = "This dataset was created to demonstrate the dynamic fluid interface behavior from a real fractional flow experiment on an imaged sample thats size is closer to a representative elementary volume and can provide greater certainty in informing upscaling multiphase flow behavior from pore-scale to continuum-scale."
+    
+    user_refinement2 = editor.enhance(
+        draft_text = user_refinement1.suggested_text,
+        draft_evaluation=reevaluation,
+        user_feedback=user_feedback
+    )
+    
+    editor.print_enhancement_result(user_refinement2)
+    
+    # Rerun the evaluation with the enhanced description
+    reevaluation = grader.evaluate(draft_text=user_refinement2.suggested_text)
+    grader.print_evaluation_result(reevaluation)
+    

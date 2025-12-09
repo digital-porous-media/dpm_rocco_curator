@@ -1,9 +1,11 @@
 from src.llm.client import RoccoClient
-from src.llm.schemas import EditorOutput, EvaluatorOutput, Citation
+from src.llm.schemas import EditorOutput, EvaluatorOutput, Citation, EditingSession
 from src.common.utils import _build_rubric, _build_evaluation_text
 from src.retriever.retriever import VectorStoreManager
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 import json
+from pathlib import Path
 
 class DescriptionEditor:
     """Improves dataset descriptions"""
@@ -14,7 +16,82 @@ class DescriptionEditor:
         self.vector_store_manager = vector_store_manager
         self.use_rag = use_rag
         self.top_k_context = top_k_context
+        self.conversation_history: List[Dict[str, str]] = []
+        self.session_creation_time = datetime.now().isoformat()
+        self.original_description = None
+        self.current_description = None
+
+    # TODO: Add logging
+    
+    def save_session(self, filepath: Path) -> None:
+        """Save the current session to a file"""
+        session = EditingSession(
+            created_at=self.session_creation_time,
+            original_description=self.original_description,
+            current_description=self.current_description,
+            conversation_history=self.conversation_history,
+            rubric=self.rubric,
+            config={
+                "use_rag": self.use_rag,
+                "top_k_context": self.top_k_context,
+            }
+        )
         
+        # Ensure directory exists
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save using Pydantic's model_dump_json
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(session.model_dump_json(indent=2))
+        
+        print(f"Session saved to {filepath}")
+        print(session.get_summary())
+    
+    def load_session(self, filepath: Path) -> None:
+        """Load a session from a file"""
+        filepath = Path(filepath)
+        
+        if not filepath.exists():
+            raise FileNotFoundError(f"Session file not found: {filepath}")
+        
+        # Load and validate using Pydantic schema
+        with open(filepath, 'r', encoding='utf-8') as f:
+            session_data = json.load(f)
+        
+        # Validate with schema
+        session = EditingSession(**session_data)
+        
+        # Restore session state
+        self.conversation_history = session.conversation_history
+        self.session_created_at = session.created_at
+        self.original_description = session.original_description
+        self.current_description = session.current_description
+        self.conversation_history = session.conversation_history
+        
+        # Restore config
+        if session.config:
+            self.use_rag = session.config.get("use_rag", self.use_rag)
+            self.top_k_context = session.config.get("top_k_context", self.top_k_context)
+        
+        print(f"Session loaded from {filepath}")
+        print(session.get_summary())
+    
+    def get_session_summary(self) -> str:
+        """Get a summary of the current session"""
+        session = EditingSession(
+            created_at=self.session_metadata["created_at"],
+            original_description=self.session_metadata.get("original_description"),
+            current_description=self.session_metadata.get("current_description"),
+            conversation_history=self.conversation_history,
+            rubric=self.rubric,
+            config={
+                "use_rag": self.use_rag,
+                "top_k_context": self.top_k_context,
+            }
+        )
+        return session.get_summary()
+    
     def retrieve_context(self, query: str = None) -> List[str]:
         """Retrieve relevant context from related papers"""
         
@@ -66,17 +143,42 @@ class DescriptionEditor:
         return queries
         
                 
-    def build_prompt(self, draft_text: str, draft_evaluation: EvaluatorOutput, context: Optional[List[str]] = None) -> str:
+    def build_prompt(self, draft_text: str, draft_evaluation: EvaluatorOutput, context: Optional[List[str]] = None, user_feedback: Optional[str] = None) -> str:
         """Prepare prompt for improving the draft"""
-        # rubric_str = _build_rubric(draft_evaluation)
         rubric_str = _build_rubric(self.rubric)
         eval_feedback = _build_evaluation_text(draft_evaluation)
         
+        # Build conversation history
+        history = ""
+        if self.conversation_history:
+            history = "\n## CONVERSATION HISTORY:\n"
+            for message in self.conversation_history:
+                if message["role"] == "user":
+                    history += f"\n**User Feedback:**\n{message['content']}\n"
+                elif message["role"] == "assistant":
+                    history += f"\n**Previous Version:**\n{message['content']}\n"
+                    if "rationale" in message:
+                        history += f"**Rationale:** {message['rationale']}\n"
+        
+        # Provide user feedback
+        if user_feedback:
+            task_description = (
+                "You are an expert data curator for the Digital Porous Media Portal continuing an interactive dataset description editing session.\n"
+                "The user has provided feedback on the previous version of your dataset description.\n"
+                "Your task: Refine the description based on their feedback while preserving other improvements.\n"
+            )
+            user_feedback_section = f"\n## NEW USER FEEDBACK:\n{user_feedback}\n"
+        else:
+            task_description = (
+                "You are an expert data curator for the Digital Porous Media Portal starting a new dataset description editing session.\n"
+                "Your task: Rewrite the description so it maximizes compliance with the rubric criteria, addressing reviewer concerns and using only information from the papers, if available. Retain strengths of the original description.\n"
+            )
+            user_feedback_section = ""
+        
         system_instructions = (
-        "You are an expert data curator for the Digital Porous Media Portal.\n"
+        f"{task_description}"
         "Below is the full rubric for evaluating dataset descriptions.\n"
         "You are also given the original description, reviewer feedback on areas that need improvement, and relevant context from related papers.\n"
-        "Your task: Rewrite the description to maximize compliance with the rubric criteria, addressing reviewer concerns and using only information from the papers, if available. Retain strengths of the original description.\n"
 
         "CRITICAL RULES:\n"
         "1. Only include information that is explicitly stated in the original description or the provided paper context\n"
@@ -124,6 +226,8 @@ class DescriptionEditor:
             {eval_feedback}
             
         {rag_context}
+        {history}
+        {user_feedback_section}
         
         ## CITATION REQUIREMENTS:
         For every statement in your improved description that:
@@ -132,7 +236,7 @@ class DescriptionEditor:
 
         You MUST provide a citation showing:
         - The exact statement from your improved description
-        - The source (either "original_description" or "context_chunk")
+        - The source (either "original_description", "context_chunk", or "user_feedback")
         - The exact quote from the source that supports this statement
 
         ## EXAMPLES OF PROPER CITATIONS:
@@ -162,7 +266,7 @@ class DescriptionEditor:
                     "citations": [
                         {{
                             "statement": "Specific statement from your improved description",
-                            "source": "original_description or context_chunk",
+                            "source": "original_description, context_chunk, or user_feedback",
                             "quote": "Exact quote from the source"
                         }}
                     ]
@@ -175,8 +279,18 @@ class DescriptionEditor:
         return prompt
 
 
-    def enhance(self, draft_text: str, draft_evaluation: EvaluatorOutput, retrieve_context: bool = True, context_override: Optional[List[str]] = None, query_all_criterion: bool = True) -> EditorOutput:
+    def enhance(self, draft_text: str, draft_evaluation: EvaluatorOutput, retrieve_context: bool = True, context_override: Optional[List[str]] = None, query_all_criterion: bool = True, user_feedback: Optional[str] = None) -> EditorOutput:
         """Improve the description draft using evaluation feedback and optional context from papers"""
+        
+        if self.original_description is None:
+            self.original_description = draft_text
+        
+        if user_feedback:
+            self.conversation_history.append({
+                "role": "user",
+                "content": user_feedback
+            })
+        
         
         if context_override:
             context = context_override
@@ -196,7 +310,7 @@ class DescriptionEditor:
         else:
             context = []
         
-        prompt = self.build_prompt(draft_text, draft_evaluation, context)
+        prompt = self.build_prompt(draft_text, draft_evaluation, context, user_feedback=user_feedback)
         raw_resp = self.model.send_prompt(prompt)
         
         try:
@@ -217,6 +331,15 @@ class DescriptionEditor:
                 rationale=data["updated_description"][0]["rationale"],
                 citation=citations
             )
+            
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": updated_desc.suggested_text,
+                "rationale": updated_desc.rationale
+            })
+            
+            self.current_description = updated_desc.suggested_text
+            
         except Exception as e:
             print(e)
             updated_desc = EditorOutput(
@@ -226,3 +349,17 @@ class DescriptionEditor:
                 citation=[]
             )
         return updated_desc
+    
+    def print_enhancement_result(self, editor_output: EditorOutput) -> None:
+        """Utility to print enhancement results"""
+        print(f"Original Description:\n{editor_output.original_text}\n")
+        print(f"Enhanced Description:\n{editor_output.suggested_text}\n")
+        print(f"Justifications:\n {editor_output.rationale}")
+        print(f"Citations:\n")
+        for item in editor_output.citation:
+            print(f"Statement: {item.statement}")
+            print(f"Source: {item.source}")
+            print(f"Source Quote: {item.quote}\n")
+    
+    def reset_conversation_history(self):
+        self.conversation_history = []

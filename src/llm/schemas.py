@@ -1,5 +1,7 @@
+from pydantic import BaseModel, Field
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 @dataclass
 class RubricItem:
@@ -14,18 +16,49 @@ class EvaluatorOutput:
     rubric_breakdown: List[RubricItem]
     comments: Optional[str] = None
 
+class Citation(BaseModel):
+    """Citation schema for each statemnt in the improved description."""
+    statement: str = Field(description="The statement from the enhanced description.")
+    source: str = Field(description="Source of the added information (original_description, context_chunk, or user_feedback)") # Original description or context chunk
+    quote: str = Field(description="The exact quote or statement from the source.")
 
-@dataclass
-class EditorOutput:
-    original_text: str
-    suggested_text: str
-    rationale: str
-    citation: Optional[List[Citation]] = field(default_factory=list)
-@dataclass
-class Citation:
-    statement: str
-    source: str  # Original description or context chunk
-    quote: str  # Support statement
+class EditorOutput(BaseModel):
+    """Output from the description editor"""
+    original_text: str = Field(description="Original description text")
+    suggested_text: str = Field(description="Improved description text")
+    rationale: str = Field(description="Explanation of changes made")
+    citation: List[Citation] = Field(default_factory=list, description="Citations for added information")
+
+class EditingSession(BaseModel):
+    """Schema for saving/loading editing sessions"""
+    metadata: Dict[str, Any] = Field(description="Session metadata")
+    created_at: str = Field(description="ISO format timestamp of session creation")
+    original_description: Optional[str] = Field(default=None, description="The original description being edited")
+    current_description: Optional[str] = Field(default=None, description="The current version of the description")
+    conversation_history: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="History of user feedback and assistant responses"
+    )
+    rubric: Dict[str, Any] = Field(description="Evaluation rubric used in this session")
+    config: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Configuration settings like use_rag and top_k_context"
+    )
+    
+    def get_summary(self) -> str:
+        """Get a human-readable summary of the session"""
+        summary = f"Session created: {self.created_at}\n"
+        summary += f"Conversation turns: {len(self.conversation_history)}\n"
+        
+        if self.original_description:
+            summary += f"Original description length: {len(self.original_description)} chars\n"
+        
+        if self.current_description:
+            summary += f"Current description length: {len(self.current_description)} chars\n"
+        
+        summary += f"RAG enabled: {self.config.get('use_rag', False)}\n"
+        
+        return summary
     
 @dataclass
 class PDFChunk:
