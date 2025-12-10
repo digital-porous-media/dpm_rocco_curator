@@ -1,0 +1,38 @@
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dpm-rocco-curator"
+version = "0.1.0"
+description = "AI-powered curator for the Digital Porous Media Portal"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "langchain>=0.1.0",
+    "openai==1.56.0",
+    "langchain-sambanova==0.1.6",
+    "neo4j==5.27.0",
+    "streamlit==1.35.0",
+    "langchainhub==0.1.21",
+    "langchain-neo4j==0.1.1",
+    "tenacity!=8.4.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "numpy>=1.24.0",
+    "httpx>=0.24.0",
+    "sentence-transformers>=2.2.0",
+    "faiss-cpu>=1.7.4",
+    "pypdf>=3.0.0",
+    "regex>=2023.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+]
