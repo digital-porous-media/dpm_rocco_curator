@@ -64,7 +64,7 @@ class DescriptionEditor:
         
         # Restore session state
         self.conversation_history = session.conversation_history
-        self.session_created_at = session.created_at
+        self.session_creation_time = session.created_at
         self.original_description = session.original_description
         self.current_description = session.current_description
         self.conversation_history = session.conversation_history
