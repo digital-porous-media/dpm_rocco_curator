@@ -31,7 +31,7 @@ class VectorStoreManager:
         """
         self.vector_store = FAISS.from_documents(
             documents,
-            self.embedder.get_embeddings()
+            self.embedder.embeddings  #get_embeddings()
         )
         return self.vector_store
     

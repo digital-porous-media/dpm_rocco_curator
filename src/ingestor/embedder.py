@@ -50,3 +50,4 @@ class DocumentEmbedder(BaseEmbedder):
     
     def get_embeddings(self) -> Embeddings:
         return self.embeddings
+    

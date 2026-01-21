@@ -21,6 +21,7 @@ class DescriptionEvaluator:
         
         # Use your system instructions and preface
         system_instructions = (
+            "## ROLE"
             "You are an expert data curator for the Digital Porous Media Portal. "
             "You are provided 10 guidelines, each of which is worth one point. "
             "Descriptions only get the point if the guideline is addressed explicitly. "
@@ -40,7 +41,7 @@ class DescriptionEvaluator:
         context_str = ""
         if context:
             context_str = "Additional context:\n" + "\n".join(context) + "\n"
-            
+
         prompt = (
             f"{system_instructions}\n"
             f"Rubric:\n{rubric_str}\n\n"

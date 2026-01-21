@@ -165,13 +165,14 @@ class DescriptionEditor:
             task_description = (
                 "You are an expert data curator for the Digital Porous Media Portal continuing an interactive dataset description editing session.\n"
                 "The user has provided feedback on the previous version of your dataset description.\n"
-                "Your task: Refine the description based on their feedback while preserving other improvements.\n"
+                "Your task: Refine the description by integrating their feedback throughout the text, not appending it. You may reorganize sections as needed for better clarity and flow, if necessary. Preserve other improvements.\n"
             )
             user_feedback_section = f"\n## NEW USER FEEDBACK:\n{user_feedback}\n"
         else:
             task_description = (
                 "You are an expert data curator for the Digital Porous Media Portal starting a new dataset description editing session.\n"
                 "Your task: Rewrite the description so it maximizes compliance with the rubric criteria, addressing reviewer concerns and using only information from the papers, if available. Retain strengths of the original description.\n"
+                "Weave improvements throughout the existing narrative structure. Do not just append new information at the end unless it makes structural sense.\n"
             )
             user_feedback_section = ""
         
@@ -192,6 +193,10 @@ class DescriptionEditor:
         "5. If information is missing, simply omit it - do not acknowledge gaps or speculate\n"
         "6. When improving clarity or structure, preserve all factual content from the original\n"
         "7. Maintain the original language and tone for your responses\n"
+        "INTEGRATION STRATEGY:\n"
+        "- Integrate improvements throughout the description, not just at the beginning or end\n"
+        "- You may reorganize and rephrase content for clarity and flow, and to naturally incorporate new information\n"
+        "- Weave in context from papers and user feedback into relevant sections where it strengthens the narrative\n"
         "\n"
         )     
 
@@ -238,7 +243,13 @@ class DescriptionEditor:
         - The exact statement from your improved description
         - The source (either "original_description", "context_chunk", or "user_feedback")
         - The exact quote from the source that supports this statement
-
+        
+        IMPORTANT - When citing user_feedback:
+        - The improved statement must directly support or expand on the user's core intent
+        - Do not cite user feedback for statements that represent a significant reinterpretation
+        - If the user's feedback is vague or conversational, you may formalize the language, but the core meaning must remain the same
+        - If you cannot find a clear connection between your statement and the user's intent, do NOT cite it to user_feedback
+        - If user feedback is vague, off-topic, or does not provide constructive guidance for improving the description, do NOT incorporate it into the description. Instead, note in the rationale that this feedback was not actionable.
         ## EXAMPLES OF PROPER CITATIONS:
 
         Example 1 - Adding methodology details:
@@ -273,7 +284,7 @@ class DescriptionEditor:
                 }}
             ]
         }}
-        
+        CRITICAL: The 'updated_description' field must contain ONLY the clean, polished description text with NO citation markers, brackets, or references like [CONTEXT_CHUNK_1]. All citations belong ONLY in the 'citations' array.
         Do not provide any additional text outside the JSON.
         """
         return prompt

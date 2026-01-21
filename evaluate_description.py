@@ -10,6 +10,7 @@ from src.ingestor.document_ingestor import DocumentIngestor
 from src.ingestor.embedder import DocumentEmbedder
 from src.retriever.retriever import VectorStoreManager
 from src.editor.editor import DescriptionEditor
+from src.llm.content_screener import ContentScreener
 from typing import List, Dict, Any
 
 
@@ -31,7 +32,7 @@ if __name__ == "__main__":
     grader = DescriptionEvaluator(model=client, rubric=rubric, examples=examples)
     
     # Load the draft description
-    with open('DPMP-461_description.txt', "r", encoding="utf-8") as f:
+    with open('DPMP-523_description.txt', "r", encoding="utf-8") as f:
         description_string = f.read()
 
     # Rocco Evaluation
@@ -39,7 +40,7 @@ if __name__ == "__main__":
     grader.print_evaluation_result(evaluation)
     
     # # Enter paper
-    # pdf_path = "data/DPMP-461.pdf"
+    # pdf_path = "data/DPMP-523.pdf"
     # pdf_filename = Path(pdf_path).stem
     # vector_store_path = f"data/vector_store/{pdf_filename}"
     # embedder = DocumentEmbedder(model_name="BAAI/bge-large-en-v1.5",
@@ -73,12 +74,14 @@ if __name__ == "__main__":
     # reevaluation = grader.evaluate(draft_text=enhanced_description.suggested_text)
     # grader.print_evaluation_result(reevaluation)
     
-    # # Provide some user feedback
-    # user_feedback = "This dataset is organized into grayscale and segmented Samples. Each sample contains an image of the dry scan and images at various fractional flow levels."
-    
+    # Provide some user feedback
+    # user_feedback = "The dataset can be reused for simulation and machine learning training." # "This dataset is organized into grayscale and segmented Samples. Each sample contains an image of the dry scan and images at various fractional flow levels."
+    # screener = ContentScreener(model=client)
+    # screen_result = screener.screen_user_content(user_feedback, description_string)
+    # print(screen_result)
     # user_refinement1 = editor.enhance(
-    #     draft_text = enhanced_description.suggested_text,
-    #     draft_evaluation=reevaluation,
+    #     draft_text = description_string, # enhanced_description.suggested_text,
+    #     draft_evaluation= evaluation, # reevaluation,
     #     user_feedback=user_feedback
     # )
     
