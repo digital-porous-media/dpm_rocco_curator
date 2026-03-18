@@ -21,11 +21,13 @@ USER_AVATAR = "assets/user_avatar.jpg"
 st.set_page_config(page_title="Rocco - DPM Curator", layout="wide")
 st.title("Rocco - Your Digital Porous Media AI Curator")
 
+
 # --- Helper Functions ---
 def get_session_id():
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
     return st.session_state.session_id
+
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -57,6 +59,8 @@ if "pending_enhancement" not in st.session_state:
     st.session_state.pending_enhancement = False
 if "screening_result" not in st.session_state:
     st.session_state.screening_result = None
+
+
 # --- Initialization ---
 @st.cache_resource
 def load_resources():
@@ -65,34 +69,57 @@ def load_resources():
         rubric = json.load(f)
     with open("src/evaluator/examples_v3.json", "r") as f:
         examples = json.load(f)
-    
-    client = RoccoClient(api_url=api_url, api_key=api_key)
+
+    client = RoccoClient(api_url=api_url, api_key=api_key, model="Qwen3-32B")
     grader = DescriptionEvaluator(model=client, rubric=rubric, examples=examples)
-    editor = DescriptionEditor(model=client, rubric=rubric, vector_store_manager=st.session_state.vector_store_manager, top_k_context=5)
-    embedder = DocumentEmbedder(model_name="BAAI/bge-large-en-v1.5", model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})
-    ingestor = DocumentIngestor(chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", ".", " ", ""])
+    editor = DescriptionEditor(
+        model=client,
+        rubric=rubric,
+        vector_store_manager=st.session_state.vector_store_manager,
+        top_k_context=5,
+    )
+    embedder = DocumentEmbedder(
+        model_name="BAAI/bge-large-en-v1.5",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+    ingestor = DocumentIngestor(
+        chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", ".", " ", ""]
+    )
     screener = ContentScreener(model=client)
     return rubric, examples, client, grader, editor, embedder, ingestor, screener
 
+
 if api_key and api_url:
-    rubric, examples, client, grader, editor, embedder, ingestor, screener = load_resources()
+    rubric, examples, client, grader, editor, embedder, ingestor, screener = (
+        load_resources()
+    )
     if st.session_state.vector_store_manager:
         editor.vector_store_manager = st.session_state.vector_store_manager
 else:
-    st.error("API Key or URL not found. Please set SAMBANOVA_API_KEY and SAMBANOVA_API_URL.")
+    st.error(
+        "API Key or URL not found. Please set SAMBANOVA_API_KEY and SAMBANOVA_API_URL."
+    )
     st.stop()
 
 # --- Main App Layout ---
 st.header("Dataset Description")
-st.info("Enter your dataset description below. You can then use the tools to evaluate, edit, and refine it.")
-description_text = st.text_area("Enter your dataset description here:", value=st.session_state.description_text, height=250, label_visibility="collapsed")
+st.info(
+    "Enter your dataset description below. You can then use the tools to evaluate, edit, and refine it."
+)
+description_text = st.text_area(
+    "Enter your dataset description here:",
+    value=st.session_state.description_text,
+    height=250,
+    label_visibility="collapsed",
+)
 st.session_state.description_text = description_text
 
 evaluate_button = st.button("Evaluate Description", use_container_width=True)
 
 # --- Workflow Logic ---
 if evaluate_button and description_text:
-    
+
     # Clear previous enhancement state when starting a new evaluation
     st.session_state.original_description = None
     st.session_state.enhanced_description = None
@@ -101,7 +128,7 @@ if evaluate_button and description_text:
     st.session_state.user_feedback = ""
     st.session_state.processed_files = None
     st.session_state.vector_store_manager = None
-    
+
     with st.spinner("Rocco is evaluating your description..."):
         evaluation = grader.evaluate(draft_text=description_text)
         st.session_state.evaluation = evaluation
@@ -116,26 +143,38 @@ if st.session_state.enhanced_description:
     col1, col2 = st.columns(2)
     with col1:
         st.info("Your Original Description")
-        st.text_area("Original", value=st.session_state.original_description, height=300, key="original_desc_readonly", disabled=True)
+        st.text_area(
+            "Original",
+            value=st.session_state.original_description,
+            height=300,
+            key="original_desc_readonly",
+            disabled=True,
+        )
     with col2:
         st.info("Rocco's Suggested Description")
         edited_text = st.text_area(
-            "Enhanced", 
-            value=st.session_state.edited_enhanced_description or st.session_state.enhanced_description, 
-            height=300, 
+            "Enhanced",
+            value=st.session_state.edited_enhanced_description
+            or st.session_state.enhanced_description,
+            height=300,
             key="enhanced_desc_editable",
             disabled=False,
             help="You can edit Rocco's suggested description before finalizing.",
-            on_change=lambda: st.session_state.update({"edited_enhanced_description": st.session_state.enhanced_desc_editable})
+            on_change=lambda: st.session_state.update(
+                {"edited_enhanced_description": st.session_state.enhanced_desc_editable}
+            ),
         )
         st.session_state.edited_enhanced_description = edited_text
         # st.text_area("Enhanced", value=st.session_state.enhanced_description, height=300, key="enhanced_desc_readonly", disabled=True)
-    
+
     # --- Action buttons for the new description ---
     accept_col, reject_col = st.columns(2)
     with accept_col:
         if st.button("✅ Adopt Rocco's Version", use_container_width=True):
-            st.session_state.description_text = st.session_state.edited_enhanced_description or st.session_state.enhanced_description
+            st.session_state.description_text = (
+                st.session_state.edited_enhanced_description
+                or st.session_state.enhanced_description
+            )
             st.session_state.original_description = None
             st.session_state.enhanced_description = None
             st.session_state.enhanced_description_obj = None
@@ -157,17 +196,23 @@ if st.session_state.enhanced_description:
     # --- Display Rationale and Citations ---
     with st.expander("View Enhancement Details", expanded=True):
         col_rationale, col_citations = st.columns(2)
-        
+
         with col_rationale:
             st.subheader("Rationale for Changes")
-            if hasattr(st.session_state, 'enhanced_description_obj') and st.session_state.enhanced_description_obj:
+            if (
+                hasattr(st.session_state, "enhanced_description_obj")
+                and st.session_state.enhanced_description_obj
+            ):
                 st.write(st.session_state.enhanced_description_obj.rationale)
             else:
                 st.info("Rationale not available")
-        
+
         with col_citations:
             st.subheader("Citations")
-            if hasattr(st.session_state, 'enhanced_description_obj') and st.session_state.enhanced_description_obj:
+            if (
+                hasattr(st.session_state, "enhanced_description_obj")
+                and st.session_state.enhanced_description_obj
+            ):
                 citations = st.session_state.enhanced_description_obj.citation
                 if citations:
                     for i, citation in enumerate(citations, 1):
@@ -195,10 +240,14 @@ if st.session_state.evaluation:
             st.subheader("Rubric Breakdown")
             for item in st.session_state.evaluation.rubric_breakdown:
                 if item.score < 1.0:
-                    with st.expander(f"⚠️ **{item.criterion}** - Score: {item.score}/1.0"):
+                    with st.expander(
+                        f"⚠️ **{item.criterion}** - Score: {item.score}/1.0"
+                    ):
                         st.write(item.explanation)
                 else:
-                    with st.expander(f"✅ **{item.criterion}** - Score: {item.score}/1.0"):
+                    with st.expander(
+                        f"✅ **{item.criterion}** - Score: {item.score}/1.0"
+                    ):
                         st.write(item.explanation)
                 # with st.expander(f"**{item.criterion}** - Score: {item.score}/1.0"):
                 #     st.write(item.explanation)
@@ -208,20 +257,28 @@ if st.session_state.evaluation:
     with enhance_col:
         with st.container(border=True):
             st.header("Provide Context to Enhance")
-            st.write("Upload documents and/or provide Rocco with supplemental information or specific feedback.")
+            st.write(
+                "Upload documents and/or provide Rocco with supplemental information or specific feedback."
+            )
 
             # --- Document Upload ---
             st.subheader("Add Context from Documents")
-            uploaded_files = st.file_uploader("Upload relevant papers or manuscripts (PDF).", type="pdf", accept_multiple_files=True)
+            uploaded_files = st.file_uploader(
+                "Upload relevant papers or manuscripts (PDF).",
+                type="pdf",
+                accept_multiple_files=True,
+            )
 
             if uploaded_files:
                 uploaded_file_names = sorted([file.name for file in uploaded_files])
                 if st.session_state.processed_files != uploaded_file_names:
-                    with st.spinner(f"Processing {len(uploaded_file_names)} file(s)... This could take a few minutes."):
+                    with st.spinner(
+                        f"Processing {len(uploaded_file_names)} file(s)... This could take a few minutes."
+                    ):
                         session_id = get_session_id()
                         temp_dir = Path(f"temp_{session_id}")
                         temp_dir.mkdir(exist_ok=True)
-                        
+
                         pdf_paths = []
                         for uploaded_file in uploaded_files:
                             pdf_path = temp_dir / uploaded_file.name
@@ -232,7 +289,7 @@ if st.session_state.evaluation:
                         vector_store_manager = VectorStoreManager(embedder)
                         chunks = ingestor.ingest(pdf_paths)
                         vector_store_manager.create_from_documents(chunks)
-                        
+
                         st.session_state.vector_store_manager = vector_store_manager
                         editor.vector_store_manager = vector_store_manager
                         st.session_state.processed_files = uploaded_file_names
@@ -242,25 +299,38 @@ if st.session_state.evaluation:
 
             # --- User Feedback ---
             st.subheader("Add Written Feedback")
-            user_feedback = st.text_area("Provide feedback or supplemental info based on the evaluation.",
-                                         key="user_feedback_input",
-                                         on_change=lambda: st.session_state.update({"user_feedback": st.session_state.user_feedback_input}))
-            
+            user_feedback = st.text_area(
+                "Provide feedback or supplemental info based on the evaluation.",
+                key="user_feedback_input",
+                on_change=lambda: st.session_state.update(
+                    {"user_feedback": st.session_state.user_feedback_input}
+                ),
+            )
+
             st.session_state.user_feedback = user_feedback
 
             # --- Enhance Button and Logic ---
-            disable_enhance = not st.session_state.evaluation or (not st.session_state.vector_store_manager and not st.session_state.user_feedback)
-            
-            if st.button("✨ Enhance with Rocco", use_container_width=True, disabled=disable_enhance):
+            disable_enhance = not st.session_state.evaluation or (
+                not st.session_state.vector_store_manager
+                and not st.session_state.user_feedback
+            )
+
+            if st.button(
+                "✨ Enhance with Rocco",
+                use_container_width=True,
+                disabled=disable_enhance,
+            ):
                 if st.session_state.user_feedback:
                     with st.spinner("Screening your feedback..."):
                         screening_result = screener.screen_user_content(
                             st.session_state.user_feedback,
-                            context=st.session_state.description_text
+                            context=st.session_state.description_text,
                         )
-                    
+
                     if screening_result["recommendation"] == "reject":
-                        st.error(f"❌ Feedback rejected. Issues found: {', '.join(screening_result['issues'])}")
+                        st.error(
+                            f"❌ Feedback rejected. Issues found: {', '.join(screening_result['issues'])}"
+                        )
                         st.stop()
                     elif screening_result["recommendation"] == "flag_for_review":
                         st.session_state.screening_result = screening_result
@@ -275,48 +345,77 @@ if st.session_state.evaluation:
                     st.session_state.skip_screening = True
                     st.session_state.pending_enhancement = False
                     st.rerun()
-                        
+
             # Handle flagged feedback review
-            if st.session_state.get("pending_enhancement") and st.session_state.get("screening_result", {}).get("recommendation") == "flag_for_review":
+            if (
+                st.session_state.get("pending_enhancement")
+                and st.session_state.get("screening_result", {}).get("recommendation")
+                == "flag_for_review"
+            ):
                 with st.expander("⚠️ Feedback flagged for review", expanded=True):
-                    st.write(f"**Issues:** {', '.join(st.session_state.screening_result['issues'])}")
+                    st.write(
+                        f"**Issues:** {', '.join(st.session_state.screening_result['issues'])}"
+                    )
                     col_continue, col_cancel = st.columns(2)
                     with col_continue:
-                        if st.button("Continue anyway", key="continue_flagged", use_container_width=True):
+                        if st.button(
+                            "Continue anyway",
+                            key="continue_flagged",
+                            use_container_width=True,
+                        ):
                             st.session_state.skip_screening = True
                             st.session_state.pending_enhancement = False
                             st.rerun()
                     with col_cancel:
-                        if st.button("Cancel", key="cancel_flagged", use_container_width=True):
+                        if st.button(
+                            "Cancel", key="cancel_flagged", use_container_width=True
+                        ):
                             st.session_state.pending_enhancement = False
                             st.session_state.screening_result = None
                             st.rerun()
-                
-                
+
             # Proceed with enhancement if screening passed or was skipped
             if st.session_state.skip_screening:
-                if st.session_state.user_feedback or st.session_state.vector_store_manager:
+                if (
+                    st.session_state.user_feedback
+                    or st.session_state.vector_store_manager
+                ):
                     with st.spinner("Rocco is refining your description..."):
                         use_rag = st.session_state.vector_store_manager is not None
                         editor.use_rag = use_rag
                         enhanced_description_obj = editor.enhance(
                             draft_text=st.session_state.description_text,
                             draft_evaluation=st.session_state.evaluation,
-                            user_feedback=st.session_state.user_feedback if st.session_state.user_feedback else None,
+                            user_feedback=(
+                                st.session_state.user_feedback
+                                if st.session_state.user_feedback
+                                else None
+                            ),
                             retrieve_context=use_rag,
                         )
-                        st.session_state.original_description = st.session_state.description_text
-                        st.session_state.enhanced_description = enhanced_description_obj.suggested_text
-                        st.session_state.enhanced_description_obj = enhanced_description_obj
-                        st.session_state.edited_enhanced_description = None  # Reset edits
-                        st.session_state.user_feedback = "" # Clear feedback
+                        st.session_state.original_description = (
+                            st.session_state.description_text
+                        )
+                        st.session_state.enhanced_description = (
+                            enhanced_description_obj.suggested_text
+                        )
+                        st.session_state.enhanced_description_obj = (
+                            enhanced_description_obj
+                        )
+                        st.session_state.edited_enhanced_description = (
+                            None  # Reset edits
+                        )
+                        st.session_state.user_feedback = ""  # Clear feedback
                         st.session_state.skip_screening = False  # Reset flagging
                         st.session_state.pending_enhancement = False
                         st.session_state.screening_result = None
                         st.rerun()
 
             if disable_enhance:
-                if not st.session_state.vector_store_manager and not st.session_state.user_feedback:
+                if (
+                    not st.session_state.vector_store_manager
+                    and not st.session_state.user_feedback
+                ):
                     st.warning("Provide context to enable enhancement.")
 
 elif not st.session_state.enhanced_description:

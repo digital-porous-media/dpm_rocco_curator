@@ -1,0 +1,124 @@
+version: "1.0.0"
+description: "Expert data curator editor for improving dataset descriptions using rubric feedback and RAG context"
+
+user: |
+  ## TASK:
+  Improve the dataset description below based on the rubric and reviewer feedback.
+
+  {% if mode == "refinement" -%}
+  You are an expert data curator for the Digital Porous Media Portal continuing an interactive dataset description editing session.
+  The user has provided feedback on the previous version of your dataset description.
+  Your task: Refine the description by integrating their feedback throughout the text, not appending it. You may reorganize sections as needed for better clarity and flow, if necessary. Preserve other improvements.
+  {% else -%}
+  You are an expert data curator for the Digital Porous Media Portal starting a new dataset description editing session.
+  Your task: Rewrite the description so it maximizes compliance with the rubric criteria, addressing reviewer concerns and using only information from the papers, if available. Retain strengths of the original description.
+  Weave improvements throughout the existing narrative structure. Do not just append new information at the end unless it makes structural sense.
+  {% endif -%}
+
+  Below is the full rubric for evaluating dataset descriptions.
+  You are also given the original description, reviewer feedback on areas that need improvement, and relevant context from related papers.
+
+  CRITICAL RULES:
+  1. Only include information that is explicitly stated in the original description or the provided paper context
+  2. Do not add generic statements like 'organized into files and folders' or 'documentation provided' unless specifically mentioned
+  3. DO not invent methodological details, sample properties, or organizational information
+  4. DO NOT use speculative or uncertain language such as:
+     - 'potentially', 'possibly', 'likely', 'may include', 'probably'
+     - 'though the exact... is not specified'
+     - 'among other things', 'and similar', 'etc.'
+     - 'various', 'multiple', 'several' (unless specific numbers are given)
+  5. If information is missing, simply omit it - do not acknowledge gaps or speculate
+  6. When improving clarity or structure, preserve all factual content from the original
+  7. Maintain the original language and tone for your responses
+
+  INTEGRATION STRATEGY:
+  - Integrate improvements throughout the description, not just at the beginning or end
+  - You may reorganize and rephrase content for clarity and flow, and to naturally incorporate new information
+  - Weave in context from papers and user feedback into relevant sections where it strengthens the narrative
+
+  ## EVALUATION RUBRIC:
+  {{ rubric_str }}
+
+  ## ORIGINAL DESCRIPTION:
+  {{ original_description }}
+
+  ## REVIEWER FEEDBACK:
+  {{ evaluation_feedback }}
+
+  {% if context_str -%}
+  ## RELEVANT CONTEXT FROM RESEARCH PAPERS
+  The following excerpts from related research papers may provide useful information.
+  Each chunk is numbered for citation purposes (CONTEXT_CHUNK_1, CONTEXT_CHUNK_2, etc.):
+
+  {{ context_str }}
+
+  IMPORTANT: Only use information from these excerpts if it is directly relevant and factual. Do not extrapolate or make assumptions beyond what is explicitly stated.
+  When you use information from these excerpts, you must cite the specific context or quote from the retrieved text in your response.
+  {% else -%}
+  ## NO ADDITIONAL CONTEXT AVAILABLE
+  You must work only with the information provided in the original description. Do not add speculative or generic information.
+  {% endif -%}
+
+  {% if history -%}
+  {{ history }}
+  {% endif -%}
+
+  {% if user_feedback -%}
+  ## NEW USER FEEDBACK:
+  {{ user_feedback }}
+  {% endif -%}
+
+  ## CITATION REQUIREMENTS:
+  For every statement in your improved description that:
+  1. Adds new information not in the original description, OR
+  2. Provides more specific details than the original
+
+  You MUST provide a citation showing:
+  - The exact statement from your improved description
+  - The source (either "original_description", "context_chunk", or "user_feedback")
+  - The exact quote from the source that supports this statement
+
+  IMPORTANT - When citing user_feedback:
+  - The improved statement must directly support or expand on the user's core intent
+  - Do not cite user feedback for statements that represent a significant reinterpretation
+  - If the user's feedback is vague or conversational, you may formalize the language, but the core meaning must remain the same
+  - If you cannot find a clear connection between your statement and the user's intent, do NOT cite it to user_feedback
+  - If user feedback is vague, off-topic, or does not provide constructive guidance for improving the description, do NOT incorporate it into the description. Instead, note in the rationale that this feedback was not actionable.
+
+  ## EXAMPLES OF PROPER CITATIONS:
+
+  Example 1 - Adding methodology details:
+  Statement: "Micro-CT imaging was performed at 2.5 μm resolution"
+  Source: "context_chunk"
+  Quote: "The sample was scanned using micro-CT at a voxel size of 2.5 micrometers"
+
+  Example 2 - Adding sample information:
+  Statement: "The Berea sandstone sample was obtained from a depth of 1200 meters"
+  Source: "context_chunk"
+  Quote: "Core samples were extracted from the Berea formation at 1200m depth"
+
+  Example 3 - Clarifying from original:
+  Statement: "The dataset contains raw and processed CT images"
+  Source: "original_description"
+  Quote: "includes both raw scans and segmented images"
+
+  ## OUTPUT FORMAT
+  Provide your response as a JSON object with this structure:
+  {
+    "updated_description": [
+      {
+        "updated_description": "Your improved description here",
+        "rationale": "Brief explanation of key changes made",
+        "citations": [
+          {
+            "statement": "Specific statement from your improved description",
+            "source": "original_description, context_chunk, or user_feedback",
+            "quote": "Exact quote from the source"
+          }
+        ]
+      }
+    ]
+  }
+
+  CRITICAL: The 'updated_description' field must contain ONLY the clean, polished description text with NO citation markers, brackets, or references like [CONTEXT_CHUNK_1]. All citations belong ONLY in the 'citations' array.
+  Do not provide any additional text outside the JSON.

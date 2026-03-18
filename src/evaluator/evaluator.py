@@ -1,9 +1,10 @@
 from src.llm.client import RoccoClient
 from src.llm.schemas import EvaluatorOutput, RubricItem
 from src.common.utils import _build_rubric, _build_few_shot_examples
+from src.prompts.loader import load_prompt, render
 import json
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 
 class DescriptionEvaluator:
@@ -14,42 +15,18 @@ class DescriptionEvaluator:
         self.rubric = rubric
         self.examples = examples
 
-    def build_prompt(self, draft_text: str, context: Optional[list[str]]=None) -> str:
-        """Combine rubric, examples, context, and draft into prompt"""
+    def build_prompt(self, draft_text: str) -> str:
+        """Combine rubric, examples, and draft into prompt"""
         rubric_str = _build_rubric(self.rubric)
         examples_str = _build_few_shot_examples(self.examples)
-        
-        # Use your system instructions and preface
-        system_instructions = (
-            "## ROLE"
-            "You are an expert data curator for the Digital Porous Media Portal. "
-            "You are provided 10 guidelines, each of which is worth one point. "
-            "Descriptions only get the point if the guideline is addressed explicitly. "
-            "You are to evaluate the description for each guideline. Follow the examples provided. "
-            "Only evaluate the 10 guidelines, do not try to sum everything at the end.\n"
-            "Return your evaluation as a JSON object with the following format:\n"
-            "{\n"
-            '  "rubric_breakdown": [\n'
-            '    {"criterion": "Self-Contained Description", "score": 1, "explanation": "..."},\n'
-            '    {"criterion": "Context of Creation", "score": 0.5, "explanation": "..."},\n'
-            '...\n'
-            "  ]\n"
-            "}\n"
-            "Do not provide any additional text outside the JSON.\n"
-        )
-        preface = "\nNow follows the description you must rate. Do not round.\n"
-        context_str = ""
-        if context:
-            context_str = "Additional context:\n" + "\n".join(context) + "\n"
 
-        prompt = (
-            f"{system_instructions}\n"
-            f"Rubric:\n{rubric_str}\n\n"
-            f"Examples:\n{examples_str}\n"
-            f"{context_str}"
-            f"{preface}"
-            f"Description: {draft_text}\n"
-            "Explanation:"
+        # Load prompt template and render
+        prompt_data = load_prompt("evaluator")
+        prompt = render(
+            prompt_data["user"],
+            rubric=rubric_str,
+            examples=examples_str,
+            description=draft_text
         )
         return prompt
 

@@ -21,6 +21,9 @@ class Citation(BaseModel):
     statement: str = Field(description="The statement from the enhanced description.")
     source: str = Field(description="Source of the added information (original_description, context_chunk, or user_feedback)") # Original description or context chunk
     quote: str = Field(description="The exact quote or statement from the source.")
+    doc_title: Optional[str] = Field(default=None, description="Document title (filename without extension) for context_chunk sources")
+    page: Optional[int] = Field(default=None, description="Page number in source document for context_chunk sources")
+    chunk_index: Optional[int] = Field(default=None, description="Chunk index for context_chunk sources")
 
 class EditorOutput(BaseModel):
     """Output from the description editor"""

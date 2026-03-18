@@ -2,8 +2,10 @@ from src.llm.client import RoccoClient
 from src.llm.schemas import EditorOutput, EvaluatorOutput, Citation, EditingSession
 from src.common.utils import _build_rubric, _build_evaluation_text
 from src.retriever.retriever import VectorStoreManager
+from src.prompts.loader import load_prompt, render
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+from langchain_core.documents import Document
 import json
 from pathlib import Path
 
@@ -92,16 +94,15 @@ class DescriptionEditor:
         )
         return session.get_summary()
     
-    def retrieve_context(self, query: str = None) -> List[str]:
+    def retrieve_context(self, query: str = None) -> List[Document]:
         """Retrieve relevant context from related papers"""
-        
+
         if not self.use_rag or self.vector_store_manager is None:
             return []
-        
+
         try:
             results = self.vector_store_manager.similarity_search(query, k=self.top_k_context)
-            context_snippets = [doc.page_content for doc in results]
-            return context_snippets
+            return results
         except Exception as e:
             print(f"Error retrieving context: {str(e)}")
             return []
@@ -143,11 +144,11 @@ class DescriptionEditor:
         return queries
         
                 
-    def build_prompt(self, draft_text: str, draft_evaluation: EvaluatorOutput, context: Optional[List[str]] = None, user_feedback: Optional[str] = None) -> str:
+    def build_prompt(self, draft_text: str, draft_evaluation: EvaluatorOutput, context: Optional[Union[List[Document], List[str]]] = None, user_feedback: Optional[str] = None) -> str:
         """Prepare prompt for improving the draft"""
         rubric_str = _build_rubric(self.rubric)
         eval_feedback = _build_evaluation_text(draft_evaluation)
-        
+
         # Build conversation history
         history = ""
         if self.conversation_history:
@@ -159,134 +160,53 @@ class DescriptionEditor:
                     history += f"\n**Previous Version:**\n{message['content']}\n"
                     if "rationale" in message:
                         history += f"**Rationale:** {message['rationale']}\n"
-        
-        # Provide user feedback
-        if user_feedback:
-            task_description = (
-                "You are an expert data curator for the Digital Porous Media Portal continuing an interactive dataset description editing session.\n"
-                "The user has provided feedback on the previous version of your dataset description.\n"
-                "Your task: Refine the description by integrating their feedback throughout the text, not appending it. You may reorganize sections as needed for better clarity and flow, if necessary. Preserve other improvements.\n"
-            )
-            user_feedback_section = f"\n## NEW USER FEEDBACK:\n{user_feedback}\n"
-        else:
-            task_description = (
-                "You are an expert data curator for the Digital Porous Media Portal starting a new dataset description editing session.\n"
-                "Your task: Rewrite the description so it maximizes compliance with the rubric criteria, addressing reviewer concerns and using only information from the papers, if available. Retain strengths of the original description.\n"
-                "Weave improvements throughout the existing narrative structure. Do not just append new information at the end unless it makes structural sense.\n"
-            )
-            user_feedback_section = ""
-        
-        system_instructions = (
-        f"{task_description}"
-        "Below is the full rubric for evaluating dataset descriptions.\n"
-        "You are also given the original description, reviewer feedback on areas that need improvement, and relevant context from related papers.\n"
 
-        "CRITICAL RULES:\n"
-        "1. Only include information that is explicitly stated in the original description or the provided paper context\n"
-        "2. Do not add generic statements like 'organized into files and folders' or 'documentation provided' unless specifically mentioned\n"
-        "3. DO not invent methodological details, sample properties, or organizational information\n"
-        "4. DO NOT use speculative or uncertain language such as:\n"
-        "   - 'potentially', 'possibly', 'likely', 'may include', 'probably'\n"
-        "   - 'though the exact... is not specified'\n"
-        "   - 'among other things', 'and similar', 'etc.'\n"
-        "   - 'various', 'multiple', 'several' (unless specific numbers are given)\n"
-        "5. If information is missing, simply omit it - do not acknowledge gaps or speculate\n"
-        "6. When improving clarity or structure, preserve all factual content from the original\n"
-        "7. Maintain the original language and tone for your responses\n"
-        "INTEGRATION STRATEGY:\n"
-        "- Integrate improvements throughout the description, not just at the beginning or end\n"
-        "- You may reorganize and rephrase content for clarity and flow, and to naturally incorporate new information\n"
-        "- Weave in context from papers and user feedback into relevant sections where it strengthens the narrative\n"
-        "\n"
-        )     
+        # Determine mode (initial vs refinement)
+        mode = "refinement" if user_feedback else "initial"
 
+        # Format context with separators and citation metadata
         context_str = ""
         if context:
-            context_str = "\n\n---\n\n".join(context)
-            rag_context = f"""## RELEVANT CONTEXT FROM RESEARCH PAPERS
+            formatted_chunks = []
+            for chunk_num, item in enumerate(context, 1):
+                if isinstance(item, Document):
+                    # Format Document with citation-ready metadata
+                    chunk_header = f"[CONTEXT_CHUNK_{chunk_num}]"
+                    metadata_lines = [chunk_header]
 
-            The following excerpts from related research papers may provide useful information.
-            Each chunk is numbered for citation purposes (CONTEXT_CHUNK_1, CONTEXT_CHUNK_2, etc.):
+                    # Add source metadata if available
+                    if item.metadata:
+                        doc_title = item.metadata.get("doc_title", "unknown")
+                        page = item.metadata.get("page")
+                        chunk_idx = item.metadata.get("chunk_index")
 
-            {context_str}
+                        source_info = f"Source: {doc_title}"
+                        if page is not None:
+                            source_info += f", Page {page}"
+                        if chunk_idx is not None:
+                            source_info += f", Chunk {chunk_idx}"
+                        metadata_lines.append(source_info)
 
-            IMPORTANT: Only use information from these excerpts if it is directly relevant and factual. Do not extrapolate or make assumptions beyond what is explicitly stated. 
-            When you use information from these excerpts, you must cite the specific context or quote from the retrieved text in your response.
-            """
-        else:
-            rag_context = "## NO ADDITIONAL CONTEXT AVAILABLE\n\n You must work only with the information provided in the original description. Do not add speculative or generic information.\n"
-        
-        prompt = f"""
-        ## TASK:
-            Improve the dataset description below based on the rubric and reviewer feedback.
-            {system_instructions}
-            
-        ## EVALUATION RUBRIC:
-            {rubric_str}
-            
-        ## ORIGINAL DESCRIPTION:
-            {draft_text}
-            
-        ## REVIEWER FEEDBACK:
-            {eval_feedback}
-            
-        {rag_context}
-        {history}
-        {user_feedback_section}
-        
-        ## CITATION REQUIREMENTS:
-        For every statement in your improved description that:
-        1. Adds new information not in the original description, OR
-        2. Provides more specific details than the original
+                    metadata_lines.append("---")
+                    formatted_chunks.append("\n".join(metadata_lines) + "\n" + item.page_content)
+                else:
+                    # String fallback (for context_override)
+                    formatted_chunks.append(f"[CONTEXT_CHUNK_{chunk_num}]\n---\n{item}")
 
-        You MUST provide a citation showing:
-        - The exact statement from your improved description
-        - The source (either "original_description", "context_chunk", or "user_feedback")
-        - The exact quote from the source that supports this statement
-        
-        IMPORTANT - When citing user_feedback:
-        - The improved statement must directly support or expand on the user's core intent
-        - Do not cite user feedback for statements that represent a significant reinterpretation
-        - If the user's feedback is vague or conversational, you may formalize the language, but the core meaning must remain the same
-        - If you cannot find a clear connection between your statement and the user's intent, do NOT cite it to user_feedback
-        - If user feedback is vague, off-topic, or does not provide constructive guidance for improving the description, do NOT incorporate it into the description. Instead, note in the rationale that this feedback was not actionable.
-        ## EXAMPLES OF PROPER CITATIONS:
+            context_str = "\n\n---\n\n".join(formatted_chunks)
 
-        Example 1 - Adding methodology details:
-        Statement: "Micro-CT imaging was performed at 2.5 μm resolution"
-        Source: "context_chunk"
-        Quote: "The sample was scanned using micro-CT at a voxel size of 2.5 micrometers"
-
-        Example 2 - Adding sample information:
-        Statement: "The Berea sandstone sample was obtained from a depth of 1200 meters"
-        Source: "context_chunk"
-        Quote: "Core samples were extracted from the Berea formation at 1200m depth"
-
-        Example 3 - Clarifying from original:
-        Statement: "The dataset contains raw and processed CT images"
-        Source: "original_description"
-        Quote: "includes both raw scans and segmented images"
-
-        ## OUTPUT FORMAT
-        Provide your response as a JSON object with this structure:
-        {{
-            "updated_description": [
-                {{
-                    "updated_description": "Your improved description here",
-                    "rationale": "Brief explanation of key changes made",
-                    "citations": [
-                        {{
-                            "statement": "Specific statement from your improved description",
-                            "source": "original_description, context_chunk, or user_feedback",
-                            "quote": "Exact quote from the source"
-                        }}
-                    ]
-                }}
-            ]
-        }}
-        CRITICAL: The 'updated_description' field must contain ONLY the clean, polished description text with NO citation markers, brackets, or references like [CONTEXT_CHUNK_1]. All citations belong ONLY in the 'citations' array.
-        Do not provide any additional text outside the JSON.
-        """
+        # Load prompt template and render
+        prompt_data = load_prompt("editor")
+        prompt = render(
+            prompt_data["user"],
+            mode=mode,
+            context_str=context_str,
+            rubric_str=rubric_str,
+            original_description=draft_text,
+            evaluation_feedback=eval_feedback,
+            history=history,
+            user_feedback=user_feedback or ""
+        )
         return prompt
 
 
@@ -304,20 +224,21 @@ class DescriptionEditor:
         
         
         if context_override:
+            # context_override is still a list of formatted strings
             context = context_override
         elif retrieve_context and self.use_rag:
             queries = self.generate_search_query(draft_evaluation, query_all=query_all_criterion)
             context = []
             if queries:
                 seen_content = set()
-                
+
                 for i, query in enumerate(queries):
                     query_context = self.retrieve_context(query)
-                    
-                    for content in query_context:
-                        if content not in seen_content:
-                            context.append(content)
-                            seen_content.add(content)
+
+                    for doc in query_context:
+                        if doc.page_content not in seen_content:
+                            context.append(doc)
+                            seen_content.add(doc.page_content)
         else:
             context = []
         

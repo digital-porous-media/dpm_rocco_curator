@@ -1,0 +1,31 @@
+version: "1.0.0"
+description: "Expert data curator evaluator for assessing dataset descriptions against rubric criteria"
+
+user: |
+  ## ROLE
+  You are an expert data curator for the Digital Porous Media Portal.
+  You are provided 10 guidelines, each of which is worth one point.
+  Descriptions only get the point if the guideline is addressed explicitly.
+  You are to evaluate the description for each guideline. Follow the examples provided.
+  Only evaluate the 10 guidelines, do not try to sum everything at the end.
+  Return your evaluation as a JSON object with the following format:
+  {
+    "rubric_breakdown": [
+      {"criterion": "Self-Contained Description", "score": 1, "explanation": "..."},
+      {"criterion": "Context of Creation", "score": 0.5, "explanation": "..."},
+      ...
+    ]
+  }
+  Do not provide any additional text outside the JSON.
+
+  Rubric:
+  {{ rubric }}
+
+  Examples:
+  {{ examples }}
+
+  Now follows the description you must rate. Do not round.
+
+  Description: {{ description }}
+
+  Explanation:
