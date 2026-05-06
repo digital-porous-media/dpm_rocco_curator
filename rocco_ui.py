@@ -14,12 +14,25 @@ from src.ingestor.document_ingestor import DocumentIngestor
 from src.retriever.retriever import VectorStoreManager
 from src.llm.content_screener import ContentScreener
 
+# Suppress transformers library warnings about optional vision model imports
+import logging
+logging.getLogger("transformers").setLevel(logging.ERROR)
+
 # --- Constants and Page Config ---
 ROCCO_AVATAR = "assets/rocco_avatar.jpg"
 USER_AVATAR = "assets/user_avatar.jpg"
 
 st.set_page_config(page_title="Rocco - DPM Curator", layout="wide")
 st.title("Rocco - Your Digital Porous Media AI Curator")
+
+# --- Display LLM Configuration ---
+load_dotenv()
+api_key = os.getenv("LLM_API_KEY")
+api_url = os.getenv("LLM_BASE_URL")
+model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+provider = os.getenv("LLM_PROVIDER", "").lower()
+
+st.write(f"Using **{provider.upper() if provider else 'Custom'}** — {model}")
 
 
 # --- Helper Functions ---
@@ -28,11 +41,6 @@ def get_session_id():
         st.session_state.session_id = str(uuid.uuid4())
     return st.session_state.session_id
 
-
-# --- Load Environment Variables ---
-load_dotenv()
-api_key = os.getenv("SAMBANOVA_API_KEY")
-api_url = os.getenv("SAMBANOVA_API_BASE_URL")
 
 # --- Session State Initialization ---
 if "description_text" not in st.session_state:
@@ -70,7 +78,7 @@ def load_resources():
     with open("src/evaluator/examples_v3.json", "r") as f:
         examples = json.load(f)
 
-    client = RoccoClient(api_url=api_url, api_key=api_key, model="Qwen3-32B")
+    client = RoccoClient(api_url=api_url, api_key=api_key, model=model)
     grader = DescriptionEvaluator(model=client, rubric=rubric, examples=examples)
     editor = DescriptionEditor(
         model=client,
@@ -90,7 +98,7 @@ def load_resources():
     return rubric, examples, client, grader, editor, embedder, ingestor, screener
 
 
-if api_key and api_url:
+if api_key or provider == "ollama":
     rubric, examples, client, grader, editor, embedder, ingestor, screener = (
         load_resources()
     )
@@ -98,7 +106,8 @@ if api_key and api_url:
         editor.vector_store_manager = st.session_state.vector_store_manager
 else:
     st.error(
-        "API Key or URL not found. Please set SAMBANOVA_API_KEY and SAMBANOVA_API_URL."
+        "LLM API Key not found. Please set LLM_API_KEY in your environment or .env file. "
+        "See .env.example for configuration details and supported LLM providers."
     )
     st.stop()
 

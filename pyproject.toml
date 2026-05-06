@@ -5,20 +5,41 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dpm-rocco-curator"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI-powered curator for the Digital Porous Media Portal"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
+authors = [
+    {name = "DPM Rocco Contributors"}
+]
+keywords = [
+    "dataset-curation",
+    "description-evaluation",
+    "rag",
+    "llm",
+    "porous-media",
+    "scientific-data"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
 
 dependencies = [
     "langchain>=0.1.0",
-    "openai==1.56.0",
-    "langchain-sambanova==0.1.6",
-    "neo4j==5.27.0",
-    "streamlit==1.35.0",
-    "langchainhub==0.1.21",
-    "langchain-neo4j==0.1.1",
+    "openai>=1.0.0",
+    "streamlit>=1.35.0",
+    "langchainhub>=0.1.21",
+    "langchain-community>=0.4.1",
+    "langchain-huggingface>=1.2.2",
     "tenacity!=8.4.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
@@ -30,11 +51,27 @@ dependencies = [
     "regex>=2023.0.0",
     "pyyaml>=6.0",
     "jinja2>=3.0.0",
+    "python-dotenv>=1.2.2"
 ]
 
 [project.optional-dependencies]
+graph = [
+    "neo4j>=5.27.0",
+    "langchain-neo4j>=0.1.1",
+]
+docs = [
+    "sphinx>=7.0",
+    "pydata-sphinx-theme>=0.15",
+    "myst-parser>=2.0",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
     "isort>=5.12.0",
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/USER/dpm-rocco-curator"
+"Documentation" = "https://dpm-rocco-curator.readthedocs.io"
+"Repository" = "https://github.com/USER/dpm-rocco-curator.git"
+"Bug Tracker" = "https://github.com/USER/dpm-rocco-curator/issues"

@@ -1,0 +1,204 @@
+Quick Start
+===========
+
+Get up and running with Rocco in **5 minutes**.
+
+.. contents::
+   :local:
+   :depth: 2
+
+Step 1: Install & Configure (2 minutes)
+========================================
+
+**Clone and install the repository:**
+
+.. code-block:: bash
+
+   git clone https://github.com/USER/dpm-rocco-curator.git
+   cd dpm-rocco-curator
+   pip install -e .
+
+**Set up your LLM provider:**
+
+.. code-block:: bash
+
+   cp .env.example .env
+   # Edit .env with your chosen provider
+   # See Configuration guide for detailed provider setup:
+   # https://dpm-rocco-curator.readthedocs.io/en/latest/user_guide/configuration.html
+
+**Quick provider choices:**
+
+- **OpenAI (recommended for first-time users)**: Get a free key at https://platform.openai.com/api-keys
+- **Ollama (free, local)**: Follow the WSL2 setup instructions in the Configuration guide (no API key needed)
+- **Anthropic, Gemini, DeepSeek, etc.**: All supported — see Configuration for full list
+
+Step 2: Start the App (30 seconds)
+==================================
+
+.. code-block:: bash
+
+   streamlit run rocco_ui.py
+
+Your browser will automatically open to ``http://localhost:8501``.
+
+Step 3: Enter a Dataset Description (1 minute)
+===============================================
+
+Paste any dataset description into the text area. Example:
+
+.. code-block:: text
+
+   This dataset contains high-resolution micro-CT images of Berea sandstone samples.
+   The images were acquired at 2 µm voxel resolution using the Advanced Photon Source (APS).
+   Samples are segmented into pore and solid phases and available in TIFF format.
+
+Step 4: Evaluate (30 seconds)
+=============================
+
+Click **"Evaluate Description"** to score your description against **10 research-backed criteria**:
+
+.. list-table::
+   :widths: 40 60
+   :header-rows: 0
+
+   * - ✓ Self-Contained
+     - Does the description stand alone without external context?
+   * - ✓ Methodology Clarity
+     - Is the imaging/analysis method clearly explained?
+   * - ✓ Data Organization
+     - Is the data structure described (files, formats, hierarchy)?
+   * - ✓ Quality Control
+     - Are QA/QC procedures documented?
+   * - ✓ Material Properties
+     - Are sample material properties specified?
+   * - ✓ Spatial Resolution
+     - Is the spatial/temporal resolution stated?
+   * - ✓ Reproducibility
+     - Can someone reproduce this work from the description?
+   * - ✓ Citation & Attribution
+     - Are data sources and authors cited?
+   * - ✓ Accessibility
+     - How can others access or request the data?
+   * - ✓ Completeness
+     - Is the description comprehensive?
+
+**Rocco returns a score out of 10** — each criterion is worth 1 point.
+
+**Typical score:** Raw descriptions often score 4-6/10. Don't worry — Rocco will help you improve it!
+
+Step 5: Enhance with RAG (2 minutes)
+====================================
+
+Now let's improve your description using **Retrieval-Augmented Generation (RAG)** and your feedback.
+
+**Option A: Without context documents**
+
+Simply write feedback in the "Your Feedback" text area:
+
+.. code-block:: text
+
+   Add information about sample preparation and handling.
+   Explain which segmentation method was used.
+   Include any derived metrics (porosity, permeability, etc.).
+
+Then click **"Enhance with Rocco"** to improve the description.
+
+**Option B: With context documents (recommended for better results)**
+
+1. Click **"Upload Files"** and add PDFs or DOCX files with relevant background:
+
+   - Research papers on the technique
+   - Technical protocols or standards
+   - Dataset documentation
+   - Related methodology papers
+
+2. Write your feedback (as above)
+
+3. Click **"Enhance with Rocco"**
+
+Rocco will:
+- Retrieve relevant excerpts from your uploaded documents
+- Integrate them into the description with proper citations
+- Address the feedback you provided
+- Show you exactly where each claim came from (with quotes)
+
+Step 6: Review & Save
+====================
+
+Rocco displays the **enhanced description with full citations**. You can:
+
+- **✓ Accept** the improvement and save the new version
+- **✗ Reject** and try again with different feedback or documents
+- **✏️ Edit** manually and refine further
+- **↻ Iterate** — try multiple rounds of feedback to perfect your description
+
+**Citations show:**
+- The exact statement added
+- Where it came from (your feedback, an uploaded paper, or the original description)
+- The source document and page number (if applicable)
+- The exact quote
+
+**That's it!** You've just improved a dataset description using AI and research documents.
+
+Real-World Example: Before & After
+===================================
+
+**Original (5/10):** Minimal and vague
+
+.. code-block:: text
+
+   "Berea sandstone micro-CT images. 2µm voxel resolution. APS facility. Segmented. TIFF format."
+
+**After first enhancement (7/10):** Better, but missing details
+
+.. code-block:: text
+
+   "High-resolution micro-CT images of Berea sandstone acquired at the Advanced Photon Source (APS) at 2 µm voxel resolution. Samples were segmented into pore and solid phases. Data available in TIFF format."
+
+**After adding context documents (9/10):** Comprehensive and research-grade
+
+.. code-block:: text
+
+   "This dataset comprises high-resolution micro-CT images of Berea sandstone samples imaged at the Advanced Photon Source (APS). Images were acquired at 2 µm voxel resolution using monochromatic X-ray tomography following the methodology of Ritman et al. (2004). Samples were prepared following standard core handling protocols (ASTM D4378 standards) to preserve natural pore structure. Post-acquisition processing included alignment correction using the TomoPy package and beam-hardening artifact suppression via empirical correction. The resulting 3D stacks were segmented into pore (void) and solid (rock matrix) phases using a two-step watershed algorithm with Gaussian blur smoothing (sigma=1.2 pixels) and manual refinement. Output files are provided as 16-bit grayscale TIFF stacks with dimensions [X × Y × Z] voxels. Voxel-to-physical-space calibration is included in TIFF metadata headers. Derived metrics include bulk porosity (25.3%, estimated from segmented volumes) and pore-size distributions (10 µm to 500 µm range). Data licensing: CC-BY-4.0. Contact: [PI name] at [institution]."
+
+Tips & Best Practices
+=====================
+
+**Quality Input**
+   Clear, complete descriptions lead to better evaluations. Include as much detail as possible — Rocco will summarize and organize it.
+
+**Upload Context Documents**
+   Rocco works best with background materials. Upload:
+   - Method papers (how the imaging/analysis was done)
+   - Technical documentation (instrument specs, protocols)
+   - Related datasets (to cite similar work)
+
+   This allows Rocco to add proper citations and improve accuracy.
+
+**Iterate Strategically**
+   After the first enhancement:
+   1. Review the citations — are they accurate?
+   2. Provide targeted feedback on what's still missing
+   3. Upload more focused documents if needed
+   4. Enhance again
+
+**Try Different Models**
+   Different LLM models have different strengths. In your ``.env``:
+   - **OpenAI gpt-4o**: Most capable, best for nuanced analysis
+   - **Anthropic Claude**: Excellent at reasoning and clarity
+   - **Local Ollama**: Privacy, no costs, but slightly lower quality
+   - **Google Gemini**: Fast and cost-effective
+
+   Try multiple models to see which fits your needs best.
+
+**Session Management**
+   Rocco saves your editing sessions automatically (with timestamps). You can reload an old session to continue iterating without losing work.
+
+What's Next?
+============
+
+- **Full configuration guide**: :doc:`configuration` — all LLM providers, models, and options
+- **Advanced usage**: :doc:`usage` — session management, batch evaluation, exporting results
+- **Under the hood**: :doc:`../developer_guide/architecture` — how Rocco works, extending it
+- **Contributing**: :doc:`../developer_guide/contributing` — report issues, contribute improvements

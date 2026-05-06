@@ -1,3 +1,39 @@
+# Environment variables
 .env
 *.env
-*__pycache__*
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# FAISS index artifacts
+*.faiss
+*.pkl
+faiss_index/
+
+# Streamlit session files
+sessions/
+session_*.json
+
+# Uploaded document temp dirs
+temp_*/
+
+# Uploaded documents
+*.pdf
+*.docx
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
