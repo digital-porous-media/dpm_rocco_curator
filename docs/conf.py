@@ -12,6 +12,7 @@ extensions = [
     "myst_parser",
     "sphinx_design",
     "sphinx_copybutton",
+    "sphinx_tabs.tabs",
 ]
 
 templates_path = ["_templates"]
@@ -40,7 +41,6 @@ html_theme_options = {
     },
     "sidebar_hide_name": False,
     "navigation_with_keys": True,
-    "navigation_depth": 1,
     "top_of_page_button": "edit",
     "source_repository": "https://github.com/digital-porous-media/dpm_rocco_curator/",
     "source_branch": "main",

@@ -35,19 +35,19 @@ System Diagram
    └─────────────────────────────────────────────────────────┘
                               ↓
    ┌─────────────────────────────────────────────────────────┐
-   │  Enhancement Pipeline (src/editor/)                     │
-   │  ─────────────────────────────────────────────────────  │
-   │  Input: orig description + RAG context + feedback       │
-   │  Process: prompt rendering + LLM call                   │
-   │  Output: enhanced description + citations               │
-   └─────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
    │  Content Screening (src/llm/content_screener.py)        │
    │  ─────────────────────────────────────────────────────  │
    │  Input: user feedback text                              │
    │  Process: relevance + accuracy + tone validation        │
    │  Output: accept/reject/flag for review                  │
+   └─────────────────────────────────────────────────────────┘
+                              ↓
+   ┌─────────────────────────────────────────────────────────┐
+   │  Enhancement Pipeline (src/editor/)                     │
+   │  ─────────────────────────────────────────────────────  │
+   │  Input: orig description + RAG context + feedback       │
+   │  Process: prompt rendering + LLM call                   │
+   │  Output: enhanced description + citations               │
    └─────────────────────────────────────────────────────────┘
                               ↓
    ┌─────────────────────────────────────────────────────────┐
@@ -254,6 +254,6 @@ For large document sets (100+ MB), consider batch ingestion or external vector s
 See Also
 --------
 
-- :doc:`../user_guide/usage` — User-facing workflow
+- :doc:`../user_guide/streamlit_app` — User-facing workflow
 - :doc:`../developer_guide/contributing` — Development guidelines
 - ``CLAUDE.md`` — Detailed implementation patterns

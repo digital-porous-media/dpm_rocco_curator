@@ -15,12 +15,12 @@ class ContentScreener:
         """
         Screen user provided content
 
-        Returns: {
-            'is_valid': bool,
-            'issues': list of issues found
-            'confidence': float (0-1)
-            'recommendation': str
-        }
+        Returns:
+            dict: Screening result with keys:
+                - is_valid (bool): Whether content is valid
+                - issues (list): Issues found
+                - confidence (float): Confidence score (0-1)
+                - recommendation (str): Recommended action
         """
 
         # Load prompt template and render

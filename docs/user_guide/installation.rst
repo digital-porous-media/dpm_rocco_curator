@@ -4,77 +4,74 @@ Installation
 Prerequisites
 -------------
 
-**Required software:**
-- **Python 3.9 or higher**
-- **pip** and **git**
-- **An LLM API key OR local Ollama** (see :doc:`configuration`)
+**Requirements:**
 
-**System requirements:**
+   - **Python 3.9 or higher**
+   - **An LLM API key OR local Ollama** (see :doc:`configuration`)
+   - **OS**: Linux, macOS, or Windows (WSL2 strongly recommended for Windows users)
 
-- **RAM**: 4GB minimum (8GB recommended for document processing)
-- **Disk**: 500MB for package + dependencies; additional space for vector stores and uploaded documents
-- **OS**: Linux, macOS, or Windows (WSL2 strongly recommended for Windows users)
+----
 
-Step 1: Clone the Repository
------------------------------
+Run the App (Researchers)
+--------------------------
 
-.. code-block:: bash
+Follow these steps to install Rocco and launch the Streamlit web interface.
 
-   git clone https://github.com/USER/dpm-rocco-curator.git
-   cd dpm-rocco-curator
+Step 1: Download the Release
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Step 2: Create a Virtual Environment
--------------------------------------
-
-It's recommended to use a Python virtual environment to isolate dependencies:
+Download the latest tagged release with a shallow clone:
 
 .. code-block:: bash
 
-   # Linux/macOS
-   python3 -m venv venv
-   source venv/bin/activate
+   git clone --branch v1.0.0 --depth 1 https://github.com/digital-porous-media/dpm_rocco_curator.git
+   cd dpm_rocco_curator
 
-   # Windows
-   python -m venv venv
-   venv\Scripts\activate
+.. tip::
 
-Step 3: Install the Package
----------------------------
+   Replace ``v1.0.0`` with a newer tag if one is available. See the
+   `Releases page <https://github.com/digital-porous-media/dpm_rocco_curator/releases>`_ for the latest version.
 
-Install Rocco in editable mode with development dependencies:
+.. tip::
+
+   **Optional: Use a virtual environment** — It's good practice to isolate Python dependencies:
+
+   .. code-block:: bash
+
+      # venv
+      python3 -m venv venv
+      source venv/bin/activate
+
+      # conda
+      conda create -n rocco_env python=3.12
+      conda activate rocco_env
+
+
+Step 2: Install the Package
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
-   pip install -e ".[dev]"
+   pip install .
 
-If you plan to use documentation features:
 
-.. code-block:: bash
+Step 3: Configure Your LLM Provider
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   pip install -e ".[docs,dev]"
-
-For Neo4j graph support (for future expansion):
-
-.. code-block:: bash
-
-   pip install -e ".[graph,dev]"
-
-Step 4: Configure Your LLM Provider
-------------------------------------
-
-Copy the environment template and configure it:
+Copy the environment template and fill in your credentials:
 
 .. code-block:: bash
 
    cp .env.example .env
    # Edit .env with your LLM provider credentials
+   LLM_PROVIDER=
+   LLM_API_KEY=
+   LLM_MODEL=
 
 See :doc:`configuration` for detailed provider setup.
 
-Step 5: Verify Installation
----------------------------
-
-Test that everything is working:
+Step 4: Verify Installation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -86,24 +83,28 @@ Test that everything is working:
 
 The app should open at ``http://localhost:8501``.
 
+----
+
 Troubleshooting
 ---------------
 
 **ImportError: No module named 'src'**
-   Make sure you're in the repository root directory and ran ``pip install -e .``
+   Make sure you're in the repository root directory and ran ``pip install .``
 
 **ModuleNotFoundError: No module named 'streamlit'**
-   The installation may have failed. Try: ``pip install --upgrade pip`` then ``pip install -e "."``.
+   The installation may have failed. Try: ``pip install --upgrade pip`` then ``pip install .``
 
 **streamlit: command not found**
    Ensure your virtual environment is activated and Streamlit was installed.
 
 **FAISS library issues**
-   Some systems require additional build tools. On macOS, try: ``pip install --upgrade faiss-cpu``. On Ubuntu, install: ``apt-get install python3-dev``.
+   Some systems require additional build tools. 
+   Try upgrading FAISS: ``pip install --upgrade faiss-cpu``
+
+----
 
 Next Steps
 ----------
 
 - Read the :doc:`quickstart` guide for your first evaluation
 - See :doc:`configuration` for all LLM provider options
-- Check :doc:`usage` for the full workflow

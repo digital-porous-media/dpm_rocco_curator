@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Rocco! We welcome bug reports, fe
 Getting Started
 ---------------
 
-See :doc:`../../CONTRIBUTING.md` for the full contribution guide, including:
+See the `CONTRIBUTING.md <https://github.com/digital-porous-media/dpm_rocco_curator/blob/main/CONTRIBUTING.md>`_ file for the full contribution guide, including:
 
 - Setting up a development environment
 - Code style and testing requirements
@@ -23,12 +23,29 @@ Quick Contribution Checklist
 5. **Commit** with clear messages
 6. **Push** and create a pull request
 
+Development Setup
+-----------------
+
+Clone the full repository (not a shallow clone) so you have the complete git history:
+
+.. code-block:: bash
+
+   git clone https://github.com/digital-porous-media/dpm_rocco_curator.git
+   cd dpm_rocco_curator
+   pip install -e ".[dev]"
+
+**Using Rocco as a library in another project** (without cloning):
+
+.. code-block:: bash
+
+   pip install git+https://github.com/digital-porous-media/dpm_rocco_curator.git@v1.0.0
+
 Development Commands
 --------------------
 
 .. code-block:: bash
 
-   # Install with dev dependencies
+   # Install with dev dependencies (editable mode)
    pip install -e ".[dev]"
 
    # Format code
@@ -195,13 +212,13 @@ We're committed to a welcoming, inclusive environment:
 - Give credit and acknowledge contributions
 - Report concerning behavior to maintainers
 
-See also: :doc:`../../CONTRIBUTING.md#code-of-conduct`
+See also: `Code of Conduct <https://github.com/digital-porous-media/dpm_rocco_curator/blob/main/CONTRIBUTING.md#code-of-conduct>`_
 
 Next Steps
 ----------
 
-- Pick a `good first issue <https://github.com/USER/dpm-rocco-curator/labels/good%20first%20issue>`_ to start
+- Pick a `good first issue <https://github.com/digital-porous-media/dpm_rocco_curator/labels/good%20first%20issue>`_ to start
 - Read :doc:`architecture` to understand the codebase
-- Join discussions on `GitHub Issues <https://github.com/USER/dpm-rocco-curator/issues>`_
+- Join discussions on `GitHub Issues <https://github.com/digital-porous-media/dpm_rocco_curator/issues>`_
 
 Thanks for contributing to Rocco! 🙏

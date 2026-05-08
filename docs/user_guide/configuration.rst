@@ -31,9 +31,8 @@ OpenAI (Default)
 Get an API key: https://platform.openai.com/api-keys
 
 **Model options:**
-- ``gpt-4o`` (most capable)
-- ``gpt-4o-mini`` (fast, cost-effective) — recommended for most use cases
-- ``gpt-4`` (older, still capable)
+
+Check https://developers.openai.com/api/docs/models for the latest available models and pricing.
 
 Anthropic (Claude)
 ~~~~~~~~~~~~~~~~~~~
@@ -49,9 +48,7 @@ Anthropic (Claude)
 Get an API key: https://console.anthropic.com/
 
 **Model options:**
-- ``claude-opus-4-7`` (most capable)
-- ``claude-sonnet-4-6`` (balanced)
-- ``claude-haiku-4`` (fast, cost-effective)
+Check https://platform.claude.com/docs/en/about-claude/models/overview for the latest available models and pricing. 
 
 Google Gemini
 ~~~~~~~~~~~~~~
@@ -67,8 +64,8 @@ Google Gemini
 Get an API key: https://aistudio.google.com/app/apikey
 
 **Model options:**
-- ``gemini-2.0-flash`` (latest, fastest)
-- ``gemini-1.5-pro`` (most capable)
+Check https://ai.google.dev/gemini-api/docs/models for the latest available models and pricing. 
+
 
 DeepSeek
 ~~~~~~~~~
@@ -84,8 +81,8 @@ DeepSeek
 Get an API key: https://platform.deepseek.com/
 
 **Model options:**
-- ``deepseek-chat`` (standard)
-- ``deepseek-reasoner`` (extended reasoning)
+Check https://api-docs.deepseek.com/quick_start/pricing for the latest available models and pricing. 
+
 
 HuggingFace (Serverless Inference)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -100,43 +97,13 @@ HuggingFace (Serverless Inference)
 
 Get an API key: https://huggingface.co/settings/tokens
 
-**Model options:** Any instruction-tuned model ID from HuggingFace Hub, e.g.:
-- ``meta-llama/Llama-3.1-8B-Instruct``
-- ``meta-llama/Llama-3.1-70B-Instruct``
-- ``mistralai/Mistral-7B-Instruct-v0.2``
-- ``mistralai/Mixtral-8x7B-Instruct-v0.1``
+**Model options:** Use only *instruction-tuned* model ID from [HuggingFace Hub](https://huggingface.co/models?sort=trending&search=instruction)
 
-**Important caveats:**
-- **Only instruction-tuned models work** (not base/pretrained models)
-- **Free tier is heavily rate-limited** — HF Pro subscription or Inference Endpoints recommended for production use
-- **Gated models** (e.g., Llama models) require you to: (1) accept the model's license on HF Hub, (2) use a token with model access
-- **Not all OpenAI features supported** — advanced fields like ``tool_calls``, ``logprobs``, and structured outputs may not work depending on model/TGI version
+.. warning:: **Important caveats:**
 
-HuggingFace Text Generation Inference (TGI) — Self-Hosted
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Best for:** Custom fine-tuned models or if you need full control over compute resources.
-
-Deploy Text Generation Inference locally or on your own infrastructure with the OpenAI-compatible API:
-
-.. code-block:: bash
-
-   docker run -p 8080:80 \
-     --shm-size 1g \
-     -e MODEL_ID=meta-llama/Llama-2-7b-chat \
-     ghcr.io/huggingface/text-generation-inference:latest \
-     --openai-compatible-api
-
-Then configure Rocco:
-
-.. code-block:: ini
-
-   LLM_PROVIDER=openai_compatible
-   LLM_API_KEY=unused-for-local-tgi
-   LLM_BASE_URL=http://localhost:8080/v1
-   LLM_MODEL=meta-llama/Llama-2-7b-chat
-
-**Model options:** Any model ID from HuggingFace Hub (local or via Inference Endpoints)
+   - **Only instruction-tuned models work** (not base/pretrained models)
+   - **Free tier is heavily rate-limited** — HF Pro subscription or Inference Endpoints recommended
+   - **Not all models support OpenAI-compatible API** — check model docs for compatibility
 
 Ollama (Local)
 ~~~~~~~~~~~~~~
@@ -208,13 +175,6 @@ Edit your ``.env`` file:
    LLM_MODEL=llama2
 
 **Available models:** ``llama2``, ``llama3``, ``mistral``, ``phi3``, ``neural-chat``, etc. (any model you've pulled)
-
-**Performance notes:**
-- Local Ollama requires 4–8GB RAM depending on model size
-- Recommend ``llama2`` (7B, 4GB) or ``mistral`` (7B, 4GB) for general use
-- Larger models like ``llama3`` (7B, 7GB) or ``mistral`` (8x7B, 8GB) offer better quality but require more resources
-- First run of a model may take longer (loading into memory)
-- **Windows WSL2 tip:** Keep the ``ollama serve`` terminal open in the background while using Rocco
 
 SambaNova (TACC)
 ~~~~~~~~~~~~~~~~
@@ -295,13 +255,6 @@ Troubleshooting
 
 **"Model not found"**
    Verify the model name is correct for the provider (e.g., ``gpt-4o-mini`` for OpenAI, not ``gpt-4``).
-
-Performance Tuning
-------------------
-
-- **Fast inference**: Use ``gpt-4o-mini``, ``gemini-2.0-flash``, or local Ollama
-- **Best quality**: Use ``gpt-4o``, ``claude-opus-4-7``, or ``deepseek-reasoner``
-- **Cost-effective**: Use ``gemini-2.0-flash`` or local Ollama
 
 Next Steps
 ==========

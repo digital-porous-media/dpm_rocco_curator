@@ -4,7 +4,7 @@ Rocco — AI Curator for Dataset Descriptions
 .. raw:: html
 
    <p class="rocco-tagline">
-     AI-powered description evaluation &amp; enhancement for the
+     AI-powered dataset description evaluation &amp; enhancement framework for the
      <strong>Digital Porous Media Portal</strong>.
    </p>
 
@@ -12,26 +12,61 @@ Rocco — AI Curator for Dataset Descriptions
    :gutter: 3
    :class-container: rocco-hero-grid
 
-   .. grid-item-card:: Evaluate
+   .. grid-item-card:: :octicon:`book;1em` Rubric-Based Evaluation
       :link: user_guide/evaluator
       :link-type: doc
       :text-align: center
 
-      Score any dataset description against a **10-criterion research rubric**.
+      Score any dataset description against **10 domain-specific criteria**.
 
-   .. grid-item-card:: Enhance
+   .. grid-item-card:: :octicon:`search;1em` RAG-Powered Enhancement
       :link: user_guide/writer
       :link-type: doc
       :text-align: center
 
-      Improve descriptions with **RAG-powered suggestions** drawn from your papers.
+      Improve descriptions with relevant excerpts drawn from your papers.
 
-   .. grid-item-card:: Iterate
+   .. grid-item-card:: :octicon:`sync;1em` Iterate
       :link: user_guide/streamlit_app
       :link-type: doc
       :text-align: center
 
       Refine with **interactive feedback** across multiple rounds until your description is publication-ready.
+
+----
+
+Getting Started Locally
+-----------------------
+
+.. tab-set::
+
+   .. tab-item:: Quick Install
+
+      .. code-block:: bash
+
+         git clone --branch v1.0.0 --depth 1 https://github.com/digital-porous-media/dpm_rocco_curator.git
+         cd dpm_rocco_curator
+         pip install .
+
+   .. tab-item:: Configure LLM Endpoints
+
+      .. code-block:: bash
+
+         cp .env.example .env
+
+         # Edit .env to set LLM_PROVIDER, LLM_API_KEY, LLM_MODEL.
+         # Rocco supports OpenAI-compatible APIs (OpenAI, Anthropic, Gemini, HuggingFace, Ollama, and more!)
+
+
+   .. tab-item:: Run Rocco UI
+
+      .. code-block:: bash
+
+         streamlit run rocco_ui.py
+
+         # Opens at http://localhost:8501
+
+For a full walkthrough, see :doc:`user_guide/quickstart`.
 
 ----
 
@@ -64,55 +99,4 @@ Rocco — AI Curator for Dataset Descriptions
    developer_guide/architecture
    developer_guide/contributing
    developer_guide/api_reference
-
-----
-
-Getting Started
----------------
-
-.. tab-set::
-
-   .. tab-item:: Quick Install
-
-      .. code-block:: bash
-
-         git clone https://github.com/digital-porous-media/dpm_rocco_curator.git
-         cd dpm_rocco_curator
-         pip install -e .
-
-   .. tab-item:: Configure LLM
-
-      .. code-block:: bash
-
-         cp .env.example .env
-         # Set LLM_API_KEY, LLM_MODEL, etc.
-         # Supports OpenAI-compatible endpoints (OpenAI, Anthropic, Gemini, Ollama, and more!)
-
-   .. tab-item:: Run
-
-      .. code-block:: bash
-
-         streamlit run rocco_ui.py
-         # Opens at http://localhost:8501
-
-For a full walkthrough, see :doc:`user_guide/quickstart`.
-
-----
-
-.. grid:: 3
-   :gutter: 2
-
-   .. grid-item-card:: :octicon:`book;1em` Rubric-Based Scoring
-      :class-card: rocco-feature-card
-
-      10 domain-specific criteria covering completeness, methodology, reproducibility, accessibility, and more.
-
-   .. grid-item-card:: :octicon:`search;1em` RAG-Powered
-      :class-card: rocco-feature-card
-
-      Upload PDFs and DOCX files — Rocco retrieves relevant excerpts and adds them with proper citations.
-
-   .. grid-item-card:: :octicon:`plug;1em` Provider-Agnostic
-      :class-card: rocco-feature-card
-
-      Works with OpenAI, Anthropic, Gemini, DeepSeek, Ollama, HuggingFace, and any OpenAI-compatible endpoint.
+   developer_guide/prompts
