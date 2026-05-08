@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.1.0"
 description: "Expert data curator editor for improving dataset descriptions using rubric feedback and RAG context"
 
 user: |
@@ -87,20 +87,29 @@ user: |
 
   ## EXAMPLES OF PROPER CITATIONS:
 
-  Example 1 - Adding methodology details:
+  Example 1 - Adding methodology details (from context chunk):
   Statement: "Micro-CT imaging was performed at 2.5 μm resolution"
   Source: "context_chunk"
   Quote: "The sample was scanned using micro-CT at a voxel size of 2.5 micrometers"
+  doc_title: "Pak_2015_BereaSandstone"
+  page: 3
+  chunk_index: 7
 
-  Example 2 - Adding sample information:
+  Example 2 - Adding sample information (from context chunk):
   Statement: "The Berea sandstone sample was obtained from a depth of 1200 meters"
   Source: "context_chunk"
   Quote: "Core samples were extracted from the Berea formation at 1200m depth"
+  doc_title: "Pak_2015_BereaSandstone"
+  page: 5
+  chunk_index: 12
 
-  Example 3 - Clarifying from original:
+  Example 3 - Clarifying from original (no document metadata):
   Statement: "The dataset contains raw and processed CT images"
   Source: "original_description"
   Quote: "includes both raw scans and segmented images"
+  doc_title: null
+  page: null
+  chunk_index: null
 
   ## OUTPUT FORMAT
   Provide your response as a JSON object with this structure:
@@ -113,12 +122,19 @@ user: |
           {
             "statement": "Specific statement from your improved description",
             "source": "original_description, context_chunk, or user_feedback",
-            "quote": "Exact quote from the source"
+            "quote": "Exact quote from the source",
+            "doc_title": "Document filename (for context_chunk only, else null)",
+            "page": 3,
+            "chunk_index": 7
           }
         ]
       }
     ]
   }
+
+  CITATION METADATA RULES:
+  - For `context_chunk` sources: populate `doc_title`, `page`, and `chunk_index` from the chunk header line "Source: <doc_title>, Page <page>, Chunk <chunk_index>" that appears above the chunk content.
+  - For `original_description` or `user_feedback` sources: set `doc_title`, `page`, and `chunk_index` to null.
 
   CRITICAL: The 'updated_description' field must contain ONLY the clean, polished description text with NO citation markers, brackets, or references like [CONTEXT_CHUNK_1]. All citations belong ONLY in the 'citations' array.
   Do not provide any additional text outside the JSON.

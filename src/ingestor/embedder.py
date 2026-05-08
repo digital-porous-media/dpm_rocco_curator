@@ -32,6 +32,12 @@ class DocumentEmbedder(BaseEmbedder):
         model_kwargs: Optional[Dict[str, Any]] = None,
         encode_kwargs: Optional[Dict[str, Any]] = None
     ):
+        """
+        Args:
+            model_name: HuggingFace model ID for embeddings. Defaults to ``"BAAI/bge-large-en-v1.5"``.
+            model_kwargs: Passed to ``HuggingFaceEmbeddings`` (e.g., ``{"device": "cuda"}``). Defaults to CPU.
+            encode_kwargs: Passed to the encode call (e.g., ``{"normalize_embeddings": True}``).
+        """
         self.model_name = model_name
         self.model_kwargs = model_kwargs or {'device': 'cpu'}
         self.encode_kwargs = encode_kwargs or {'normalize_embeddings': True}
@@ -43,11 +49,14 @@ class DocumentEmbedder(BaseEmbedder):
         )
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed a list of document strings and return their dense vectors."""
         return self.embeddings.embed_documents(texts)
-    
+
     def embed_query(self, text: str) -> List[float]:
+        """Embed a single query string and return its dense vector."""
         return self.embeddings.embed_query(text)
-    
+
     def get_embeddings(self) -> Embeddings:
+        """Return the underlying LangChain ``Embeddings`` object (e.g., for use with FAISS)."""
         return self.embeddings
     

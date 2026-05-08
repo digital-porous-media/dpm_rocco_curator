@@ -228,6 +228,13 @@ if st.session_state.enhanced_description:
                         with st.expander(f"Citation {i}: {citation.statement[:50]}..."):
                             st.write(f"**Statement:** {citation.statement}")
                             st.write(f"**Source:** {citation.source}")
+                            if citation.doc_title:
+                                loc_parts = [f"*{citation.doc_title}*"]
+                                if citation.page is not None:
+                                    loc_parts.append(f"p. {citation.page + 1}")
+                                if citation.chunk_index is not None:
+                                    loc_parts.append(f"chunk {citation.chunk_index}")
+                                st.write(f"**Document:** {', '.join(loc_parts)}")
                             st.write(f"**Quote:** _{citation.quote}_")
                 else:
                     st.info("No citations available")

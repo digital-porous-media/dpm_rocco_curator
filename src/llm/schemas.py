@@ -5,6 +5,7 @@ from datetime import datetime
 
 @dataclass
 class RubricItem:
+    """One criterion from the evaluation rubric, with its score and explanation."""
     criterion: str
     score: float
     explanation: str = None
@@ -65,6 +66,7 @@ class EditingSession(BaseModel):
     
 @dataclass
 class PDFChunk:
+    """A single text chunk extracted from a PDF, optionally with its embedding vector."""
     chunk_id: str
     text: str
     embedding: Optional[List[float]] = None

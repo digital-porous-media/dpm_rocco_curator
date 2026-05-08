@@ -5,6 +5,10 @@ import json
 class ContentScreener:
     """Screen contents for usefulness"""
     def __init__(self, model: RoccoClient):
+        """
+        Args:
+            model: Configured :class:`~src.llm.client.RoccoClient` used to call the LLM.
+        """
         self.model = model
     
     def screen_user_content(self, content: str, context: str = None) -> dict:

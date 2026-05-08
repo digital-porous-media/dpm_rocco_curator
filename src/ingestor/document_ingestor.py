@@ -15,6 +15,13 @@ class DocumentIngestor(BaseIngestor):
         chunk_overlap: int = 100,
         separators: Optional[List[str]] = None,
     ):
+        """
+        Args:
+            chunk_size: Maximum character length per chunk. Must be >= 100. Defaults to 500.
+            chunk_overlap: Character overlap between consecutive chunks. Must be < ``chunk_size``. Defaults to 100.
+            separators: Ordered list of separators tried by ``RecursiveCharacterTextSplitter``.
+                Defaults to ``["\\n\\n", "\\n", ".", " ", ""]``.
+        """
         if chunk_overlap >= chunk_size:
             raise ValueError(
                 f"chunk_overlap ({chunk_overlap}) must be less than chunk_size ({chunk_size})"

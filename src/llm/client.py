@@ -29,6 +29,15 @@ class LLMClient:
         provider: str = None,
         timeout: int = 60
     ):
+        """
+        Args:
+            api_url: Base URL for the LLM API endpoint. Overrides ``LLM_BASE_URL`` env var.
+            api_key: API key. Overrides ``LLM_API_KEY`` env var. Defaults to ``"ollama"`` for local Ollama.
+            model: Model name. Overrides ``LLM_MODEL`` env var. Defaults to ``"gpt-4o-mini"``.
+            provider: Shortcut alias (``openai``, ``anthropic``, ``gemini``, ``deepseek``,
+                ``huggingface``, ``ollama``, ``sambanova``). Overrides ``LLM_PROVIDER`` env var.
+            timeout: Request timeout in seconds. Defaults to 60.
+        """
         # Load from environment with fallback order:
         # 1. Direct parameter
         # 2. Environment variable
@@ -72,6 +81,7 @@ class LLMClient:
         
     
     def list_models(self) -> List[str]:
+        """Return a list of model IDs available from the configured provider endpoint."""
         try:
             self.logger.info("Listing available models...")
             response = self.client.models.list()
@@ -116,6 +126,7 @@ class RoccoClient(LLMClient):
     RoccoClient extends LLMClient for specific Rocco interactions.
     """
     def __init__(self, api_url: str = None, api_key: str = None, model: str = None, provider: str = None, timeout: int = 60):
+        """Thin subclass of :class:`LLMClient` with Rocco-specific helper stubs. All parameters are forwarded to ``LLMClient.__init__``."""
         super().__init__(api_url, api_key, model, provider, timeout)
         
     def evaluate_description(self, draft_text: str, rubric: Dict[str, Any], examples: List[Dict[str, Any]], context: Optional[List[str]] = None) -> str:

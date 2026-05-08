@@ -254,7 +254,10 @@ class DescriptionEditor:
                     citations.append(Citation(
                         statement=cit["statement"],
                         source=cit["source"],
-                        quote=cit["quote"]
+                        quote=cit["quote"],
+                        doc_title=cit.get("doc_title"),
+                        page=cit.get("page"),
+                        chunk_index=cit.get("chunk_index"),
                     ))
                     
             updated_desc = EditorOutput(
@@ -294,4 +297,5 @@ class DescriptionEditor:
             print(f"Source Quote: {item.quote}\n")
     
     def reset_conversation_history(self):
+        """Clear all stored conversation turns, starting a fresh refinement session."""
         self.conversation_history = []
