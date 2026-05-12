@@ -20,8 +20,6 @@ Supported LLM Providers
 OpenAI (Default)
 ~~~~~~~~~~~~~~~~
 
-**Best for:** General-purpose, reliable, good performance.
-
 .. code-block:: ini
 
    LLM_PROVIDER=openai
@@ -34,10 +32,19 @@ Get an API key: https://platform.openai.com/api-keys
 
 Check https://developers.openai.com/api/docs/models for the latest available models and pricing.
 
+SambaNova
+~~~~~~~~~~~~~~~~
+
+.. code-block:: ini
+
+   LLM_PROVIDER=sambanova
+   LLM_API_KEY=sk-your-key-here
+   LLM_MODEL=Llama-4-Maverick-17B-128E-Instruct
+
+**SambaNova at TACC endpoint:** https://ai.tejas.tacc.utexas.edu/v1
+
 Anthropic (Claude)
 ~~~~~~~~~~~~~~~~~~~
-
-**Best for:** Extended reasoning, good at nuanced analysis.
 
 .. code-block:: ini
 
@@ -48,12 +55,10 @@ Anthropic (Claude)
 Get an API key: https://console.anthropic.com/
 
 **Model options:**
-Check https://platform.claude.com/docs/en/about-claude/models/overview for the latest available models and pricing. 
+Check https://platform.claude.com/docs/en/about-claude/models/overview for the latest available models and pricing.
 
 Google Gemini
 ~~~~~~~~~~~~~~
-
-**Best for:** Competitive pricing, fast inference.
 
 .. code-block:: ini
 
@@ -64,13 +69,11 @@ Google Gemini
 Get an API key: https://aistudio.google.com/app/apikey
 
 **Model options:**
-Check https://ai.google.dev/gemini-api/docs/models for the latest available models and pricing. 
+Check https://ai.google.dev/gemini-api/docs/models for the latest available models and pricing.
 
 
 DeepSeek
 ~~~~~~~~~
-
-**Best for:** Cost-effective, good reasoning.
 
 .. code-block:: ini
 
@@ -81,13 +84,11 @@ DeepSeek
 Get an API key: https://platform.deepseek.com/
 
 **Model options:**
-Check https://api-docs.deepseek.com/quick_start/pricing for the latest available models and pricing. 
+Check https://api-docs.deepseek.com/quick_start/pricing for the latest available models and pricing.
 
 
 HuggingFace (Serverless Inference)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Best for:** Easy access to open-source instruction-tuned models without infrastructure setup.
 
 .. code-block:: ini
 
@@ -108,36 +109,35 @@ Get an API key: https://huggingface.co/settings/tokens
 Ollama (Local)
 ~~~~~~~~~~~~~~
 
-**Best for:** Privacy, no API costs, complete control, reproducible local development.
+Ollama runs locally on your machine.
 
-Ollama runs locally on your machine. We **recommend installing Ollama on WSL2 (Windows Subsystem for Linux)** if you're on Windows, rather than the Windows Desktop app, as it provides better integration with development tools.
+**Installing Ollama**
+If you haven't installed Ollama yet, you can do so from the command line.
 
-**Setup on Windows (WSL2)**
+For more information, see the [Ollama installation guide](https://ollama.com/download).
 
-If you don't have WSL2 installed, see `Windows Subsystem for Linux Installation <https://learn.microsoft.com/en-us/windows/wsl/install>`_.
+.. note::
+   We **recommend installing Ollama on WSL2 (Windows Subsystem for Linux)** if you're on Windows, rather than the Windows Desktop app, as it provides better integration with development tools.
 
-1. Install Ollama in WSL2:
+   If you don't have WSL2 installed, see `Windows Subsystem for Linux Installation <https://learn.microsoft.com/en-us/windows/wsl/install>`_.
+
+1. Install Ollama from the command line:
 
    .. code-block:: bash
 
-      # Install Ollama in WSL2
-      curl -fsSL https://ollama.ai/install.sh | sh
+      curl -fsSL https://ollama.com/install.sh | sh
 
-2. Start Ollama in a separate terminal (keep it running):
+2. Start Ollama:
 
    .. code-block:: bash
 
       ollama serve
 
-3. In another terminal, pull a model:
+3. In another terminal, pull a model (e.g., llama2):
 
    .. code-block:: bash
 
-      ollama pull llama2      # ~4GB, fast, good balance
-      # or
-      ollama pull llama3      # ~7GB, higher quality
-      # or
-      ollama pull mistral     # ~4GB, very capable
+      ollama pull llama2
 
 4. Verify Ollama is running:
 
@@ -145,23 +145,6 @@ If you don't have WSL2 installed, see `Windows Subsystem for Linux Installation 
 
       curl http://localhost:11434/api/tags
 
-**Setup on macOS/Linux**
-
-1. Download and install from https://ollama.ai
-
-2. Start Ollama (runs in background):
-
-   .. code-block:: bash
-
-      ollama serve
-
-3. Pull a model:
-
-   .. code-block:: bash
-
-      ollama pull llama2      # Recommended for most use cases
-      ollama pull llama3      # Larger, higher quality
-      ollama pull mistral     # Fast and capable
 
 **Configure Rocco for Ollama**
 
@@ -176,18 +159,7 @@ Edit your ``.env`` file:
 
 **Available models:** ``llama2``, ``llama3``, ``mistral``, ``phi3``, ``neural-chat``, etc. (any model you've pulled)
 
-SambaNova (TACC)
-~~~~~~~~~~~~~~~~
 
-**Best for:** High-performance institutional setups.
-
-.. code-block:: ini
-
-   LLM_PROVIDER=sambanova
-   LLM_API_KEY=sk-your-key-here
-   LLM_MODEL=Llama-4-Maverick-17B-128E-Instruct
-
-**SambaNova endpoint:** https://ai.tejas.tacc.utexas.edu/v1
 
 Custom OpenAI-Compatible Endpoint
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -209,8 +181,10 @@ The API must expose a ``/v1/chat/completions`` endpoint with the same request/re
 - Any proxy or router that wraps an LLM with OpenAI API compatibility
 
 **If your endpoint is NOT OpenAI-compatible** (e.g., native HuggingFace API, custom format), you'll need to:
-1. Wrap your API with an OpenAI-compatible adapter, OR
+
+1. Wrap your API with an OpenAI-compatible adapter, **OR**
 2. Fork Rocco and modify ``src/llm/client.py`` to support your specific API format
+
 
 Environment Variable Reference
 -------------------------------
@@ -238,7 +212,7 @@ Variable            Required?  Description
 Changing Providers
 ------------------
 
-To switch providers at runtime, just edit ``.env`` and restart the Streamlit app (press **R** in the browser).
+To switch providers at runtime, just edit ``.env`` and restart the Streamlit app.
 
 
 Troubleshooting

@@ -1,8 +1,8 @@
 Evaluator
 =========
 
-The Evaluator scores a dataset description against a 10-criterion rubric designed for porous media
-research datasets. Each criterion is worth 1 point, giving a total of 0–10.
+The Evaluator scores a dataset description against a 10-criterion rubric. The rubric is currently designed for porous media research datasets, but is easily adaptable to other domains (see :doc:`/developer_guide/prompts`).
+Each criterion is worth 1 point, giving a total of 10 possible points.
 
 What It Does
 ------------
@@ -10,9 +10,9 @@ What It Does
 Given a plain-text description, the Evaluator:
 
 1. Loads the rubric from ``src/evaluator/rubric.json`` and three few-shot examples from ``src/evaluator/examples_v3.json``
-2. Builds a system prompt containing the rubric (as JSON) and the few-shot examples
+2. Builds a system prompt containing the rubric and the few-shot examples
 3. Sends the description to the configured LLM and asks for a structured breakdown
-4. Returns a ``EvaluatorOutput`` containing the per-criterion scores and an overall total
+4. Returns an ``EvaluatorOutput`` object containing the per-criterion scores and an overall total
 
 The Evaluation Rubric
 ---------------------
@@ -58,12 +58,10 @@ Score Interpretation
    * - **6–7**
      - Good. Minor gaps; a single round of enhancement typically brings it to 8+.
    * - **4–5**
-     - Fair. Significant gaps in methodology or context; multiple rounds needed.
+     - Fair. Significant gaps to address during the enhancement process.
    * - **0–3**
-     - Poor. Description is too vague or incomplete to stand alone.
+     - Poor. Description is too vague or incomplete.
 
-Raw descriptions from researchers often score 4–6. Don't be discouraged — that is what the
-Writer is for.
 
 How the Prompt Works
 --------------------
@@ -94,7 +92,7 @@ Running Without the UI
    client = RoccoClient()           # reads LLM_* from .env
    evaluator = DescriptionEvaluator(client, rubric, examples)
 
-   description = "Micro-CT images of Berea sandstone at 2 µm voxel resolution..."
+   description = "This dataset contains micro-CT images of Berea sandstone ... "
    result = evaluator.evaluate(description)
 
    print(f"Score: {result.total_score}/10")
@@ -135,11 +133,6 @@ If you need to add, remove, or reword criteria:
 1. Edit ``src/evaluator/rubric.json``
 2. Update ``src/evaluator/examples_v3.json`` so the few-shot examples reflect the new criteria
 3. Bump the version in ``src/prompts/evaluator.yaml`` (major version if the score scale changes)
-
-.. warning::
-
-   Adding or removing criteria changes the maximum score. Any stored scores from a previous rubric
-   version are not comparable to scores from the updated rubric.
 
 See Also
 --------

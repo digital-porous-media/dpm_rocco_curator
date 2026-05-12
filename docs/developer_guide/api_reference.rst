@@ -4,20 +4,21 @@ API Reference
 Auto-generated documentation for all public classes and functions.
 Click any section header to expand it.
 
-.. dropdown:: Evaluator
+.. dropdown:: LLM Client
    :open:
+
+   .. automodule:: src.llm.client
+      :members:
+      :undoc-members:
+      :show-inheritance:
+
+.. dropdown:: Evaluator
 
    .. automodule:: src.evaluator.evaluator
       :members:
       :undoc-members:
       :show-inheritance:
 
-.. dropdown:: LLM Client
-
-   .. automodule:: src.llm.client
-      :members:
-      :undoc-members:
-      :show-inheritance:
 
 .. dropdown:: Editor
 

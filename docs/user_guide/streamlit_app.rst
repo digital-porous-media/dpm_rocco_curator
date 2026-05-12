@@ -1,8 +1,8 @@
 Streamlit App
 =============
 
-The Description Curator ships with an interactive web app built on `Streamlit <https://streamlit.io>`_.
-It puts all three components — Evaluator, RAG, and Writer — behind a single browser-based workflow
+Rocco's description enhancement tool ships with an interactive web app built on `Streamlit <https://streamlit.io>`_.
+It puts the Evaluator, RAG, and Writer components behind a single browser-based workflow
 with no coding required.
 
 Launching the App
@@ -21,14 +21,12 @@ The Interface
    :alt: Rocco main interface
    :align: center
 
-   *Screenshot placeholder — add after capturing the UI.*
-
 Step-by-Step Workflow
 ---------------------
 
 **1. Enter a description**
 
-Paste your dataset description into the text area on the left. It can be a few sentences or multiple paragraphs.
+Paste your dataset description into the text area.
 
 **2. Evaluate**
 
@@ -36,11 +34,11 @@ Click **"Evaluate Description"** to score the description against the 10-criteri
 The panel shows:
 
 - A total score out of 10
-- Per-criterion pass/fail with a brief explanation of what is missing or well-covered
+- Per-criterion score (out of 1) with a brief explanation of what is missing or well-covered
 
 See :doc:`evaluator` for a detailed breakdown of each criterion.
 
-**3. Upload context documents** *(optional)*
+**3a. Upload context documents**
 
 Click **"Upload Files"** and select one or more PDFs or DOCX files — method papers, technical protocols,
 or related datasets. Rocco chunks and embeds them into a local FAISS index that persists for the duration
@@ -48,15 +46,17 @@ of your browser session.
 
 See :doc:`rag` for details on how ingestion and retrieval work.
 
-**4. Write feedback and enhance**
+**3b. Write feedback**
 
-Type specific feedback in the text area, for example:
+Type specific feedback in the text area. These can include, but are not limited to:
 
-- *"Add sample preparation details"*
-- *"Explain which segmentation algorithm was used"*
-- *"Include porosity or permeability measurements if available"*
+- Sample preparation details
+- Algorithms, models, simulators, or other computational methods used for image processing and analysis
+- Measurements from experiment, if available
 
-Then click **"Enhance with Rocco"**. Rocco first screens your feedback (see :doc:`writer`), then
+**4. Enhance the description**
+
+Click **"Enhance with Rocco"**. Rocco first screens your feedback (see :doc:`writer`), then
 retrieves relevant excerpts from your uploaded documents and produces an improved description.
 
 **5. Review results**
@@ -65,19 +65,36 @@ retrieves relevant excerpts from your uploaded documents and produces an improve
    :alt: Rocco enhancement result with citations
    :align: center
 
-   *Screenshot placeholder — add after capturing the enhancement result panel.*
-
 The enhanced description appears alongside:
 
-- A **rationale** summarising what changed and why
+- A **rationale** overviewing major changes
 - **Citations** — each added or modified statement is traced to its source (your feedback, an uploaded paper, or the original description)
 
-You can accept, reject, or manually edit the result, then enhance again.
+You can manually edit the result, accept, or reject any changes, then enhance again.
 
-**6. Iterate**
+**6. Manage context (optional)**
 
-Click **"Enhance with Rocco"** again with new feedback. Rocco carries the full conversation history
-across rounds, so each pass builds on the previous one.
+After accepting or rejecting an enhancement and re-evaluating, a **"Manage Context (Prior Turns)"**
+expander appears below the evaluation and enhancement columns. Each prior (feedback → result) pair
+is shown as a card with a checkbox.
+
+For each turn, you can:
+
+- **Uncheck** to exclude it from the next prompt — useful when old constraints are no longer relevant.
+- **Edit** the feedback text inline to refine what the model sees. Edits persist within the session.
+- **Review context** — each turn shows which document chunks were retrieved (document title, page, and snippet).
+- **Review result** — a preview of the enhanced description from that turn.
+
+To wipe the entire enhancement thread and start fresh, click **"Clear history"** inside the Context Manager.
+
+**7. Iterate**
+
+Accepting the enhanced description makes it the new starting point for subsequent iterations.
+
+Click **"Evaluate Description"** to score the enhanced description against the 10-criterion rubric.
+
+If the score is not satisfactory, manage your prior turns in the Context Manager, then click **"Enhance with Rocco"**
+again with new feedback.
 
 Reading Citations
 -----------------
@@ -93,11 +110,11 @@ Each citation in the result shows:
    * - ``statement``
      - The specific sentence or clause that was added or changed
    * - ``source``
-     - Where it came from: ``original_description``, ``context_chunk``, or ``user_feedback``
+     - Where it came from: ``original_description``, ``uploaded_document``, or ``user_feedback``
    * - ``quote``
      - The verbatim excerpt from the source that supports the statement
    * - ``doc_title``
-     - Filename (without extension) of the uploaded paper, if ``source`` is ``context_chunk``
+     - Filename (without extension) of the uploaded paper, if ``source`` is ``uploaded_document``
    * - ``page``
      - Page number in the source PDF, if available
 
@@ -130,8 +147,9 @@ Good for descriptions intended for publication or archival.
 
 **Iterative refinement**
 
-Start from a low-scoring draft. Evaluate → enhance → review → evaluate again. Repeat with progressively
-more specific feedback until the score reaches 8+. Good for preparing high-quality submissions.
+Start from a low-scoring draft. Evaluate → enhance → review → evaluate again. Use the Context Manager
+to selectively include/exclude prior turns and refine feedback.
+
 
 Troubleshooting
 ---------------

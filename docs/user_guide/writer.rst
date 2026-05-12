@@ -32,7 +32,7 @@ The screener returns one of three recommendations:
 
 - ``accept`` — feedback is passed to the editor unchanged
 - ``reject`` — feedback is discarded; you will be asked to rewrite it
-- ``flag_for_review`` — feedback is shown in the UI with a warning for human review before proceeding
+- ``flag_for_review`` — feedback is shown in the UI with a warning for your review before proceeding
 
 The screener prompt is stored in ``src/prompts/content_screener.yaml``.
 
@@ -49,20 +49,20 @@ The enhancement prompt (``src/prompts/editor.yaml``) receives four inputs:
 The LLM is instructed to:
 
 - Improve the description while staying faithful to verifiable facts
-- Add information *only* when it can be traced to a context chunk, the original description, or your explicit feedback
+- Add information *only* when it can be traced to a context chunk from an uploaded document, the original description, or your explicit feedback
 - Return a structured JSON object with the improved text, a rationale, and a citation list
 
 Citations
 ---------
 
-Every statement added or substantially changed in the enhanced description gets a citation:
+Every statement added or substantially changed in the enhanced description gets a citation. An example citation might look like:
 
 .. code-block:: json
 
    {
-     "statement": "The samples were prepared following ASTM standards for core handling.",
-     "source": "context_chunk",
-     "quote": "...standard core handling protocols (standardized in ASTM standards)...",
+     "statement": "The raw images were segmented into solid and pore phases using Otsu's method.",
+     "source": "uploaded_document",
+     "quote": "...segmentation was performed using Otsu's method...",
      "doc_title": "Smith_et_al_2015",
      "page": 3,
      "chunk_index": 5
@@ -71,7 +71,7 @@ Every statement added or substantially changed in the enhanced description gets 
 **Source types:**
 
 - ``original_description`` — the claim was already present in your original text
-- ``context_chunk`` — the claim is supported by an uploaded document; ``doc_title``, ``page``, and ``chunk_index`` point to the exact passage
+- ``uploaded_document`` — the claim is supported by an uploaded document; ``doc_title``, ``page``, and ``chunk_index`` point to the exact passage
 - ``user_feedback`` — the claim came directly from your written feedback
 
 Always verify citations before publishing: the LLM may occasionally link a statement to a passage
@@ -99,9 +99,9 @@ Running Without the UI
    editor = DescriptionEditor(client, rubric, vsm)
 
    result = editor.enhance(
-       draft_text="Berea sandstone micro-CT images at 2 µm voxel resolution.",
+       draft_text="This dataset contains micro-CT images of Berea sandstone ...",
        draft_evaluation=None,       # pass an EvaluatorOutput if available
-       user_feedback="Add sample preparation and segmentation method details.",
+       user_feedback="The samples were imaged at 2 µm voxel resolution.",
    )
 
    print(result.suggested_text)
@@ -172,9 +172,9 @@ Output Schema
 
    class Citation(BaseModel):
        statement:   str
-       source:      str             # "original_description" | "context_chunk" | "user_feedback"
+       source:      str             # "original_description" | "uploaded_document" | "user_feedback"
        quote:       str
-       doc_title:   Optional[str]   # for context_chunk sources
+       doc_title:   Optional[str]   # for uploaded_document sources
        page:        Optional[int]
        chunk_index: Optional[int]
 

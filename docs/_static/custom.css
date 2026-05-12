@@ -109,3 +109,34 @@ article hr {
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+/* Fix Mermaid sizing in Furo */
+
+.mermaid svg {
+    max-width: 100% !important;
+    height: auto !important;
+}
+
+/* CRITICAL FIX */
+.mermaid foreignObject {
+    overflow: visible !important;
+}
+
+/* Prevent node clipping */
+.mermaid .node rect,
+.mermaid .node polygon,
+.mermaid .node path {
+    overflow: visible !important;
+}
+
+/* Give labels room */
+.mermaid .label {
+    overflow: visible !important;
+}
+
+/* Furo content container fix */
+.main .content .mermaid {
+    overflow-x: auto;
+    overflow-y: visible !important;
+    padding: 1rem 0;
+}

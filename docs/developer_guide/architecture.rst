@@ -1,185 +1,554 @@
 Architecture
 =============
 
-Rocco's modular design separates concerns across evaluation, enhancement, RAG, and LLM integration.
+Rocco is designed to be modular, separating concerns across evaluation, enhancement, RAG, and LLM integration.
 
 System Diagram
 --------------
 
-.. code-block:: text
+.. **LLM Infrastructure Layer**
 
-   ┌──────────────────────────────────────────────────────────┐
-   │            Streamlit UI (rocco_ui.py)                    │
-   │   - Description input                                    │
-   │   - Evaluation display                                  │
-   │   - Document upload                                     │
-   │   - Enhancement workflow                                │
-   └──────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
-   │  Evaluation Pipeline (src/evaluator/)                   │
-   │  ─────────────────────────────────────────────────────  │
-   │  Input: description text                                 │
-   │  Process: rubric scoring + few-shot learning            │
-   │  Output: 10-criterion breakdown, 0–10 score            │
-   └─────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
-   │  Document Ingestion & RAG (src/ingestor/, src/retriever/)
-   │  ─────────────────────────────────────────────────────  │
-   │  Input: PDFs, DOCX files                                 │
-   │  Process: chunking (500 char, 100 overlap)              │
-   │           sentence-transformers embeddings              │
-   │           FAISS vector store                            │
-   │  Output: vector index + chunk metadata                  │
-   └─────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
-   │  Content Screening (src/llm/content_screener.py)        │
-   │  ─────────────────────────────────────────────────────  │
-   │  Input: user feedback text                              │
-   │  Process: relevance + accuracy + tone validation        │
-   │  Output: accept/reject/flag for review                  │
-   └─────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
-   │  Enhancement Pipeline (src/editor/)                     │
-   │  ─────────────────────────────────────────────────────  │
-   │  Input: orig description + RAG context + feedback       │
-   │  Process: prompt rendering + LLM call                   │
-   │  Output: enhanced description + citations               │
-   └─────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
-   │  LLM Client (src/llm/client.py)                         │
-   │  ─────────────────────────────────────────────────────  │
-   │  Provider-agnostic OpenAI SDK wrapper                   │
-   │  Supports: OpenAI, Anthropic, Ollama, DeepSeek, etc.    │
-   └─────────────────────────────────────────────────────────┘
-                              ↓
-   ┌─────────────────────────────────────────────────────────┐
-   │  External LLM Provider                                  │
-   │  (OpenAI API, Anthropic API, Ollama, etc.)              │
-   └─────────────────────────────────────────────────────────┘
+.. .. graphviz::
+
+..    digraph LLM {
+
+..        rankdir=TB;
+..        fontsize=16;
+..        fontname="Helvetica";
+..        bgcolor="transparent";
+
+..        node [
+..            shape=box,
+..            style="rounded,filled",
+..            fontname="Helvetica",
+..            fontsize=12,
+..            margin="0.35,0.25",
+..            penwidth=2
+..        ];
+
+..        LLM [
+..            label=<
+..                <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+..                    <TR><TD><B><FONT POINT-SIZE="15">LLM Client</FONT></B></TD></TR>
+..                    <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/llm/client.py</FONT></TD></TR>
+..                    <TR><TD><FONT POINT-SIZE="13">Provider-agnostic OpenAI SDK wrapper</FONT></TD></TR>
+..                </TABLE>
+..            >,
+..            fillcolor="#ffe0b2",
+..            height=0.9,
+..            width=7.0
+..        ];
+..    }
+
+**Core Processing Pipeline**
+
+.. graphviz::
+
+   digraph Pipeline {
+
+       rankdir=TB;
+       fontsize=16;
+       fontname="Helvetica";
+       bgcolor="transparent";
+
+       node [
+           shape=box,
+           style="rounded,filled",
+           fontname="Helvetica",
+           fontsize=14,
+           margin="0.35,0.25",
+           penwidth=2
+       ];
+
+       edge [
+           fontname="Helvetica",
+           fontsize=12,
+           penwidth=2
+       ];
+
+       INPUT [
+           label=<
+               <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                   <TR><TD><B><FONT POINT-SIZE="15">Draft Description</FONT></B></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="13">User-provided description</FONT></TD></TR>
+               </TABLE>
+           >,
+           fillcolor="#e3f2fd",
+           height=1.4,
+           width=3.5
+       ];
+
+       EVAL [
+           label=<
+               <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                   <TR><TD><B><FONT POINT-SIZE="15">Evaluator</FONT></B></TD></TR>
+                   <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/evaluator</FONT></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="13">10-point rubric scoring</FONT></TD></TR>
+               </TABLE>
+           >,
+           fillcolor="#fff3e0",
+           height=1.4,
+           width=3.5
+       ];
+
+       RAG [
+           label=<
+               <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                   <TR><TD><B><FONT POINT-SIZE="15">Retriever</FONT></B></TD></TR>
+                   <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/retriever</FONT></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="13">RAG pipeline</FONT></TD></TR>
+               </TABLE>
+           >,
+           fillcolor="#f3e5f5",
+           height=1.4,
+           width=3.5
+       ];
+
+       SCREEN [
+           label=<
+               <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                   <TR><TD><B><FONT POINT-SIZE="15">Content Screener</FONT></B></TD></TR>
+                   <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/llm</FONT></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="13">Validate feedback</FONT></TD></TR>
+               </TABLE>
+           >,
+           fillcolor="#f3e5f5",
+           height=1.4,
+           width=3.5
+       ];
+
+       EDIT [
+           label=<
+               <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                   <TR><TD><B><FONT POINT-SIZE="15">Editor</FONT></B></TD></TR>
+                   <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/editor</FONT></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="13">Apply feedback + context</FONT></TD></TR>
+               </TABLE>
+           >,
+           fillcolor="#fff3e0",
+           height=1.4,
+           width=3.5
+       ];
+
+       OUTPUT [
+           label=<
+               <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                   <TR><TD><B><FONT POINT-SIZE="15">Refined Description</FONT></B></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="12">(Output)</FONT></TD></TR>
+                   <TR><TD><FONT POINT-SIZE="13">With citations</FONT></TD></TR>
+               </TABLE>
+           >,
+           fillcolor="#c8e6c9",
+           height=1.4,
+           width=3.5
+       ];
+
+       INPUT -> EVAL -> EDIT -> OUTPUT;
+       RAG -> EDIT;
+       SCREEN -> EDIT;
+   }
 
 Core Modules
 ------------
 
-**src/evaluator/** — Rubric Evaluation
+.. dropdown:: src/llm/ — LLM Integration
+   :icon: file-directory-fill
 
-- ``evaluator.py`` — ``DescriptionEvaluator`` class
-  - Scores descriptions against 10 criteria
-  - Uses few-shot examples for consistency
-  - Returns structured breakdown + total score
+   - ``client.py`` — ``LLMClient`` and ``RoccoClient``
 
-- ``rubric.json`` — Evaluation criteria definition
-  - 10 criteria, 1 point each
-  - Criterion name, description, scoring guidance
+     - Wraps OpenAI SDK for provider-agnostic usage
+     - Supports: OpenAI, Anthropic, Ollama, DeepSeek, Gemini, HuggingFace, SambaNova
+     - Environment-driven configuration (LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL)
 
-- ``examples_v3.json`` — Few-shot examples
-  - 3 example (description, score, explanation) tuples
-  - Improves evaluator consistency
+   - ``content_screener.py`` — ``ContentScreener`` class
 
-**src/ingestor/** — Document Chunking & Embedding
+     - Validates user feedback for relevance, accuracy, tone, coherence
+     - Returns recommendation (accept/reject/flag)
 
-- ``document_ingestor.py`` — ``DocumentIngestor`` class
-  - Chunks PDFs/DOCX using LangChain's RecursiveCharacterTextSplitter
-  - Config: 500 char chunks, 100 char overlap
-  - Enriches chunks with metadata (filename, page, chunk index)
+   - ``schemas.py`` — Pydantic models
 
-- ``embedder.py`` — ``DocumentEmbedder`` class
-  - Uses ``sentence-transformers`` (BAAI/bge-large-en-v1.5)
-  - Generates semantic embeddings for retrieval
+     - Structured output schemas for all LLM calls
 
-- ``base.py`` — Abstract base class
-  - Common interface for pluggable ingestors
 
-**src/retriever/** — Vector Storage & Search
+.. dropdown:: src/evaluator/ — Rubric Evaluation
+   :icon: file-directory-fill
 
-- ``retriever.py`` — ``VectorStoreManager`` class
-  - FAISS-backed vector store
-  - Methods: ``add_documents()``, ``similarity_search_with_score()``
-  - Supports save/load to disk
+   - ``evaluator.py`` — ``DescriptionEvaluator`` class
 
-**src/editor/** — Description Enhancement
+     - Scores descriptions against 10 criteria
+     - Uses few-shot examples for consistency
+     - Returns structured breakdown + total score
 
-- ``editor.py`` — ``DescriptionEditor`` class
-  - Input: original description, RAG context, user feedback
-  - Process: prompt rendering + LLM call
-  - Output: improved description + citations
+   - ``rubric.json`` — Evaluation criteria definition
 
-**src/llm/** — LLM Integration
+     - 10 criteria, 1 point each
+     - Criterion name, description, scoring guidance
 
-- ``client.py`` — ``LLMClient`` and ``RoccoClient``
-  - Wraps OpenAI SDK for provider-agnostic usage
-  - Supports: OpenAI, Anthropic, Ollama, DeepSeek, Gemini, HuggingFace, SambaNova
-  - Environment-driven configuration (LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL)
+   - ``examples_v3.json`` — Few-shot examples
 
-- ``content_screener.py`` — ``ContentScreener`` class
-  - Validates user feedback for relevance, accuracy, tone, coherence
-  - Returns recommendation (accept/reject/flag)
+     - 3 example (description, score, explanation) tuples
+     - Improves evaluator consistency
 
-- ``schemas.py`` — Pydantic models
-  - Structured output schemas for all LLM calls
+.. dropdown:: src/ingestor/ — Document Chunking & Embedding
+   :icon: file-directory-fill
 
-**src/prompts/** — Prompt Management
+   - ``document_ingestor.py`` — ``DocumentIngestor`` class
 
-- ``loader.py`` — ``PromptLoader`` class
-  - Loads YAML prompt files
-  - Renders with Jinja2 template variables
+     - Chunks PDFs/DOCX using LangChain's RecursiveCharacterTextSplitter
+     - Config: 500 char chunks, 100 char overlap
+     - Enriches chunks with metadata (filename, page, chunk index)
 
-- YAML prompt files:
-  - ``evaluator.yaml`` — Rubric scoring prompt
-  - ``editor.yaml`` — Description enhancement prompt
-  - ``content_screener.yaml`` — Feedback validation prompt
+   - ``embedder.py`` — ``DocumentEmbedder`` class
+
+     - Uses ``sentence-transformers`` (BAAI/bge-large-en-v1.5)
+     - Generates semantic embeddings for retrieval
+
+   - ``base.py`` — Abstract base class
+
+     - Common interface for pluggable ingestors
+
+.. dropdown:: src/retriever/ — Vector Storage & Search
+   :icon: file-directory-fill
+
+   - ``retriever.py`` — ``VectorStoreManager`` class
+
+     - FAISS-backed vector store
+     - Methods: ``add_documents()``, ``similarity_search_with_score()``
+     - Supports save/load to disk
+
+.. dropdown:: src/editor/ — Description Enhancement
+   :icon: file-directory-fill
+
+   - ``editor.py`` — ``DescriptionEditor`` class
+
+     - Input: original description, RAG context, user feedback
+     - Process: prompt rendering + LLM call
+     - Output: improved description + citations
+
+
+.. dropdown:: src/prompts/ — Prompt Management
+   :icon: file-directory-fill
+
+   - ``loader.py`` — ``PromptLoader`` class
+
+     - Loads YAML prompt files
+     - Renders with Jinja2 template variables
+
+   - YAML prompt files:
+
+     - ``evaluator.yaml`` — Rubric scoring prompt
+     - ``editor.yaml`` — Description enhancement prompt
+     - ``content_screener.yaml`` — Feedback validation prompt
 
 Data Flow
 ---------
 
-**Evaluation Path**
+.. dropdown:: Evaluation Path
 
-.. code-block:: text
+   .. graphviz::
 
-   user input (description text)
-       ↓
-   DescriptionEvaluator.evaluate(description)
-       ↓
-   load_prompt("evaluator") → render with rubric_json + description
-       ↓
-   RoccoClient.send_prompt(system, user)
-       ↓
-   LLM API call
-       ↓
-   parse structured output (rubric_breakdown, total_score, feedback)
-       ↓
-   return EvaluationResult
+      digraph EvaluationPath {
 
-**Enhancement Path**
+          rankdir=TB;
+          fontsize=14;
+          fontname="Helvetica";
+          bgcolor="transparent";
 
-.. code-block:: text
+          node [
+              shape=box,
+              style="rounded,filled",
+              fontname="Helvetica",
+              fontsize=12,
+              margin="0.35,0.25",
+              penwidth=2
+          ];
 
-   user input (description + feedback + optional uploaded files)
-       ↓
-   DocumentIngestor.ingest(files) → DocumentEmbedder.embed_documents()
-       ↓
-   VectorStoreManager.add_documents() → FAISS index
-       ↓
-   (user provides feedback)
-       ↓
-   ContentScreener.screen(feedback)
-       ↓
-   if accept:
-       VectorStoreManager.similarity_search(description, top_k=5)
-           ↓
-       DescriptionEditor.enhance(description, context_chunks, feedback)
-           ↓
-       load_prompt("editor") → render with description + context + feedback
-           ↓
-       RoccoClient.send_prompt()
-           ↓
-       parse structured output (updated_description, rationale, citations)
-           ↓
-       return EditorResult
+          edge [
+              fontname="Helvetica",
+              fontsize=12,
+              penwidth=2
+          ];
+
+          INPUT [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="13">Draft Description</FONT></B></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#e3f2fd",
+              height=1.0,
+              width=2.5
+          ];
+
+          OUTPUT [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="13">Evaluation Result</FONT></B></TD></TR>
+                      <TR><TD><FONT POINT-SIZE="11">Structured scoring breakdown and reasoning</FONT></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#c8e6c9",
+              height=1.0,
+              width=2.5
+          ];
+
+          subgraph cluster_evaluate {
+              style=dashed;
+              label="";
+
+              EVAL [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="13">Load Prompt</FONT></B></TD></TR>
+                          <TR><TD><FONT FACE="monospace" POINT-SIZE="11">load_prompt("evaluator")</FONT></TD></TR>
+                          <TR><TD><FONT POINT-SIZE="11">Build prompt with the draft description</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#f3e5f5",
+                  height=1.0,
+                  width=2.5
+              ];
+
+              CALL [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="13">LLM API Call</FONT></B></TD></TR>
+                          <TR><TD><FONT FACE="monospace" POINT-SIZE="11">RoccoClient.send_prompt()</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#ffe0b2",
+                  height=1.0,
+                  width=2.5
+              ];
+
+              PARSE [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="13">Parse Output</FONT></B></TD></TR>
+                          <TR><TD><FONT POINT-SIZE="11">Extract scoring breakdown &amp; reasoning</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#f3e5f5",
+                  height=1.0,
+                  width=2.5
+              ];
+
+              EVAL -> CALL -> PARSE;
+          }
+
+          cluster_eval_label [
+              shape=none,
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="13">DescriptionEvaluator.evaluate()</FONT></B></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#ffffff",
+              margin="0,0"
+          ];
+
+
+          INPUT -> EVAL;
+          PARSE -> OUTPUT;
+          { rank=same; CALL; cluster_eval_label; }
+      }
+
+.. dropdown:: Enhancement Path
+
+   .. graphviz::
+
+      digraph EnhancementPath {
+
+          rankdir=TB;
+          fontsize=14;
+          fontname="Helvetica";
+          bgcolor="transparent";
+
+          node [
+              shape=box,
+              style="rounded,filled",
+              fontname="Helvetica",
+              fontsize=12,
+              margin="0.35,0.25",
+              penwidth=2
+          ];
+
+          edge [
+              fontname="Helvetica",
+              fontsize=12,
+              penwidth=2
+          ];
+
+          FILES [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">File Upload</FONT></B></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#e3f2fd",
+              height=1.2,
+              width=3.5
+          ];
+
+          INGEST [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">DocumentIngestor</FONT></B></TD></TR>
+                      <TR><TD><FONT FACE="monospace" POINT-SIZE="12">.ingest() &amp; .embed_documents()</FONT></TD></TR>
+                      <TR><TD><FONT POINT-SIZE="13">Chunk &amp; embed documents</FONT></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#f3e5f5",
+              height=1.4,
+              width=3.5
+          ];
+
+          ADD [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">VectorStoreManager</FONT></B></TD></TR>
+                      <TR><TD><FONT FACE="monospace" POINT-SIZE="12">.add_documents() → FAISS</FONT></TD></TR>
+                      <TR><TD><FONT POINT-SIZE="13">Build vector database</FONT></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#f3e5f5",
+              height=1.4,
+              width=3.5
+          ];
+
+          DESC [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">Structured Description Evaluation</FONT></B></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#e3f2fd",
+              height=1.2,
+              width=3.5
+          ];
+
+          FEEDBACK [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">User Feedback</FONT></B></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#e3f2fd",
+              height=1.2,
+              width=3.5
+          ];
+
+          SCREEN [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">ContentScreener</FONT></B></TD></TR>
+                      <TR><TD><FONT FACE="monospace" POINT-SIZE="12">.screen(feedback)</FONT></TD></TR>
+                      <TR><TD><FONT POINT-SIZE="13">Validate feedback</FONT></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#f3e5f5",
+              height=1.4,
+              width=3.5
+          ];
+
+          DECISION [
+              label="Accept?",
+              shape=diamond,
+              fillcolor="#fff9c4",
+              height=1.0,
+              width=1.8
+          ];
+
+          OUTPUT [
+              label=<
+                  <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                      <TR><TD><B><FONT POINT-SIZE="15">EditorResult</FONT></B></TD></TR>
+                      <TR><TD><FONT POINT-SIZE="13">Enhanced description</FONT></TD></TR>
+                  </TABLE>
+              >,
+              fillcolor="#c8e6c9",
+              height=1.2,
+              width=3.5
+          ];
+
+          ENHANCE [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="15">Retrieve Context</FONT></B></TD></TR>
+                          <TR><TD><FONT POINT-SIZE="13">RAG + vector search</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#f3e5f5",
+                  height=1.2,
+                  width=3.5
+          ];
+
+          subgraph cluster_enhance {
+              style=dashed;
+              label="";
+
+              LOAD [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="15">Load Prompt</FONT></B></TD></TR>
+                          <TR><TD><FONT FACE="monospace" POINT-SIZE="12">load_prompt("editor")</FONT></TD></TR>
+                          <TR><TD><FONT POINT-SIZE="12">Build prompt with retrieved context, user feedback, and evaluation results</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#f3e5f5",
+                  height=1.2,
+                  width=3.5
+              ];
+
+              CALL [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="15">LLM API Call</FONT></B></TD></TR>
+                          <TR><TD><FONT FACE="monospace" POINT-SIZE="12">RoccoClient.send_prompt()</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#ffe0b2",
+                  height=1.2,
+                  width=3.5
+              ];
+
+              PARSE [
+                  label=<
+                      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                          <TR><TD><B><FONT POINT-SIZE="15">Parse Output</FONT></B></TD></TR>
+                          <TR><TD><FONT POINT-SIZE="13">Extract enhanced description, citations, and rationale for changes</FONT></TD></TR>
+                      </TABLE>
+                  >,
+                  fillcolor="#f3e5f5",
+                  height=1.2,
+                  width=3.5
+              ];
+
+              LOAD -> CALL -> PARSE;
+          }
+           cluster_enhance_label [
+               shape=none,
+               label=<
+                   <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                       <TR><TD><B><FONT POINT-SIZE="13">DescriptionEditor.enhance()</FONT></B></TD></TR>
+                   </TABLE>
+               >,
+               fillcolor="#ffffff",
+               margin="0,0"
+          ];
+
+          { rank=same; FILES; DESC; FEEDBACK; }
+
+          FILES -> INGEST -> ADD -> ENHANCE;
+          FEEDBACK -> SCREEN -> DECISION;
+          DECISION -> FEEDBACK [label="no (revise)"];
+          DESC -> LOAD;
+          ENHANCE -> LOAD;
+          DECISION -> LOAD [label="yes"];
+          PARSE -> OUTPUT;
+          { rank=same; CALL; cluster_enhance_label; }
+      }
+
 
 Configuration
 -------------
@@ -194,6 +563,7 @@ Configuration
 **Session State** (Streamlit)
 
 Stored in ``st.session_state``:
+
 - ``description_text`` — current description
 - ``evaluation`` — latest evaluation result
 - ``vector_store_manager`` — loaded FAISS index
@@ -240,16 +610,6 @@ Key test patterns:
 - **Retriever tests** — verify FAISS indexing and search
 - **Editor tests** — verify prompt rendering and citation tracking
 - **Integration tests** — end-to-end workflow (evaluate → enhance → screen)
-
-Performance Considerations
---------------------------
-
-- **Evaluation**: ~2–5 seconds (LLM call)
-- **Document Ingestion**: ~1–3 seconds per MB (chunking + embedding)
-- **Enhancement**: ~5–10 seconds (LLM call + RAG retrieval)
-- **Memory**: ~2GB base + ~1GB per uploaded document
-
-For large document sets (100+ MB), consider batch ingestion or external vector stores (Pinecone, Weaviate).
 
 See Also
 --------

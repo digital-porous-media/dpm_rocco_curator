@@ -1,7 +1,7 @@
 Prompt Reference
 ================
 
-Rocco's AI behavior is entirely defined by three versioned YAML prompt files in ``src/prompts/``.
+Rocco's behavior is defined by versioned YAML prompt files.
 This page documents what each prompt does, its template variables, and how to modify or create prompts.
 
 Overview
@@ -173,7 +173,7 @@ Output Format
          "citations": [
            {
              "statement": "Exact statement from the improved description",
-             "source": "context_chunk",
+             "source": "uploaded_document",
              "quote": "Exact supporting quote from source",
              "doc_title": "Pak_2015_BereaSandstone",
              "page": 3,
@@ -184,8 +184,8 @@ Output Format
      ]
    }
 
-Citation ``source`` values: ``"original_description"``, ``"context_chunk"``, ``"user_feedback"``.
-For non-chunk sources, ``doc_title``, ``page``, and ``chunk_index`` are ``null``.
+Citation ``source`` values: ``"original_description"``, ``"uploaded_document"``, ``"user_feedback"``.
+For non-document sources, ``doc_title``, ``page``, and ``chunk_index`` are ``null``.
 
 Full Prompt Text
 ~~~~~~~~~~~~~~~~

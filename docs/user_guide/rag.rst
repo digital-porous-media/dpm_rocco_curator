@@ -24,8 +24,8 @@ Document Ingestion
 
 Supported formats:
 
-- PDF (``.pdf``) — loaded with LangChain's ``PyPDFLoader``; page numbers are preserved in metadata
-- DOCX (``.docx``, ``.doc``) — loaded with ``Docx2txtLoader``
+- PDF (``.pdf``) — loaded with LangChain's ``PyPDFLoader``
+- DOCX (``.docx``, ``.doc``) — loaded with LangChain's ``Docx2txtLoader``
 
 Chunking uses LangChain's ``RecursiveCharacterTextSplitter``:
 
@@ -79,6 +79,42 @@ Embeddings are stored in a FAISS flat-L2 index (via LangChain's FAISS wrapper). 
 - ``similarity_search_with_score(query, k)`` — same, but also returns the distance score
 - ``save(path)`` / ``load(path)`` — persist and reload the index to/from disk
 
+Query Behavior
+--------------
+
+**How Rocco Uses RAG**
+
+During enhancement, Rocco generates targeted search queries based on the evaluation rubric to retrieve relevant context. Each of the 10 evaluation criteria has associated keywords that guide the vector store search:
+
+.. list-table::
+   :widths: 50 50
+   :header-rows: 1
+
+   * - Rubric Criterion
+     - Query Keywords
+   * - **Self-Contained Description**
+     - data description, data summary, data overview
+   * - **Context of Creation**
+     - research goals, objectives, study purpose, motivation
+   * - **Porous Media Type**
+     - sample material, porous media type, lithology
+   * - **Research Problem**
+     - research problem, research question, hypothesis
+   * - **Reuse and Beneficiaries**
+     - applications, reuse, reproducibility, validation, machine learning, simulation
+   * - **Methodology**
+     - methodology, experimental setup, x-ray imaging technique, data collection, image acquisition, scanning, image processing
+   * - **Contents and Organization**
+     - dataset structure, organization, file, data, format, contents
+   * - **Quality Control**
+     - quality control, validation, verification, calibration, inspection
+   * - **Clarity and Accessibility**
+     - *(No automatic query)*
+   * - **Keywords**
+     - keywords, relevant concepts, domain-specific terminology, nomenclature
+
+By default, Rocco queries all criteria (``query_all=True``). This retrieves relevant context across the full rubric, which generally produces stronger enhancements. Optionally, queries can be limited to only criteria that scored ≤0.5, focusing context retrieval on areas of weakness.
+
 Running Without the UI
 ----------------------
 
@@ -123,10 +159,9 @@ Tips
 
 **What documents work best**
 
+- Research publications by the data contributors that provide background context, analysis, applications, and methodology.
 - Method papers describing the imaging or analysis technique used to produce the dataset
 - Technical protocols or instrument specifications
-- Related datasets with high-quality descriptions (to cite as examples)
-- Domain review articles covering the porous media type
 
 **Multiple documents**
 
@@ -135,7 +170,7 @@ However, contradictory information across documents may appear in the output; al
 
 **Large document sets**
 
-Ingestion time scales with total file size (chunking + embedding). For very large sets (100+ MB),
+Ingestion time scales with total file size (chunking + embedding). For very large sets,
 consider pre-building the index offline and loading it at runtime with ``vsm.load()``.
 
 See Also

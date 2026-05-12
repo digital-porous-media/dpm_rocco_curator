@@ -52,28 +52,30 @@ Step 4: Evaluate
 Click **"Evaluate Description"** to score your description against **10 research-backed criteria**:
 
 .. list-table::
-   :widths: 40 60
-   :header-rows: 0
+   :widths: 30 70
+   :header-rows: 1
 
-   * - ✓ Self-Contained Description
+   * - Criterion
+     - What it checks
+   * - **Self-Contained Description**
      - Does the description stand alone without external context?
-   * - ✓ Context of Creation
+   * - **Context of Creation**
      - Are the goals of the study clearly described?
-   * - ✓ Porous Media Type
+   * - **Porous Media Type**
      - Is the type of porous media specified?
-   * - ✓ Research Question
+   * - **Research Question**
      - Does the description state the research question the data is helping to solve?
-   * - ✓ Reuse and Beneficiaries
+   * - **Reuse and Beneficiaries**
      - Does the description explain who would benefit from reusing this data and how?
-   * - ✓ Methodology
+   * - **Methodology**
      - Are the methods used to create the data described?
-   * - ✓ Contents and Organization
+   * - **Contents and Organization**
      - Is there an overview of the dataset's contents and organization?
-   * - ✓ Quality Control
+   * - **Quality Control**
      - Are quality assurance/quality control procedures documented?
-   * - ✓ Clarity and Accessibility
+   * - **Clarity and Accessibility**
      - Is the description clear and accessible to broad audiences?
-   * - ✓ Keywords
+   * - **Keywords**
      - Are relevant keywords included to aid discoverability?
 
 **Rocco returns a score out of 10** — each criterion is worth 1 point.
@@ -116,7 +118,7 @@ Rocco will:
 - Show you exactly where each claim came from (with quotes)
 
 .. important:: Rocco will **NOT**:
-   
+
    - Add information that isn't supported by your feedback or documents
    - Store or share any of your uploaded documents or feedback. Everything is processed in-memory and discarded after the session.
 

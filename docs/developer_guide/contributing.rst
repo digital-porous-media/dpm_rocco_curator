@@ -65,6 +65,7 @@ Key Contribution Areas
 **Bug Reports**
 
 File an issue on GitHub with:
+
 - Python version and OS
 - Steps to reproduce
 - Expected vs. actual behavior
@@ -73,6 +74,7 @@ File an issue on GitHub with:
 **Feature Requests**
 
 Describe:
+
 - The problem you're solving
 - Your proposed solution
 - Alternative approaches considered
@@ -167,6 +169,7 @@ Documentation
 ~~~~~~~~~~~~~
 
 Pull requests should include:
+
 - Docstrings for new public functions/classes
 - Updates to relevant docs (README, CLAUDE.md, user guides)
 - Changelog entry (if applicable)
@@ -175,6 +178,7 @@ Testing
 ~~~~~~~
 
 All pull requests must pass:
+
 - Unit tests: ``pytest tests/``
 - Code style: ``black . --line-length 100 && isort .``
 - Type checking (if added: ``mypy src/``)
