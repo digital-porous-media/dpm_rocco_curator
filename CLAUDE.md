@@ -117,7 +117,7 @@ To use a prompt: `prompt_data = load_prompt("evaluator")` → render with variab
   - `chunk_index`: Sequential chunk number
   - `source`: File path (from LangChain)
 
-**Citation output:** Each statement in enhanced descriptions is traced to its source (original description, context chunk, or user feedback) with exact quotes.
+**Citation output:** Each statement in enhanced descriptions is traced to its source (original description, uploaded document, or user feedback) with exact quotes.
 
 ## Key Data Files
 
@@ -209,7 +209,7 @@ python -c "from src.evaluator import DescriptionEvaluator; eval = DescriptionEva
   "citations": [
     {
       "statement": "Added fact",
-      "source": "context_chunk",
+      "source": "uploaded_document",
       "quote": "Original quote from source",
       "doc_title": "paper_name",
       "page": 3,
@@ -232,11 +232,23 @@ python -c "from src.evaluator import DescriptionEvaluator; eval = DescriptionEva
 }
 ```
 
-## Session Management
+## Session & Context Management
 
+### Session Persistence
 - Editing sessions are saved to JSON files (timestamp-based)
 - Sessions preserve conversation history, original/current descriptions, and configuration
 - Reload sessions to continue iterative refinement
+
+### Multi-Turn Context Management (Streamlit UI)
+- **"Manage Context (Prior Turns)"** expander displays after accepting an enhancement
+- Users can selectively include/exclude prior feedback rounds for the next enhancement pass
+- For each prior turn, users can:
+  - **Uncheck** to exclude from next prompt (useful when constraints are no longer relevant)
+  - **Edit** feedback text inline (edits persist within the session)
+  - **Review context** — see which document chunks were retrieved (title, page, snippet)
+  - **Review result** — preview the enhanced description from that turn
+- **"Clear history"** button wipes entire enhancement thread and starts fresh
+- Conversation history is automatically carried across `enhance()` calls in `DescriptionEditor`
 
 ## Configuration
 
@@ -295,8 +307,9 @@ user: |
 
 ### Citation System
 - Each citation links a statement to its source (document metadata + exact quote)
-- Sources: `original_description`, `context_chunk`, or `user_feedback`
-- For context chunks: `doc_title`, `page`, `chunk_index` enable tracing back to source PDF/DOCX
+- Sources: `original_description`, `uploaded_document`, or `user_feedback`
+- For uploaded documents: `doc_title`, `page`, `chunk_index` enable tracing back to source PDF/DOCX
+- User-friendly naming: "uploaded_document" is more intuitive than technical "context_chunk"
 
 ### Session Persistence
 Sessions are JSON files with this structure:
@@ -324,3 +337,48 @@ Sessions are JSON files with this structure:
 - Prompt variables must match the fields used in rendering (e.g., `{{ description }}` in template needs `.format(description=...)`)
 - Session files use timestamps; don't manually edit them or session loading may break.
 - The `.env` file is in `.gitignore`; API credentials won't be committed.
+
+---
+
+## Recent Changes
+
+### Citation Naming (May 2026)
+- Renamed `"context_chunk"` source type to **`"uploaded_document"`** for better UX clarity
+- Updated everywhere: `src/llm/schemas.py`, `src/prompts/editor.yaml`, all documentation
+- No code logic change — just more intuitive naming for end users
+
+### Documentation Updates
+- All user and developer guides updated to reflect new citation source naming
+- Architecture diagrams clarified to show "uploaded_documents" in data flow
+- Prompt examples updated with new source terminology
+
+---
+
+## Future Plans
+
+### Phase 1: General AI Assistant (In Development — Q3 2026)
+Rocco is expanding from description curation to a broader research assistant. Two major new capabilities are planned:
+
+**1. Dataset Discovery Module**
+- Semantic search over 176 datasets in DPM Portal using hybrid FAISS + Neo4j
+- Metadata filtering (rock type, measurement method, permeability range, etc.)
+- Integration strategy: New tab in `rocco_ui.py` alongside existing Curator
+- Tech: FAISS for embedding similarity + Neo4j for structured metadata queries
+- See `planning/ADR_Search_Approach.md` for search architecture rationale
+
+**2. Educational Support Module**
+- Domain knowledge Q&A for porous media research
+- Workflow guidance (how to prepare samples, imaging techniques, data organization)
+- Tutorials on dataset best practices
+- Integration: Conversational assistant tab with session history
+- See `planning/02_General_Assistant.md` for unified architecture design
+
+**Timeline:** 2 interns, ~8 weeks (planning in `planning/04_Tasks.md`)
+
+### Phase 2: Long-Term Roadmap
+- **Bulk description enhancement** — process entire dataset directories at once
+- **Custom rubric templates** — let research groups define domain-specific evaluation criteria
+- **External vector stores** — support Pinecone, Weaviate for large-scale RAG (current: local FAISS only)
+- **Audit trail & versioning** — track all description edits with full provenance
+- **Integration with DPM Portal** — direct API hooks instead of Streamlit-only interface
+- **Multi-language support** — support descriptions in multiple languages with translation-aware RAG

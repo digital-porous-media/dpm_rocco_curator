@@ -75,7 +75,7 @@ user: |
 
   You MUST provide a citation showing:
   - The exact statement from your improved description
-  - The source (either "original_description", "context_chunk", or "user_feedback")
+  - The source (either "original_description", "uploaded_document", or "user_feedback")
   - The exact quote from the source that supports this statement
 
   IMPORTANT - When citing user_feedback:
@@ -87,17 +87,17 @@ user: |
 
   ## EXAMPLES OF PROPER CITATIONS:
 
-  Example 1 - Adding methodology details (from context chunk):
+  Example 1 - Adding methodology details (from uploaded document):
   Statement: "Micro-CT imaging was performed at 2.5 μm resolution"
-  Source: "context_chunk"
+  Source: "uploaded_document"
   Quote: "The sample was scanned using micro-CT at a voxel size of 2.5 micrometers"
   doc_title: "Pak_2015_BereaSandstone"
   page: 3
   chunk_index: 7
 
-  Example 2 - Adding sample information (from context chunk):
+  Example 2 - Adding sample information (from uploaded document):
   Statement: "The Berea sandstone sample was obtained from a depth of 1200 meters"
-  Source: "context_chunk"
+  Source: "uploaded_document"
   Quote: "Core samples were extracted from the Berea formation at 1200m depth"
   doc_title: "Pak_2015_BereaSandstone"
   page: 5
@@ -121,9 +121,9 @@ user: |
         "citations": [
           {
             "statement": "Specific statement from your improved description",
-            "source": "original_description, context_chunk, or user_feedback",
+            "source": "original_description, uploaded_document, or user_feedback",
             "quote": "Exact quote from the source",
-            "doc_title": "Document filename (for context_chunk only, else null)",
+            "doc_title": "Document filename (for uploaded_document only, else null)",
             "page": 3,
             "chunk_index": 7
           }
@@ -133,7 +133,7 @@ user: |
   }
 
   CITATION METADATA RULES:
-  - For `context_chunk` sources: populate `doc_title`, `page`, and `chunk_index` from the chunk header line "Source: <doc_title>, Page <page>, Chunk <chunk_index>" that appears above the chunk content.
+  - For `uploaded_document` sources: populate `doc_title`, `page`, and `chunk_index` from the chunk header line "Source: <doc_title>, Page <page>, Chunk <chunk_index>" that appears above the chunk content.
   - For `original_description` or `user_feedback` sources: set `doc_title`, `page`, and `chunk_index` to null.
 
   CRITICAL: The 'updated_description' field must contain ONLY the clean, polished description text with NO citation markers, brackets, or references like [CONTEXT_CHUNK_1]. All citations belong ONLY in the 'citations' array.

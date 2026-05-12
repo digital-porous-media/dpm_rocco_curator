@@ -20,11 +20,11 @@ class EvaluatorOutput:
 class Citation(BaseModel):
     """Citation schema for each statemnt in the improved description."""
     statement: str = Field(description="The statement from the enhanced description.")
-    source: str = Field(description="Source of the added information (original_description, context_chunk, or user_feedback)") # Original description or context chunk
+    source: str = Field(description="Source of the added information (original_description, uploaded_document, or user_feedback)") # Original description or uploaded document
     quote: str = Field(description="The exact quote or statement from the source.")
-    doc_title: Optional[str] = Field(default=None, description="Document title (filename without extension) for context_chunk sources")
-    page: Optional[int] = Field(default=None, description="Page number in source document for context_chunk sources")
-    chunk_index: Optional[int] = Field(default=None, description="Chunk index for context_chunk sources")
+    doc_title: Optional[str] = Field(default=None, description="Document title (filename without extension) for uploaded_document sources")
+    page: Optional[int] = Field(default=None, description="Page number in source document for uploaded_document sources")
+    chunk_index: Optional[int] = Field(default=None, description="Chunk index for uploaded_document sources")
 
 class EditorOutput(BaseModel):
     """Output from the description editor"""
@@ -32,6 +32,7 @@ class EditorOutput(BaseModel):
     suggested_text: str = Field(description="Improved description text")
     rationale: str = Field(description="Explanation of changes made")
     citation: List[Citation] = Field(default_factory=list, description="Citations for added information")
+    context_used: List[Dict[str, Any]] = Field(default_factory=list, description="Metadata for retrieved context chunks (doc_title, page, chunk_index, snippet)")
 
 class EditingSession(BaseModel):
     """Schema for saving/loading editing sessions"""

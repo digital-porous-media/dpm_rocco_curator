@@ -67,6 +67,10 @@ if "pending_enhancement" not in st.session_state:
     st.session_state.pending_enhancement = False
 if "screening_result" not in st.session_state:
     st.session_state.screening_result = None
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
+if "context_manager_edits" not in st.session_state:
+    st.session_state.context_manager_edits = {}
 
 
 # --- Initialization ---
@@ -245,6 +249,8 @@ if st.session_state.enhanced_description:
 
 # Display evaluation results and enhancement tools if an evaluation is present
 if st.session_state.evaluation:
+    selected_history = []
+
     eval_col, enhance_col = st.columns(2)
 
     with eval_col:
@@ -399,8 +405,13 @@ if st.session_state.evaluation:
                     with st.spinner("Rocco is refining your description..."):
                         use_rag = st.session_state.vector_store_manager is not None
                         editor.use_rag = use_rag
+                        draft_text = (
+                            st.session_state.edited_enhanced_description
+                            or st.session_state.enhanced_description
+                            or st.session_state.description_text
+                        )
                         enhanced_description_obj = editor.enhance(
-                            draft_text=st.session_state.description_text,
+                            draft_text=draft_text,
                             draft_evaluation=st.session_state.evaluation,
                             user_feedback=(
                                 st.session_state.user_feedback
@@ -408,6 +419,7 @@ if st.session_state.evaluation:
                                 else None
                             ),
                             retrieve_context=use_rag,
+                            history_override=selected_history,
                         )
                         st.session_state.original_description = (
                             st.session_state.description_text
@@ -421,6 +433,18 @@ if st.session_state.evaluation:
                         st.session_state.edited_enhanced_description = (
                             None  # Reset edits
                         )
+                        # Append the new turn to conversation history
+                        if st.session_state.user_feedback:
+                            st.session_state.conversation_history.append({
+                                "role": "user",
+                                "content": st.session_state.user_feedback,
+                            })
+                        st.session_state.conversation_history.append({
+                            "role": "assistant",
+                            "content": enhanced_description_obj.suggested_text,
+                            "rationale": enhanced_description_obj.rationale,
+                            "context_used": enhanced_description_obj.context_used,
+                        })
                         st.session_state.user_feedback = ""  # Clear feedback
                         st.session_state.skip_screening = False  # Reset flagging
                         st.session_state.pending_enhancement = False
@@ -433,6 +457,78 @@ if st.session_state.evaluation:
                     and not st.session_state.user_feedback
                 ):
                     st.warning("Provide context to enable enhancement.")
+
+    # --- Full-width Context Manager (outside columns, below eval+enhance) ---
+    if st.session_state.conversation_history and not st.session_state.enhanced_description:
+        st.divider()
+        with st.expander("📋 Manage Context (Prior Turns)", expanded=False):
+            st.caption("Select which prior turns to include in the next enhancement. Uncheck to exclude, edit feedback inline.")
+            history = st.session_state.conversation_history
+            # Group into (user_turn, assistant_turn) pairs
+            pairs = []
+            i = 0
+            while i < len(history):
+                if history[i]["role"] == "user" and i + 1 < len(history):
+                    pairs.append((history[i], history[i + 1]))
+                    i += 2
+                else:
+                    pairs.append((None, history[i]))
+                    i += 1
+
+            # Clear history button
+            col_clear, col_space = st.columns([1, 4])
+            with col_clear:
+                if st.button("Clear history", key="ctx_clear", type="secondary"):
+                    st.session_state.conversation_history = []
+                    st.session_state.context_manager_edits = {}
+                    st.rerun()
+
+            for turn_idx, (user_turn, asst_turn) in enumerate(pairs):
+                col_check, col_card = st.columns([0.05, 0.95])
+                with col_check:
+                    include = st.checkbox("", value=True, key=f"ctx_include_{turn_idx}",
+                                          label_visibility="collapsed")
+                with col_card:
+                    label = f"Turn {turn_idx + 1}"
+                    if user_turn:
+                        label += f': "{user_turn["content"][:60]}..."'
+                    with st.expander(label, expanded=False):
+                        if user_turn:
+                            st.markdown("**Feedback given:**")
+                            edited = st.text_area(
+                                "Edit feedback",
+                                value=st.session_state.context_manager_edits.get(turn_idx, user_turn["content"]),
+                                key=f"ctx_edit_{turn_idx}",
+                                height=80,
+                                label_visibility="collapsed",
+                            )
+                            st.session_state.context_manager_edits[turn_idx] = edited
+                        if asst_turn:
+                            # Show context chunks used
+                            chunks = asst_turn.get("context_used", [])
+                            if chunks:
+                                st.markdown("**Documents retrieved:**")
+                                for chunk in chunks:
+                                    title = chunk.get("doc_title", "unknown")
+                                    page = chunk.get("page")
+                                    loc = f"*{title}*" + (f", p. {page + 1}" if page is not None else "")
+                                    st.caption(f"↳ {loc} — {chunk.get('snippet', '')[:80]}...")
+                            # Show result preview
+                            snippet = asst_turn["content"][:200] + ("..." if len(asst_turn["content"]) > 200 else "")
+                            st.markdown("**Result preview:**")
+                            st.text(snippet)
+                if include:
+                    if user_turn:
+                        selected_history.append({
+                            "role": "user",
+                            "content": st.session_state.context_manager_edits.get(turn_idx, user_turn["content"]),
+                        })
+                    if asst_turn:
+                        selected_history.append({
+                            "role": "assistant",
+                            "content": asst_turn["content"],
+                            "rationale": asst_turn.get("rationale", ""),
+                        })
 
 elif not st.session_state.enhanced_description:
     st.info("Click 'Evaluate Description' to get started.")

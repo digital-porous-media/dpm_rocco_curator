@@ -13,6 +13,10 @@ Rocco is an AI-powered description curator and evaluator for the [Digital Porous
 
 ✨ **Interactive Feedback**: Validate and integrate user feedback into refined descriptions with full citation tracking.
 
+✨ **Multi-Turn Refinement**: Use the **Context Manager** to selectively enable/disable prior feedback rounds, review source documents, and iterate toward higher scores.
+
+✨ **Citation Tracking**: Every added fact is traced to its source (original description, uploaded document, or user feedback) with exact quotes for verification.
+
 ✨ **Multi-LLM Support**: Use OpenAI, Anthropic, Ollama, DeepSeek, Gemini, or any OpenAI-compatible LLM provider.
 
 ✨ **Session Persistence**: Save and reload description refinement sessions to continue iterative improvement.
@@ -95,9 +99,15 @@ See [`.env.example`](.env.example) for all supported providers and their base UR
 
 5. **Enhance**: Click "Enhance with Rocco" to generate an improved description using RAG context and your feedback.
 
-6. **Review & Refine**: See the enhanced description with citations. Save or discard, and iterate.
+6. **Review & Refine**: See the enhanced description with full citations showing where each fact came from (original description, uploaded document, or your feedback).
 
-7. **Export**: Download the refined description along with evaluation results and session history.
+7. **Iterate (Multi-Turn Refinement)**: After accepting an enhancement, use the **"Manage Context (Prior Turns)"** panel to:
+   - Selectively enable/disable previous feedback rounds
+   - Review what documents were cited for each turn
+   - Edit prior feedback to refine the next enhancement
+   - Clear history and start fresh if needed
+
+8. **Export**: Download the refined description along with evaluation results and session history.
 
 ## Architecture
 
@@ -220,7 +230,7 @@ For detailed architecture, configuration, and development guidance, see:
   "citations": [
     {
       "statement": "Added fact",
-      "source": "context_chunk",
+      "source": "uploaded_document",
       "quote": "Original quote from source",
       "doc_title": "paper_name",
       "page": 3,
