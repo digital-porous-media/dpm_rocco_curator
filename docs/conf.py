@@ -2,8 +2,8 @@
 import sys
 from pathlib import Path
 
-# Add src directory to Python path for autodoc
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Add project root to Python path for autodoc to import src as a module
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 project = "Rocco"
 copyright = "2024, DPM Rocco Contributors"
