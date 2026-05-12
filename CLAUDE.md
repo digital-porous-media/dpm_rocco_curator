@@ -4,27 +4,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-# Rocco: AI Curator for Digital Porous Media Portal
+# Rocco: Domain-Agnostic AI Research Assistant Framework
 
 ## Project Overview
 
-**Rocco** is an AI-powered description curator and evaluator for the Digital Porous Media (DPM) Portal. It helps researchers improve dataset descriptions using a rubric-based evaluation framework, retrieval-augmented generation (RAG) from uploaded research papers, and an interactive user feedback loop.
+**Rocco** is a domain-agnostic AI framework for automating research data curation, enhancement, discovery, and educational support. It combines rubric-based evaluation, retrieval-augmented generation (RAG), and interactive feedback workflows to help researchers improve dataset documentation and facilitate knowledge discovery.
+
+**Current Implementation:** Rocco is deployed for porous media datasets in the Digital Porous Media (DPM) Portal, but the framework is designed for extension to any research domain. All domain-specific elements (evaluation rubric, RAG context, metadata schema) are customizable.
 
 ---
 
-## Expansion: General AI Assistant (In Development)
+## Vision & Roadmap
 
-Rocco is being expanded into a broader AI assistant suite with two new capabilities:
+### Phase 1: General AI Research Assistant (In Development — Q3 2026)
 
-1. **Dataset Discovery** — semantic search + metadata filtering over 176 datasets using hybrid FAISS + Neo4j
-2. **Educational Support** — domain knowledge Q&A, workflow guidance, and tutorials
+Rocco is expanding from description curation to a unified research assistant with three integrated modules:
 
-These will be integrated as a new tab in `rocco_ui.py`, alongside the existing Curator. See `planning/` for detailed planning:
-- **`planning/02_General_Assistant.md`** — unified architecture (discovery + education as one conversational assistant)
-- **`planning/ADR_Search_Approach.md`** — why hybrid FAISS + Neo4j works for sparse metadata
-- **`planning/04_Tasks.md`** — week-by-week intern work breakdown
+1. **Description Curator** (Current)
+   - Rubric-based evaluation of dataset descriptions
+   - RAG-powered enhancement with automatic citation generation
+   - Interactive refinement via multi-turn conversation
+   - Domain-customizable evaluation criteria
 
-The expansion is in **planning phase** (2 interns, ~8 weeks). No code changes to the existing Curator yet.
+2. **Dataset Discovery Assistant** (Planned)
+   - Semantic search + metadata filtering over research datasets
+   - Hybrid FAISS + Neo4j for sparse, structured metadata
+   - Natural language queries across dataset catalogs
+   - See `planning/ADR_Search_Approach.md` for architecture
+
+3. **Educational Support Assistant** (Planned)
+   - Domain knowledge Q&A and workflow guidance
+   - Dataset best practices and tutorials
+   - Research method explanations
+   - See `planning/02_General_Assistant.md` for unified architecture
+
+All modules will be accessible via a unified Streamlit interface with shared session history. Development: 2 interns, ~8 weeks (detailed in `planning/04_Tasks.md`).
+
+### Phase 2: Long-Term Roadmap
+- **Custom rubric templates** — domain-specific evaluation criteria per research group
+- **Bulk processing** — evaluate/enhance entire dataset collections at once
+- **External vector stores** — scale RAG with Pinecone, Weaviate (current: local FAISS only)
+- **Audit trail & versioning** — full provenance of all description edits
+- **Portal integration** — direct API hooks instead of Streamlit-only deployment
+- **Multi-language support** — translation-aware evaluation and RAG
 
 ---
 
@@ -326,8 +348,8 @@ Sessions are JSON files with this structure:
 ## Important Notes
 
 ### Before Modifying Components
-- **Evaluator rubric** (`src/evaluator/rubric.json`): Changing criteria affects the 10-point scale; update examples if you change criteria
-- **Few-shot examples** (`src/evaluator/examples_v3.json`): Directly influence evaluator output quality; test thoroughly after changes
+- **Evaluator rubric** (`src/evaluator/rubric.json`): The rubric is domain-customizable (currently porous media). Changing criteria affects the 10-point scale; update examples if you change criteria. For other domains, create a new rubric file and load it via configuration.
+- **Few-shot examples** (`src/evaluator/examples_v3.json`): Directly influence evaluator output quality; test thoroughly after changes. Domain-specific examples should be created when deploying to new research areas.
 - **Prompt versions** (`src/prompts/*.yaml`): Use semantic versioning; major bumps indicate breaking output format changes
 - **Vector store** (FAISS): Rebuilding requires re-ingesting all documents; preserve old indexes during transition
 - **LLM calls**: All use the SambaNova endpoint; model names differ between CLI and UI; check `src/llm/client.py` for defaults
@@ -352,33 +374,3 @@ Sessions are JSON files with this structure:
 - Architecture diagrams clarified to show "uploaded_documents" in data flow
 - Prompt examples updated with new source terminology
 
----
-
-## Future Plans
-
-### Phase 1: General AI Assistant (In Development — Q3 2026)
-Rocco is expanding from description curation to a broader research assistant. Two major new capabilities are planned:
-
-**1. Dataset Discovery Module**
-- Semantic search over 176 datasets in DPM Portal using hybrid FAISS + Neo4j
-- Metadata filtering (rock type, measurement method, permeability range, etc.)
-- Integration strategy: New tab in `rocco_ui.py` alongside existing Curator
-- Tech: FAISS for embedding similarity + Neo4j for structured metadata queries
-- See `planning/ADR_Search_Approach.md` for search architecture rationale
-
-**2. Educational Support Module**
-- Domain knowledge Q&A for porous media research
-- Workflow guidance (how to prepare samples, imaging techniques, data organization)
-- Tutorials on dataset best practices
-- Integration: Conversational assistant tab with session history
-- See `planning/02_General_Assistant.md` for unified architecture design
-
-**Timeline:** 2 interns, ~8 weeks (planning in `planning/04_Tasks.md`)
-
-### Phase 2: Long-Term Roadmap
-- **Bulk description enhancement** — process entire dataset directories at once
-- **Custom rubric templates** — let research groups define domain-specific evaluation criteria
-- **External vector stores** — support Pinecone, Weaviate for large-scale RAG (current: local FAISS only)
-- **Audit trail & versioning** — track all description edits with full provenance
-- **Integration with DPM Portal** — direct API hooks instead of Streamlit-only interface
-- **Multi-language support** — support descriptions in multiple languages with translation-aware RAG

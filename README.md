@@ -31,7 +31,7 @@ Rocco is an AI-powered description curator and evaluator for the [Digital Porous
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/USER/dpm-rocco-curator.git
+   git clone https://github.com/digital-porous-media/dpm-rocco-curator.git
    cd dpm-rocco-curator
    ```
 
@@ -111,42 +111,7 @@ See [`.env.example`](.env.example) for all supported providers and their base UR
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│            Streamlit UI (rocco_ui.py)               │
-├─────────────────────────────────────────────────────┤
-│                                                       │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  DescriptionEvaluator (evaluator.py)          │ │
-│  │  → Scores against 10-criterion rubric          │ │
-│  └────────────────────────────────────────────────┘ │
-│                        ↓                             │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  DocumentIngestor + VectorStore (FAISS)        │ │
-│  │  → Chunks PDFs/DOCX, embeds for RAG            │ │
-│  └────────────────────────────────────────────────┘ │
-│                        ↓                             │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  DescriptionEditor (editor.py)                 │ │
-│  │  → Improves description with RAG context       │ │
-│  └────────────────────────────────────────────────┘ │
-│                        ↓                             │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  ContentScreener (content_screener.py)         │ │
-│  │  → Validates user feedback                     │ │
-│  └────────────────────────────────────────────────┘ │
-│                        ↓                             │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  RoccoClient (llm/client.py)                   │ │
-│  │  → Provider-agnostic OpenAI SDK wrapper        │ │
-│  └────────────────────────────────────────────────┘ │
-│                        ↓                             │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  LLM Provider (OpenAI, Anthropic, Ollama, etc) │ │
-│  └────────────────────────────────────────────────┘ │
-│                                                       │
-└─────────────────────────────────────────────────────┘
-```
+![Architecture Diagram](docs/architecture_diagram.svg)
 
 ## Core Components
 
@@ -176,7 +141,7 @@ All LLM prompts are externalized as YAML files with semantic versioning:
 To contribute to Rocco:
 
 ```bash
-git clone https://github.com/USER/dpm-rocco-curator.git
+git clone https://github.com/digital-porous-media/dpm-rocco-curator.git
 cd dpm-rocco-curator
 pip install -e ".[dev]"
 ```
@@ -244,15 +209,15 @@ For detailed architecture, configuration, and development guidance, see:
 
 If you use Rocco in your research, please cite it using the DOI from Zenodo:
 
-[![DOI](https://zenodo.org/badge/...)](https://zenodo.org/record/...)
+[![DOI](https://zenodo.org/badge/20146094.svg)](https://zenodo.org/records/20146094)
 
 ```bibtex
-@software{rocco2024,
+@software{rocco2025,
   author = {DPM Rocco Contributors},
   title = {Rocco: AI Curator for Dataset Descriptions},
-  year = {2024},
-  doi = {10.5281/zenodo.YOUR-DOI},
-  url = {https://github.com/USER/dpm-rocco-curator}
+  year = {2025},
+  doi = {10.5281/zenodo.20146094},
+  url = {https://github.com/digital-porous-media/dpm-rocco-curator}
 }
 ```
 
@@ -266,8 +231,8 @@ We welcome bug reports, feature requests, and pull requests! Please see [CONTRIB
 
 ## Support
 
-- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/USER/dpm-rocco-curator/issues)
-- **Questions**: Open a discussion on [GitHub Discussions](https://github.com/USER/dpm-rocco-curator/discussions)
+- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/digital-porous-media/dpm-rocco-curator/issues)
+- **Questions**: Open a discussion on [GitHub Discussions](https://github.com/digital-porous-media/dpm-rocco-curator/discussions)
 
 ## Acknowledgments
 

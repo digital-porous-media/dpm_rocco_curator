@@ -16,7 +16,7 @@ We are committed to providing a welcoming and respectful environment for all con
 
 1. **Fork and clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/dpm-rocco-curator.git
+   git clone https://github.com/digital-porous-media/dpm-rocco-curator.git
    cd dpm-rocco-curator
    ```
 

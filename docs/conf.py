@@ -1,4 +1,9 @@
 # Configuration file for the Sphinx documentation builder.
+import sys
+from pathlib import Path
+
+# Add src directory to Python path for autodoc
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 project = "Rocco"
 copyright = "2024, DPM Rocco Contributors"

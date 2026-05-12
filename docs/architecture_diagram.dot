@@ -1,0 +1,103 @@
+digraph Pipeline {
+
+    rankdir=TB;
+    fontsize=16;
+    fontname="Helvetica";
+    bgcolor="transparent";
+
+    node [
+        shape=box,
+        style="rounded,filled",
+        fontname="Helvetica",
+        fontsize=14,
+        margin="0.35,0.25",
+        penwidth=2
+    ];
+
+    edge [
+        fontname="Helvetica",
+        fontsize=12,
+        penwidth=2
+    ];
+
+    INPUT [
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                <TR><TD><B><FONT POINT-SIZE="15">Draft Description</FONT></B></TD></TR>
+                <TR><TD><FONT POINT-SIZE="13">User-provided description</FONT></TD></TR>
+            </TABLE>
+        >,
+        fillcolor="#e3f2fd",
+        height=1.4,
+        width=3.5
+    ];
+
+    EVAL [
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                <TR><TD><B><FONT POINT-SIZE="15">Evaluator</FONT></B></TD></TR>
+                <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/evaluator</FONT></TD></TR>
+                <TR><TD><FONT POINT-SIZE="13">10-point rubric scoring</FONT></TD></TR>
+            </TABLE>
+        >,
+        fillcolor="#fff3e0",
+        height=1.4,
+        width=3.5
+    ];
+
+    RAG [
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                <TR><TD><B><FONT POINT-SIZE="15">Retriever</FONT></B></TD></TR>
+                <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/retriever</FONT></TD></TR>
+                <TR><TD><FONT POINT-SIZE="13">RAG pipeline</FONT></TD></TR>
+            </TABLE>
+        >,
+        fillcolor="#f3e5f5",
+        height=1.4,
+        width=3.5
+    ];
+
+    SCREEN [
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                <TR><TD><B><FONT POINT-SIZE="15">Content Screener</FONT></B></TD></TR>
+                <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/llm</FONT></TD></TR>
+                <TR><TD><FONT POINT-SIZE="13">Validate feedback</FONT></TD></TR>
+            </TABLE>
+        >,
+        fillcolor="#f3e5f5",
+        height=1.4,
+        width=3.5
+    ];
+
+    EDIT [
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                <TR><TD><B><FONT POINT-SIZE="15">Editor</FONT></B></TD></TR>
+                <TR><TD><FONT FACE="monospace" POINT-SIZE="12">src/editor</FONT></TD></TR>
+                <TR><TD><FONT POINT-SIZE="13">Apply feedback + context</FONT></TD></TR>
+            </TABLE>
+        >,
+        fillcolor="#fff3e0",
+        height=1.4,
+        width=3.5
+    ];
+
+    OUTPUT [
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+                <TR><TD><B><FONT POINT-SIZE="15">Refined Description</FONT></B></TD></TR>
+                <TR><TD><FONT POINT-SIZE="12">(Output)</FONT></TD></TR>
+                <TR><TD><FONT POINT-SIZE="13">With citations</FONT></TD></TR>
+            </TABLE>
+        >,
+        fillcolor="#c8e6c9",
+        height=1.4,
+        width=3.5
+    ];
+
+    INPUT -> EVAL -> EDIT -> OUTPUT;
+    RAG -> EDIT;
+    SCREEN -> EDIT;
+}
