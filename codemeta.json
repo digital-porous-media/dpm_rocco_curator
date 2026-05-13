@@ -84,6 +84,7 @@
     ],
     "releaseNotes": "Initial release",
     "version": "1.0.0",
+    "identifier": "10.5281/zenodo.20172376",
     "developmentStatus": "active",
     "funding": "NSF GEO OSE 2324786",
     "issueTracker": "https://github.com/digital-porous-media/dpm_rocco_curator/issues"

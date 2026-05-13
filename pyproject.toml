@@ -89,3 +89,4 @@ benchmarks = [
 "Documentation" = "https://digital-porous-media.github.io/dpm_rocco_curator/"
 "Repository" = "https://github.com/digital-porous-media/dpm_rocco_curator.git"
 "Bug Tracker" = "https://github.com/digital-porous-media/dpm_rocco_curator/issues"
+"Zenodo" = "https://doi.org/10.5281/zenodo.20172375"

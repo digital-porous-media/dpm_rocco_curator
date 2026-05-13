@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20172375.svg)](https://doi.org/10.5281/zenodo.20172375)
 
 Rocco is an AI-powered description curator and evaluator framework, designed for the [Digital Porous Media (DPM) Portal](https://digitalporousmedia.org/). It helps researchers improve dataset descriptions using a rubric-based evaluation framework, retrieval-augmented generation (RAG) from uploaded research papers, and an interactive user feedback loop.
 
@@ -234,9 +235,14 @@ If you use Rocco in your research, please cite it:
   author = {Chang, Bernard and Esteva, Maria and Nowacek, Zachary and Prodanović, Maša},
   title = {Rocco: AI Curator for Dataset Descriptions},
   year = {2025},
+  doi = {10.5281/zenodo.20172376},
   url = {https://github.com/digital-porous-media/dpm-rocco-curator}
 }
 ```
+
+**DOI References:**
+- **Concept DOI** (all versions): [10.5281/zenodo.20172375](https://doi.org/10.5281/zenodo.20172375) — cite this to reference Rocco
+- **Version DOI (v1.0.0)**: [10.5281/zenodo.20172376](https://doi.org/10.5281/zenodo.20172376) — for citing this specific release
 
 ## License
 

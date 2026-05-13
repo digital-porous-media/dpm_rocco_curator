@@ -32,4 +32,9 @@ license: MIT
 repository-code: https://github.com/digital-porous-media/dpm_rocco_curator
 version: "1.0.0"
 date-released: "2026-05-13"
+doi: "10.5281/zenodo.20172376"
+identifiers:
+  - type: "url"
+    value: "https://zenodo.org/records/20172375"
+    description: "Concept DOI for all versions of Rocco"
 message: "If you use Rocco in your research, please cite it as below."
