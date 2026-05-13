@@ -1,0 +1,90 @@
+{
+    "@context": "https://w3id.org/codemeta/3.0",
+    "type": "SoftwareSourceCode",
+    "applicationCategory": "Data Curation",
+    "author": [
+        {
+            "id": "https://orcid.org/0000-0002-7809-0443",
+            "type": "Person",
+            "affiliation": {
+                "type": "Organization",
+                "name": "The University of Texas at Austin"
+            },
+            "email": "bernard.chang@austin.utexas.edu",
+            "familyName": "Chang",
+            "givenName": "Bernard"
+        },
+        {
+            "id": "https://orcid.org/0000-0001-6204-4517",
+            "type": "Person",
+            "affiliation": {
+                "type": "Organization",
+                "name": "Texas Advanced Computing Center, The University of Texas at Austin"
+            },
+            "email": "maria@tacc.utexas.edu",
+            "familyName": "Esteva",
+            "givenName": "Maria"
+        },
+        {
+            "id": "_:author_3",
+            "type": "Person",
+            "affiliation": {
+                "type": "Organization",
+                "name": "Washington University in St. Louis"
+            },
+            "email": "zacharynowacek@gmail.com",
+            "familyName": "Nowacek",
+            "givenName": "Zachary"
+        },
+        {
+            "id": "https://orcid.org/0000-0002-1335-1374",
+            "type": "Person",
+            "affiliation": {
+                "type": "Organization",
+                "name": "The University of Texas at Austin"
+            },
+            "email": "masha@utexas.edu",
+            "familyName": "Prodanović",
+            "givenName": "Maša"
+        }
+    ],
+    "codeRepository": "https://github.com/digital-porous-media/dpm_rocco_curator",
+    "dateCreated": "2025-07-25",
+    "dateModified": "2026-05-12",
+    "datePublished": "2026-05-13",
+    "description": "Rocco is a domain-agnostic AI framework for automating research data curation, enhancement, discovery, and educational support. By integrating rubric-based evaluation, retrieval-augmented generation (RAG), and interactive feedback workflows, Rocco helps researchers improve dataset documentation and facilitate knowledge discovery across research domains.\n\nRocco combines multiple capabilities into an end-to-end research assistant. Individual components can be used independently for specific tasks, while integrated workflows provide comprehensive support for dataset curation and researcher education. By design, Rocco leverages open LLM providers (OpenAI-compatible endpoints) with flexible provider configuration.\n\nRocco was designed for porous media datasets in the Digital Porous Media Portal. However, the framework is easily extensible to other research domains through customizable rubrics, prompts, and RAG context.\n\nCurrent Modules:\n---\nDescription Evaluator: Evaluates dataset descriptions against a customizable rubric (currently 10 criteria for porous media)\n\nDescription Writer: Retrieves relevant context from researcher-uploaded papers and user feedback, and generates enhanced descriptions with automatic citation tracking. Supports multi-turn refinement with conversation history.\n\nContent Screener: Validates user feedback for relevance, accuracy, coherence, and respectfulness. Recommends accepting, flagging, or rejecting feedback before integration into descriptions.\n\nVector Store & RAG Pipeline: Ingests PDF and DOCX documents, chunks them with metadata enrichment (title, page number, chunk index), and enables semantic search for RAG context. Supports local FAISS vectors with extensibility to external providers.\n\nInteractive Session Manager: Persists editing sessions with full conversation history, allowing researchers to reload and continue multi-turn refinement workflows.\n\nAll LLM interactions are routed through a provider-agnostic client supporting OpenAI-compatible endpoints. This release of Rocco includes all necessary dependencies for core functionality; no additional system-level dependencies are needed.\n",
+    "funder": {
+        "type": "Organization",
+        "name": "National Science Foundation, USA"
+    },
+    "isPartOf": "https://github.com/digital-porous-media",
+    "keywords": [
+        "data curation",
+        "dataset documentation",
+        "retrieval-augmented generation (RAG)",
+        "large language models",
+        "description evaluation",
+        "research data description enhancement",
+        "semantic search",
+        "porous media",
+        "artificial intelligence",
+        "ai-powered curation"
+    ],
+    "license": "https://spdx.org/licenses/MIT",
+    "name": "Rocco: AI Curation Framework",
+    "operatingSystem": [
+        "Linux",
+        "Windows",
+        "MacOS"
+    ],
+    "programmingLanguage": "Python 3",
+    "relatedLink": [
+        "https://digital-porous-media.github.io/dpm_rocco_curator/",
+        "https://digitalporousmedia.org"
+    ],
+    "releaseNotes": "Initial release",
+    "version": "1.0.0",
+    "developmentStatus": "active",
+    "funding": "NSF GEO OSE 2324786",
+    "issueTracker": "https://github.com/digital-porous-media/dpm_rocco_curator/issues"
+}

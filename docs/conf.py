@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 project = "Rocco"
-copyright = "2024, DPM Rocco Contributors"
-author = "DPM Rocco Contributors"
+copyright = "2024-2025, Digital Porous Media"
+author = "Bernard Chang, Maria Esteva, Zachary Nowacek, Maša Prodanović"
 release = "1.0.0"
 
 extensions = [

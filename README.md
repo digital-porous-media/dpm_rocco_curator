@@ -3,23 +3,21 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
-Rocco is an AI-powered description curator and evaluator for the [Digital Porous Media (DPM) Portal](https://digitalporousmedia.org/). It helps researchers improve dataset descriptions using a rubric-based evaluation framework, retrieval-augmented generation (RAG) from uploaded research papers, and an interactive user feedback loop.
+Rocco is an AI-powered description curator and evaluator framework, designed for the [Digital Porous Media (DPM) Portal](https://digitalporousmedia.org/). It helps researchers improve dataset descriptions using a rubric-based evaluation framework, retrieval-augmented generation (RAG) from uploaded research papers, and an interactive user feedback loop.
 
 ## Features
 
-✨ **Description Evaluation**: Score descriptions against a 10-criterion rubric covering completeness, clarity, data organization, quality control, and accessibility.
+**Description Evaluation**: Score descriptions against a 10-criterion rubric covering completeness, clarity, data organization, quality control, and accessibility.
 
-✨ **RAG-Powered Enhancement**: Automatically improve descriptions using relevant excerpts from your uploaded research papers and documents.
+**RAG-Powered Enhancement**: Automatically improve descriptions using relevant excerpts from your uploaded research papers and documents.
 
-✨ **Interactive Feedback**: Validate and integrate user feedback into refined descriptions with full citation tracking.
+**Interactive Feedback**: Validate and integrate user feedback into refined descriptions with full citation tracking.
 
-✨ **Multi-Turn Refinement**: Use the **Context Manager** to selectively enable/disable prior feedback rounds, review source documents, and iterate toward higher scores.
+**Multi-Turn Refinement**: Use the **Context Manager** to selectively enable/disable prior feedback rounds, review source documents, and iterate toward higher scores.
 
-✨ **Citation Tracking**: Every added fact is traced to its source (original description, uploaded document, or user feedback) with exact quotes for verification.
+**Citation Tracking**: Every added fact is traced to its source (original description, uploaded document, or user feedback) with exact quotes for verification.
 
-✨ **Multi-LLM Support**: Use OpenAI, Anthropic, Ollama, DeepSeek, Gemini, or any OpenAI-compatible LLM provider.
-
-✨ **Session Persistence**: Save and reload description refinement sessions to continue iterative improvement.
+**Multi-LLM Support**: Use any OpenAI-compatible LLM provider!
 
 ## Quick Start
 
@@ -136,6 +134,26 @@ All LLM prompts are externalized as YAML files with semantic versioning:
 - **editor.yaml**: Description enhancement prompt
 - **content_screener.yaml**: Feedback validation prompt
 
+## Evaluation Benchmarks
+
+We validated Rocco's evaluation accuracy by comparing its grading results with human evaluators on five published DPM datasets (Armstrong, Mostaghimi, & McClure, [2025](https://doi.org/10.17612/NXDJ-0Y17); Chen et al., [2019](https://doi.org/10.17612/1FHH-Q252); Guiltinan et al., [2020](https://doi.org/10.17612/P522-CC94); Vidal et al., [2024](https://doi.org/10.17612/XR50-S717); Wang, Bultreys, & Spurin, [2023](https://doi.org/10.17612/XR50-S717)).
+
+### Key Findings
+
+**Consistency with Human Evaluators**: Rocco's score distributions were largely consistent with human evaluators' scores across all five descriptions. While Rocco gave fewer half-point scores and more full-point scores, this represents a stylistic difference rather than systematic bias.
+
+**Statistical Analysis**: We employed a cumulative link mixed model (CLMM) to quantify differences between Rocco and human evaluators. Using 300 scores (6 evaluators × 5 descriptions × 10 rubric items), bootstrapping revealed:
+- **Median leniency contrast**: -0.024 (95% credible interval: [-0.493, 0.306])
+- **Interpretation**: Rocco is marginally stricter than human evaluators, but the credible interval centered near zero indicates little to no evidence of systematic difference
+
+**Per-Rubric-Item Analysis**: Rocco showed slightly stricter scoring on items 2, 4, 5, and 8 (context of creation, research problem, reuse and beneficiaries, and quality control), but magnitudes and credible intervals indicate these divergences are small. Items 2 and 4's differences likely stem from ambiguity in their definitions rather than substantive disagreement; items 5 and 8 required more literal rubric application than expected from human evaluators.
+
+### Implications
+
+Rocco's evaluation results demonstrate high agreement with expert human judgment, validating its use as an automated assessment tool for dataset descriptions. The framework is well-suited for both standalone evaluation and as the foundation for iterative description improvement workflows.
+
+**Full study data, analysis code, and figures are in the [`benchmarks/`](benchmarks/) folder.**
+
 ## Installation for Development
 
 To contribute to Rocco:
@@ -164,7 +182,9 @@ pytest -v tests/test_file.py  # Single file with verbose output
 
 ## Documentation
 
-For detailed architecture, configuration, and development guidance, see:
+**Complete documentation:** https://digital-porous-media.github.io/dpm_rocco_curator/
+
+For additional resources, see:
 
 - **[CLAUDE.md](CLAUDE.md)** — Developer guide (components, patterns, implementation details)
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contribution guidelines and code standards
@@ -207,16 +227,13 @@ For detailed architecture, configuration, and development guidance, see:
 
 ## Citation
 
-If you use Rocco in your research, please cite it using the DOI from Zenodo:
-
-[![DOI](https://zenodo.org/badge/20146094.svg)](https://zenodo.org/records/20146094)
+If you use Rocco in your research, please cite it:
 
 ```bibtex
 @software{rocco2025,
-  author = {DPM Rocco Contributors},
+  author = {Chang, Bernard and Esteva, Maria and Nowacek, Zachary and Prodanović, Maša},
   title = {Rocco: AI Curator for Dataset Descriptions},
   year = {2025},
-  doi = {10.5281/zenodo.20146094},
   url = {https://github.com/digital-porous-media/dpm-rocco-curator}
 }
 ```

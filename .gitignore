@@ -18,6 +18,7 @@ env/
 faiss_index/
 
 # Streamlit session files
+.streamlit/
 sessions/
 session_*.json
 

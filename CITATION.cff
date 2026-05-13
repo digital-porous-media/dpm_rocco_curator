@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+title: "Rocco: AI Curator Framework"
+authors:
+  - family-names: Chang
+    given-names: Bernard
+    orcid: https://orcid.org/0000-0002-7809-0443
+    affiliation: "The University of Texas at Austin"
+  - family-names: Esteva
+    given-names: Maria
+    orcid: https://orcid.org/0000-0001-6204-4517
+    affiliation: "Texas Advanced Computing Center, The University of Texas at Austin"
+  - family-names: Nowacek
+    given-names: Zachary
+    affiliation: "Washington University in St. Louis"
+  - family-names: Prodanović
+    given-names: Maša
+    orcid: https://orcid.org/0000-0002-1335-1374
+    affiliation: "The University of Texas at Austin"
+description: "Rocco is a domain-agnostic AI framework for automating research data curation, enhancement, discovery, and educational support. By integrating rubric-based evaluation, retrieval-augmented generation (RAG), and interactive feedback workflows, Rocco helps researchers improve dataset documentation and facilitate knowledge discovery across research domains.\n\nRocco combines multiple capabilities into an end-to-end research assistant. Individual components can be used independently for specific tasks, while integrated workflows provide comprehensive support for dataset curation and researcher education. By design, Rocco leverages open LLM providers (OpenAI-compatible endpoints) with flexible provider configuration.\n\nRocco was designed for porous media datasets in the Digital Porous Media Portal. However, the framework is easily extensible to other research domains through customizable rubrics, prompts, and RAG context.\n\nCurrent Modules:\n- Description Evaluator: Evaluates dataset descriptions against a customizable rubric (currently 10 criteria for porous media)\n- Description Writer: Retrieves relevant context from researcher-uploaded papers and user feedback, and generates enhanced descriptions with automatic citation tracking. Supports multi-turn refinement with conversation history.\n- Content Screener: Validates user feedback for relevance, accuracy, coherence, and respectfulness. Recommends accepting, flagging, or rejecting feedback before integration into descriptions.\n- Vector Store & RAG Pipeline: Ingests PDF and DOCX documents, chunks them with metadata enrichment (title, page number, chunk index), and enables semantic search for RAG context. Supports local FAISS vectors with extensibility to external providers.\n- Interactive Session Manager: Persists editing sessions with full conversation history, allowing researchers to reload and continue multi-turn refinement workflows.\n\nAll LLM interactions are routed through a provider-agnostic client supporting OpenAI-compatible endpoints. This release of Rocco includes all necessary dependencies for core functionality; no additional system-level dependencies are needed."
+keywords:
+  - "data curation"
+  - "dataset documentation"
+  - "retrieval-augmented generation"
+  - "large language models"
+  - "description evaluation"
+  - "research data description enhancement"
+  - "semantic search"
+  - "porous media"
+  - "artificial intelligence"
+  - "ai-powered curation"
+license: MIT
+repository-code: https://github.com/digital-porous-media/dpm_rocco_curator
+version: "1.0.0"
+date-released: "2026-05-13"
+message: "If you use Rocco in your research, please cite it as below."
