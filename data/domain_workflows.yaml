@@ -1,0 +1,14 @@
+# DRP (Digital Rock Physics) workflows.
+# Bernie authors all 15 entries — do not edit without domain review.
+# Format:
+#   - name: "Workflow Name"
+#     description: "What the workflow does"
+#     steps: [step1, step2, ...]
+#     inputs: [list of required inputs]
+#     outputs: [list of outputs]
+#     software: [tools commonly used]
+#     references: [DOIs or paper titles]
+
+workflows:
+  # TODO (Bernie, Weeks -3 to -1): fill in all 15 DRP workflows before intern Week 1
+  []

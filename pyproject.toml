@@ -61,6 +61,7 @@ dependencies = [
 graph = [
     "neo4j>=5.27.0",
     "langchain-neo4j>=0.1.1",
+    "langchain-openai>=0.2.0",
 ]
 docs = [
     "sphinx>=7.0",

@@ -1,0 +1,21 @@
+# Portal tutorial URLs mapped to user goals.
+# Bernie and Intern B populate this during Weeks 2-3.
+# Format:
+#   - goal: "short description of what user wants to do"
+#     url: "https://..."
+#     keywords: [list, of, search, terms]
+
+tutorials:
+  # TODO (Bernie + Intern B, Week 2): add 20+ entries
+  # Examples to fill in:
+  - goal: "upload a dataset to the DPM portal"
+    url: ""
+    keywords: [upload, submit, dataset, contribute]
+
+  - goal: "download a dataset"
+    url: ""
+    keywords: [download, access, get data]
+
+  - goal: "search for datasets by rock type"
+    url: ""
+    keywords: [search, filter, rock type, lithology]

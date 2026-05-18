@@ -362,15 +362,146 @@ Sessions are JSON files with this structure:
 
 ---
 
+---
+
+## General Assistant Development (Q3 2026)
+
+### Overview
+
+Rocco is being extended with a General Assistant tab — a unified conversational interface for dataset discovery, domain Q&A, and workflow guidance. Development is tracked on the [GitHub Project board](https://github.com/orgs/digital-porous-media/projects/3).
+
+**Branch:** `feature/general-assistant` off `main`. Interns branch off this per task; merges to `main` + tag `v2.0.0` at Week 7.
+
+### New Repo Structure
+
+```
+src/assistant/
+├── __init__.py
+├── tools.py                  # all callable tools — shared interface both interns code to
+├── conversation_manager.py   # LangGraph ReAct agent (intent → dispatch → synthesize)
+├── assistant.py              # one-line re-export of ConversationManager (backwards compat)
+├── graph_store.py            # Neo4j vector index + structured Cypher search
+├── publication_corpus.py     # FAISS over chunked paper PDFs
+├── literature_search.py      # Semantic Scholar API wrapper (Bernie pre-builds)
+├── llm.py                    # ChatOpenAI + OpenAIEmbeddings singletons for assistant
+└── assistant_ui.py           # Streamlit UI — added as new tab in rocco_ui.py Week 6
+
+src/prompts/                  # new prompts alongside existing ones
+├── assistant.yaml            # intent classifier (semantic_search / metadata_filter /
+│                             #   domain_qa / workflow_guidance / query_expansion / literature_search)
+├── query_expander.yaml       # user query → expanded_query + inferred_filters + rationale
+└── educational.yaml          # domain Q&A + workflow synthesis
+
+data/
+├── tutorials.yaml                 # 20+ user goals → verified portal tutorial URLs
+├── domain_workflows.yaml          # 15 DRP workflows (Bernie authors; do not edit without domain review)
+├── metadata/                      # scraped DRP metadata JSONs — GITIGNORED
+├── curated_papers/                # licensed PDFs — GITIGNORED, do not commit
+└── publication_vector_store/      # generated FAISS index — GITIGNORED
+
+scripts/
+├── scrape_metadata.py             # downloads DRP metadata JSONs from TACC Corral
+├── build_dataset_vector_index.py  # embeds dataset nodes → Neo4j vector index
+└── build_publication_index.py     # chunks PDFs → data/publication_vector_store/
+
+tests/assistant/
+├── conftest.py                    # fixtures: mock Neo4j driver, small FAISS index
+├── test_graph_store.py
+├── test_publication_corpus.py
+└── test_search_integration.txt
+```
+
+### Search Architecture
+
+Three-layer search — all handled in `graph_store.py`:
+
+1. **Neo4j vector index** — semantic similarity over dataset nodes (embeddings stored as node properties via `db.index.vector`). Replaces the old separate FAISS-over-descriptions approach.
+2. **Neo4j structured filtering** — exact Cypher queries on `Sample`/`DigitalDataset` properties. Combined with vector search in a single query where possible.
+3. **Publication FAISS** — chunked full-text of associated papers, tagged by dataset ID. Separate from the graph because chunked documents don't fit as graph nodes.
+
+Source labels on all results: `[graph match]`, `[semantic match]`, `[paper match]`, `[graph+paper]`.
+
+### Literature Strategy
+
+- **Curated papers** — PDFs in `data/curated_papers/`; embedded via `DocumentIngestor` into `data/publication_vector_store/`
+- **Semantic Scholar** — free API, one `SEMANTIC_SCHOLAR_API_KEY` in server `.env` (no per-user keys)
+- **Routing** — publication FAISS first (≥0.75 confidence); fall back to Semantic Scholar; always label source
+
+### Key Design Constraints
+
+- `graph_store.py` must accept `filters: dict` (not hardcoded field names) — required for future Croissant file-level metadata extension
+- `USE_NEO4J=false` env flag must allow the assistant to fall back to publication FAISS only
+- Session state for the new tab must be namespaced (Bernie adds `curator_` prefix to all existing keys in Week 6)
+- Never assert a dataset property that isn't present in the graph — honest gap responses required
+
+### Prompts for New Modules
+
+Follow the existing versioned YAML pattern in `src/prompts/`. New files:
+- `assistant.yaml` — intent classifier
+- `query_expander.yaml` — LLM query expansion
+- `educational.yaml` — domain Q&A and workflow synthesis
+
+### Index Rebuild
+
+```bash
+# Rebuild Neo4j vector index (dataset nodes)
+python scripts/build_dataset_vector_index.py
+
+# Rebuild publication FAISS
+python scripts/build_publication_index.py
+```
+
+Both are also triggerable via the stretch-goal index management API (`src/assistant/index_api.py`) once implemented.
+
+### LLM / Agent Stack for the Assistant
+
+The assistant module uses a **separate** LLM layer from the curator (`src/llm/client.py`):
+
+| Component | Class | Module | Notes |
+|-----------|-------|--------|-------|
+| Chat LLM | `ChatOpenAI` | `langchain_openai` | Configured from same `.env` vars; works with SambaNova, OpenAI, etc. |
+| Embeddings | `OpenAIEmbeddings` | `langchain_openai` | Custom `EMBEDDING_URL` for SambaNova embedding endpoint |
+| Agent | `create_react_agent` | `langgraph.prebuilt` | LangGraph ReAct; replaces legacy `AgentExecutor` (removed in langchain 1.x) |
+| Memory | `MemorySaver` | `langgraph.checkpoint.memory` | In-process per-session history; resets on restart |
+
+The curator still uses `LLMClient` (`src/llm/client.py`) — do not change that.
+
+**Conda environment:** All development uses `conda activate rocco_ai`.
+
+### APOC Note
+
+APOC is **not required**. The Cypher generation prompt in `graph_store.py` explicitly forbids `apoc.*` calls, making the code portable across local Neo4j (Homebrew), the TACC VM, and AuraDB.
+
+### Week-by-Week Plan (Intern Sprint)
+
+| Week | Intern A | Intern B | Bernie |
+|------|----------|----------|--------|
+| 1 | Onboarding only | Onboarding only | — |
+| 2 | `graph_store.py` + Neo4j audit | `tutorials.yaml`, prompt drafts, `assistant_ui.py` shell | — |
+| 3 | `publication_corpus.py`, source labels | `expand_query`, `get_educational_context`, `get_workflow_guidance`, literature routing | Domain feedback, paper downloads |
+| 4 | Publication corpus integration, dedup, integration tests | Full `conversation_manager.py` wiring, Sources panel | — |
+| 5 | Fallback test, docstrings | Cross-intent queries, UI polish, docstrings | Semantic Scholar QA |
+| 6 | Source labels in UI | Connect UI to tab | **Own `rocco_ui.py` tab integration** |
+| 7 | Docs + final search eval | Docs + final assistant eval | — |
+| 8–9 | Poster + paper (independent) | Poster + paper (independent) | Review drafts only |
+
+All 51 tasks are tracked at: https://github.com/orgs/digital-porous-media/projects/3
+
+---
+
 ## Recent Changes
+
+### General Assistant Skeleton (May 2026)
+- Created `src/assistant/` with working implementations ported from legacy `Chatbot/` folder
+- `conversation_manager.py` is the top-level orchestrator (renamed from `assistant.py` to avoid confusion with Intern B's educational work); `assistant.py` is a one-line re-export
+- Agent upgraded from legacy `AgentExecutor` (removed in langchain 1.x) to `langgraph.prebuilt.create_react_agent` + `MemorySaver`
+- LLM/embeddings for assistant use `ChatOpenAI` + `OpenAIEmbeddings` from `langchain_openai` (provider-agnostic via `.env`; `langchain_sambanova` not required)
+- `graph_store.py` documents full Neo4j schema; Neo4j imports are lazy so `USE_NEO4J=false` works without the driver loading
+- `scripts/scrape_metadata.py` ported from `CurationTools/ScrapesMetadata.py`
+- Credential files (`Chatbot/passwords.py`, `CurationTools/credentials.py`) replaced with `.env` pattern throughout
 
 ### Citation Naming (May 2026)
 - Renamed `"context_chunk"` source type to **`"uploaded_document"`** for better UX clarity
 - Updated everywhere: `src/llm/schemas.py`, `src/prompts/editor.yaml`, all documentation
 - No code logic change — just more intuitive naming for end users
-
-### Documentation Updates
-- All user and developer guides updated to reflect new citation source naming
-- Architecture diagrams clarified to show "uploaded_documents" in data flow
-- Prompt examples updated with new source terminology
 
