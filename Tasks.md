@@ -7,7 +7,11 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 ## Environment & Infrastructure
 
 - [x] Install Neo4j via Homebrew (`neo4j 2026.04.0`)
-- [x] Create `rocco_ai` conda environment with all dependencies
+- [x] Create `rocco_ai` conda environment with all dependencies (includes `langchain-neo4j`)
+- [ ] Install graph dependencies:
+  ```bash
+  pip install -e ".[graph]"  # Installs neo4j, langchain-neo4j, langchain-openai
+  ```
 - [ ] Start Neo4j and set password
   ```bash
   neo4j start
@@ -42,12 +46,19 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
   conda activate rocco_ai
   python scripts/scrape_metadata.py --output data/metadata/
   ```
-- [ ] Load metadata into Neo4j using `CurationTools/JsonToNeo4jwKeywords.ipynb`
-  - Open the notebook, update credentials cell to use `.env` values (not passwords.py)
-  - Run all cells — this creates all nodes, relationships, embeddings, and the vector index
-  - Verify in Neo4j Browser: `MATCH (d:Dataset) RETURN count(d)`
+- [ ] Load metadata into Neo4j:
+  ```bash
+  conda run -n rocco python scripts/load_graph.py --mode rebuild
+  ```
+  Verify in Neo4j Browser: `MATCH (d:Dataset) RETURN count(d)` — expect 176
 - [ ] Confirm vector index exists in Neo4j:
   - Neo4j Browser → `SHOW INDEXES` → look for `datasetDescription`
+  - (Index is created automatically by `load_graph.py` unless `--skip-index` is passed)
+- [ ] Verify graph completeness and property correctness:
+  ```bash
+  conda run -n rocco python scripts/audit_schema.py --folder data/metadata/ --verify --output docs/neo4j_schema.md
+  ```
+  Expected: 176/176 datasets loaded, no property mismatches, sub-node counts match
 
 ---
 
@@ -122,5 +133,6 @@ for r in results: print(r['metadata'].get('title'))
 
 - **Conda env:** Always `conda activate rocco_ai` before running anything
 - **Neo4j notebook:** Use `CurationTools/JsonToNeo4jwKeywords.ipynb` (not the chunking one) to load data
-- **`langchain_sambanova`** is not installed in `rocco_ai` — embeddings use `OpenAIEmbeddings` with custom base URL instead; if SambaNova's embedding endpoint is not OpenAI-compatible, update `src/assistant/llm.py`
+- **`langchain-neo4j`** is installed via `pip install -e ".[graph]"` and provides `Neo4jVector` for semantic search abstractions
+- **`langchain_sambanova`** is not installed — embeddings use `OpenAIEmbeddings` with custom base URL instead; if SambaNova's embedding endpoint is not OpenAI-compatible, update `src/assistant/llm.py`
 - **`Chatbot/` and `CurationTools/`** — kept as historical reference; do not delete before intern Week 1

@@ -393,6 +393,7 @@ class GraphLoader:
                 dd.imageDimensions           = $img_dims,
                 dd.imageByteOrder            = $byte_order,
                 dd.dimensionality            = $dimensionality,
+                dd.referencedSample         = $ref_sample,
                 dd.numberOfFiles             = $n_files,
                 dd.fileTypes                 = $file_types,
                 dd.datasetNumber             = $dataset_number
@@ -405,6 +406,7 @@ class GraphLoader:
             imaging_center=v.get("imagingCenter"), imaging_eq=v.get("imagingEquipmentAndModel"),
             img_format=v.get("imageFormat"), img_dims=v.get("imageDimensions"),
             byte_order=v.get("imageByteOrder"), dimensionality=v.get("dimensionality"),
+            ref_sample=v.get("sample"),
             n_files=len(v.get("fileObjs", [])), file_types=file_types,
             dataset_number=dataset_number, root_id=root_id,
         )

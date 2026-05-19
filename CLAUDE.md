@@ -415,7 +415,7 @@ tests/assistant/
 
 Three-layer search — all handled in `graph_store.py`:
 
-1. **Neo4j vector index** — semantic similarity over dataset nodes (embeddings stored as node properties via `db.index.vector`). Replaces the old separate FAISS-over-descriptions approach.
+1. **Neo4j vector index** — semantic similarity over dataset nodes (embeddings stored as node properties via `db.index.vector`), queried via `langchain-neo4j` abstractions for vector retrieval. Replaces the old separate FAISS-over-descriptions approach.
 2. **Neo4j structured filtering** — exact Cypher queries on `Sample`/`DigitalDataset` properties. Combined with vector search in a single query where possible.
 3. **Publication FAISS** — chunked full-text of associated papers, tagged by dataset ID. Separate from the graph because chunked documents don't fit as graph nodes.
 
@@ -463,14 +463,22 @@ The assistant module uses a **separate** LLM layer from the curator (`src/llm/cl
 | Embeddings | `OpenAIEmbeddings` | `langchain_openai` | Custom `EMBEDDING_URL` for SambaNova embedding endpoint |
 | Agent | `create_react_agent` | `langgraph.prebuilt` | LangGraph ReAct; replaces legacy `AgentExecutor` (removed in langchain 1.x) |
 | Memory | `MemorySaver` | `langgraph.checkpoint.memory` | In-process per-session history; resets on restart |
+| Neo4j Vector Search | `Neo4jVector` | `langchain_neo4j` | Vectorstore abstraction for semantic search over dataset embeddings |
 
 The curator still uses `LLMClient` (`src/llm/client.py`) — do not change that.
+
+**Installation:** langchain-neo4j is in the optional `[graph]` extra:
+```bash
+pip install -e ".[graph]"  # Includes neo4j, langchain-neo4j, langchain-openai
+```
 
 **Conda environment:** All development uses `conda activate rocco_ai`.
 
 ### APOC Note
 
 APOC is **not required**. The Cypher generation prompt in `graph_store.py` explicitly forbids `apoc.*` calls, making the code portable across local Neo4j (Homebrew), the TACC VM, and AuraDB.
+
+`langchain-neo4j` provides vectorstore abstractions for semantic search but does not introduce external dependencies — all Cypher queries remain within the Neo4j driver and are portable.
 
 ### Week-by-Week Plan (Intern Sprint)
 
@@ -490,6 +498,22 @@ All 51 tasks are tracked at: https://github.com/orgs/digital-porous-media/projec
 ---
 
 ## Recent Changes
+
+### Schema Audit & Reference Doc (May 2026)
+- Added `scripts/audit_schema.py` — scans `data/metadata/*.json` to compute node counts,
+  % non-null coverage, and distinct enum values for all 7 node labels. Run offline (no Neo4j
+  required) or with `--neo4j` for live coverage verification.
+- Added `--verify` flag: cross-checks a loaded Neo4j graph for completeness (176 datasets),
+  property correctness (title, doi, description, authors, publicationDate), sub-node counts,
+  and relationship counts.
+- Generated `docs/neo4j_schema.md` — intern Cypher reference doc with full schema, coverage
+  percentages, enum value lists, vector index info, starter Cypher queries, and a
+  **Graceful Degradation Tiers** guide (always attempt queries; tier governs response messaging
+  when results are empty).
+- Key finding: all imaging metadata fields (`imagingCenter`, `imagingEquipmentAndModel`, etc.)
+  are 0% in current data — assistant must not assume these exist.
+- `Tasks.md` updated: `load_graph.py` replaces the old notebook for data loading;
+  `audit_schema.py --verify` is now the verification step.
 
 ### General Assistant Skeleton (May 2026)
 - Created `src/assistant/` with working implementations ported from legacy `Chatbot/` folder
