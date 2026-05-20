@@ -9,17 +9,18 @@ OpenAIEmbeddings for the embedding model. For now, OpenAIEmbeddings with a
 custom base URL covers all supported providers.
 
 Required .env variables:
-    LLM_API_KEY     - API key (same as the rest of the project)
-    LLM_BASE_URL    - Provider endpoint (e.g. https://ai.tejas.tacc.utexas.edu/v1)
-    LLM_MODEL       - Chat model name
-    EMBEDDING_URL   - Embeddings endpoint (may differ from LLM_BASE_URL)
-    EMBEDDING_MODEL - Embedding model name
-    EMBEDDING_API_KEY - API key for embeddings (may differ from LLM_API_KEY)
+    LLM_API_KEY   - API key (same as the rest of the project)
+    LLM_PROVIDER  - Provider alias (openai, sambanova, gemini, ollama, …)
+    LLM_MODEL     - Chat model name
+
+Embedding model is auto-selected from LLM_PROVIDER via src.llm.embeddings.get_embeddings().
+Override with EMBEDDING_URL / EMBEDDING_MODEL / EMBEDDING_API_KEY if needed.
 """
 
 import os
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
+from src.llm.embeddings import get_embeddings
 
 load_dotenv()
 
@@ -30,8 +31,4 @@ chat_model = ChatOpenAI(
     temperature=0.7,
 )
 
-embeddings = OpenAIEmbeddings(
-    model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
-    api_key=os.getenv("EMBEDDING_API_KEY", os.getenv("LLM_API_KEY")),
-    base_url=os.getenv("EMBEDDING_URL", os.getenv("LLM_BASE_URL")) or None,
-)
+embeddings = get_embeddings()

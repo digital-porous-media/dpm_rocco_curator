@@ -5,7 +5,7 @@ Graph schema
 ------------
 Node labels:
     Dataset          - root node; properties: title, description, doi, datasetNumber,
-                       llmKeywords, descriptionEmbedding
+                       llmKeywords, datasetEmbedding
     Sample           - properties: title, identifier, location, porousMediaType, porosity,
                        grainSizeAvg/Min/Max, grainSizeUnits, collectionMethod, source,
                        onshoreOffshore, depth, waterDepth, procedure, equipment,
@@ -25,11 +25,15 @@ Relationships:
     PART_OF   (Sample|DigitalDataset|AnalysisDataset → Dataset)
     INPUT_FOR (Dataset → Dataset)
 
-Vector index:
-    name: datasetDescription
-    node: Dataset
-    property: descriptionEmbedding
-    built by: scripts/build_dataset_vector_index.py
+Vector indexes:
+    datasetEmbedding  — node: Dataset, property: datasetEmbedding
+                        Aggregates title + description + sub-node metadata into one vector.
+                        Used by search() and GraphCypherQAChain.
+    componentEmbedding — node: DatasetComponent (secondary label on Sample/DigitalDataset/AnalysisDataset)
+                         property: componentEmbedding
+                         Each sub-node embedded individually with parent Dataset context injected.
+                         Used by component_search() for fine-grained retrieval.
+    Both built by: scripts/build_dataset_vector_index.py
 
 Alternative approach (not implemented):
     Chunking strategy stores Description + Chunk nodes instead of embedding on Dataset.
@@ -95,26 +99,30 @@ class GraphStore:
         if not self._enabled:
             self._graph = None
             self._vector_index = None
+            self._component_index = None
             self._cypher_chain = None
             return
 
         from langchain_neo4j import Neo4jGraph, Neo4jVector
         from langchain_neo4j import GraphCypherQAChain
-        from src.assistant.llm import llm, embeddings
+        from src.assistant.llm import chat_model, embeddings
 
         self._graph = Neo4jGraph(
             url=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
             username=os.getenv("NEO4J_USER", "neo4j"),
             password=os.getenv("NEO4J_PASSWORD"),
+            # Skip apoc.meta.data() schema introspection — APOC is not installed.
+            # Schema is provided manually to GraphCypherQAChain via the prompt template.
+            refresh_schema=False,
         )
 
         self._vector_index = Neo4jVector.from_existing_index(
             embeddings,
             graph=self._graph,
-            index_name="datasetDescription",
+            index_name="datasetEmbedding",
             node_label="Dataset",
             text_node_property="description",
-            embedding_node_property="descriptionEmbedding",
+            embedding_node_property="datasetEmbedding",
             retrieval_query="""
 RETURN
     node.description AS text,
@@ -128,8 +136,30 @@ RETURN
 """,
         )
 
+        self._component_index = Neo4jVector.from_existing_index(
+            embeddings,
+            graph=self._graph,
+            index_name="componentEmbedding",
+            node_label="DatasetComponent",
+            text_node_property="title",
+            embedding_node_property="componentEmbedding",
+            retrieval_query="""
+MATCH (n)-[:PART_OF]->(d:Dataset)
+RETURN
+    n.title + coalesce(': ' + n.description, '') AS text,
+    score,
+    {
+        componentType:  labels(n)[0],
+        componentTitle: n.title,
+        datasetTitle:   d.title,
+        datasetNumber:  d.datasetNumber,
+        doi:            d.doi
+    } AS metadata
+""",
+        )
+
         self._cypher_chain = GraphCypherQAChain.from_llm(
-            llm,
+            chat_model,
             graph=self._graph,
             verbose=True,
             cypher_prompt=_cypher_prompt,
@@ -177,6 +207,28 @@ RETURN
             results.append(result)
 
         return results
+
+    def component_search(self, query: str, top_k: int = 5) -> list[dict]:
+        """
+        Vector similarity search over individual Sample, DigitalDataset, and AnalysisDataset
+        sub-nodes. Each result links back to its parent Dataset.
+
+        Returns list of dicts with keys: text, score, metadata, source_label.
+        metadata keys: componentType, componentTitle, datasetTitle, datasetNumber, doi.
+        """
+        if not self._enabled:
+            return []
+
+        retriever = self._component_index.as_retriever(search_kwargs={"k": top_k})
+        docs = retriever.invoke(query)
+        return [
+            {
+                "text": doc.page_content,
+                "metadata": doc.metadata,
+                "source_label": "[component match]",
+            }
+            for doc in docs
+        ]
 
     def get_dataset(self, dataset_id: str) -> dict | None:
         """Fetch full Dataset node properties by datasetNumber."""

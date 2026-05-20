@@ -51,9 +51,14 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
   conda run -n rocco python scripts/load_graph.py --mode rebuild
   ```
   Verify in Neo4j Browser: `MATCH (d:Dataset) RETURN count(d)` — expect 176
-- [ ] Confirm vector index exists in Neo4j:
-  - Neo4j Browser → `SHOW INDEXES` → look for `datasetDescription`
-  - (Index is created automatically by `load_graph.py` unless `--skip-index` is passed)
+- [x] Build vector indexes in Neo4j:
+  ```bash
+  conda run -n rocco python scripts/build_dataset_vector_index.py
+  ```
+  Confirm in Neo4j Browser: `SHOW INDEXES` → look for `datasetEmbedding` and `componentEmbedding`
+  - `datasetEmbedding` — one vector per Dataset node (aggregated metadata), dim=4096
+  - `componentEmbedding` — one vector per DatasetComponent (Sample/DigitalDataset/AnalysisDataset), dim=4096
+  - Re-running is safe (upserts); only required again if datasets change or embedding model changes
 - [ ] Verify graph completeness and property correctness:
   ```bash
   conda run -n rocco python scripts/audit_schema.py --folder data/metadata/ --verify --output docs/neo4j_schema.md
@@ -116,6 +121,8 @@ from src.assistant.graph_store import GraphStore
 g = GraphStore()
 results = g.search('sandstone permeability', top_k=3)
 for r in results: print(r['metadata'].get('title'))
+comp = g.component_search('carbonate grain size', top_k=3)
+for r in comp: print(r['metadata'].get('componentTitle'), '->', r['metadata'].get('datasetTitle'))
 "
 ```
 

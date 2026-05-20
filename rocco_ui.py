@@ -13,6 +13,7 @@ from src.ingestor.embedder import DocumentEmbedder
 from src.ingestor.document_ingestor import DocumentIngestor
 from src.retriever.retriever import VectorStoreManager
 from src.llm.content_screener import ContentScreener
+from src.llm.embeddings import get_embeddings
 
 # Suppress transformers library warnings about optional vision model imports
 import logging
@@ -90,11 +91,7 @@ def load_resources():
         vector_store_manager=st.session_state.vector_store_manager,
         top_k_context=5,
     )
-    embedder = DocumentEmbedder(
-        model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    embedder = DocumentEmbedder(embeddings=get_embeddings())
     ingestor = DocumentIngestor(
         chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", ".", " ", ""]
     )

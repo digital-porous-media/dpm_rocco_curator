@@ -441,14 +441,33 @@ Follow the existing versioned YAML pattern in `src/prompts/`. New files:
 - `query_expander.yaml` — LLM query expansion
 - `educational.yaml` — domain Q&A and workflow synthesis
 
+### Vector Indexes
+
+Two indexes are built by `scripts/build_dataset_vector_index.py`:
+
+| Index | Node | Property | Purpose |
+|-------|------|----------|---------|
+| `datasetEmbedding` | `Dataset` | `datasetEmbedding` | Aggregated dataset-level vector (title + description + sub-node metadata). Used by `GraphStore.search()` and `GraphCypherQAChain`. |
+| `componentEmbedding` | `DatasetComponent` | `componentEmbedding` | One vector per `Sample`/`DigitalDataset`/`AnalysisDataset` sub-node. Each blob includes the parent Dataset title + description as a context header so sparse sub-nodes inherit parent signal. Used by `GraphStore.component_search()`. |
+
+`DatasetComponent` is a secondary label added to sub-nodes at embed time — it is not set by `load_graph.py`.
+
 ### Index Rebuild
 
 ```bash
-# Rebuild Neo4j vector index (dataset nodes)
+# Rebuild both Neo4j vector indexes (dataset + component)
 python scripts/build_dataset_vector_index.py
 
 # Rebuild publication FAISS
 python scripts/build_publication_index.py
+```
+
+Re-running is safe — both indexes use `CREATE ... IF NOT EXISTS` and embeddings are upserted with `SET`.
+Rebuild required when: new datasets are added, the embedding model changes, or text assembly logic changes.
+If switching embedding models, drop old indexes first:
+```cypher
+DROP INDEX datasetEmbedding IF EXISTS;
+DROP INDEX componentEmbedding IF EXISTS;
 ```
 
 Both are also triggerable via the stretch-goal index management API (`src/assistant/index_api.py`) once implemented.
@@ -514,6 +533,16 @@ All 51 tasks are tracked at: https://github.com/orgs/digital-porous-media/projec
   are 0% in current data — assistant must not assume these exist.
 - `Tasks.md` updated: `load_graph.py` replaces the old notebook for data loading;
   `audit_schema.py --verify` is now the verification step.
+
+### Vector Index Implementation (May 2026)
+- Implemented `scripts/build_dataset_vector_index.py` (was a stub)
+- Two indexes: `datasetEmbedding` (Dataset-level aggregation) and `componentEmbedding` (per sub-node)
+- Sub-nodes tagged with `DatasetComponent` secondary label; all three types share one index
+- `GraphStore.component_search()` added for fine-grained sub-node retrieval
+- Fixed `check_embedding_ctx_length=False` on `OpenAIEmbeddings` — TACC/LiteLLM expects raw strings
+- Fixed `refresh_schema=False` on `Neo4jGraph` — skips `apoc.meta.data()` (APOC not installed)
+- Fixed `src.llm.embeddings` factory: `EMBEDDING_API_KEY` must be the actual API key, not a model name
+- 176 Dataset nodes + 3,273 DatasetComponent nodes embedded at dim=4096 (E5-Mistral-7B-Instruct)
 
 ### General Assistant Skeleton (May 2026)
 - Created `src/assistant/` with working implementations ported from legacy `Chatbot/` folder
