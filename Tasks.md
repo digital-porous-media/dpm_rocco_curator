@@ -101,6 +101,24 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 
 ---
 
+## Intent Classifier Testing (Issue #10 + Verification)
+
+- [x] Draft `src/prompts/assistant.yaml` (v0.2.0) — comprehensive intent classifier
+  - Intent definitions: semantic_search, metadata_filter, domain_qa, workflow_guidance, query_expansion, literature_search
+  - Examples per intent with porous media terminology (porosity, permeability, micro-CT, wettability, etc.)
+  - Decision rules to avoid boundary cases
+- [x] Create `test_intent_classifier.py` (Option 1 — quick test script)
+  - Run manually with: `python test_intent_classifier.py`
+  - Tests all 6 intents + edge cases
+  - Good for rapid iteration on the prompt
+- [x] Create `tests/assistant/test_intent_classifier.py` (Option 2 — formal test suite)
+  - Run with: `pytest tests/assistant/test_intent_classifier.py -v`
+  - Parametrized test cases with expected intents and confidence thresholds
+  - JSON output validation
+  - Can be integrated into CI/CD
+
+---
+
 ## Pre-Sprint Verification
 
 Run these before intern Week 1 to confirm everything works end-to-end:

@@ -34,11 +34,6 @@ class ContentScreener:
         response = self.model.send_prompt(prompt=screening_prompt)
         # print(response)
         try:
-            if "```json" in response:
-                response = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                response = response.split("```")[1].split("```")[0].strip()
-
             result = json.loads(response)
             return result
         except json.JSONDecodeError:
