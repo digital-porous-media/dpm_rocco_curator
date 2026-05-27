@@ -128,11 +128,54 @@ for r in comp: print(r['metadata'].get('componentTitle'), '->', r['metadata'].ge
 
 ---
 
-## Intern Week 1 Prep
+## Pre-Sprint: Bernie Before Week 2 (May 27 – Jun 6)
 
-- [ ] Set up GitHub Project board tasks for Week 2 (assign to correct intern)
-- [ ] Write intern onboarding doc or walkthrough of the skeleton
-- [ ] Confirm interns have access to: repo, `rocco_ai` env setup instructions, `.env.example`, Neo4j
+Intern starts Jun 7. Bernie is away Weeks 2–3. Everything below must be done before Jun 7.
+
+### Must be done this week (May 27–30) — intern is blocked without these
+
+- [ ] Download curated papers into `data/curated_papers/` (#13) — intern needs these for Week 3
+- [ ] Write intern onboarding doc (#16)
+- [ ] Record or write Rocco codebase walkthrough (#19)
+- [ ] Write `CONTRIBUTING.md` (#14)
+- [ ] Add pytest scaffolding `tests/assistant/conftest.py` (#15)
+- [ ] Confirm intern has repo access, `rocco_ai` env setup instructions, `.env.example`, Neo4j
+
+### Must be done during Week 1 (May 31 – Jun 6) — intern is in orientation; Bernie works self-directed
+
+- [ ] Author `data/domain_workflows.yaml` — 15 DRP workflows (#11)
+- [ ] Draft `data/tutorials.yaml` skeleton — 10 verified entries (#12)
+- [ ] Catalogue DPM Portal tutorials; extend `tutorials.yaml` to 20+ entries (#23)
+- [ ] Implement `src/assistant/literature_search.py` (#17)
+- [ ] Draft `src/prompts/query_expander.yaml` + `educational.yaml` (#24)
+- [ ] Implement `expand_query`, `get_educational_context`, `get_workflow_guidance` in `tools.py` (#29)
+- [ ] Wire two-tier literature routing into `tools.py` (#30)
+- [ ] Define 20 representative test queries (#18)
+- [ ] Finish infra: load graph, verify 176 datasets (see Environment & Infrastructure above)
+
+---
+
+## GitHub Project Board — Updated May 27, 2026
+
+Board updated to reflect revised schedule (Bernie front-loads to Week 1; away Weeks 2–3).
+
+### Reassigned to Bernie
+- `#23` Catalogue `tutorials.yaml` → Bernie, week=1
+- `#25` Prototype `assistant_ui.py` → Bernie, week=6
+- `#32` Integrate publication corpus into search; handle dedup → Bernie, week=6
+
+### Rescheduled
+- `#24` `query_expander.yaml` + `educational.yaml` → week=1 (front-loaded)
+- `#29` `expand_query`, educational tools → week=1 (front-loaded; was week=3)
+- `#30` Literature routing → week=1 (front-loaded; was week=3)
+- `#31` Review intern search output + domain_workflows gaps → week=4 (was week=3; Bernie away)
+- `#36` `USE_NEO4J=false` fallback + docstrings → week=6 (was week=5; matches revised intern scope)
+
+### Closed
+- `#28` Source labels + 10 search queries → closed; scope folded into `#52`
+
+### Created
+- `#52` [JRS] Week 5: `search_datasets()` combined query + source labels (Intern-A, P0)
 
 ---
 

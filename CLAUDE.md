@@ -501,18 +501,24 @@ APOC is **not required**. The Cypher generation prompt in `graph_store.py` expli
 
 ### Week-by-Week Plan (Intern Sprint)
 
-| Week | Intern A | Intern B | Bernie |
-|------|----------|----------|--------|
-| 1 | Onboarding only | Onboarding only | — |
-| 2 | `graph_store.py` + Neo4j audit | `tutorials.yaml`, prompt drafts, `assistant_ui.py` shell | — |
-| 3 | `publication_corpus.py`, source labels | `expand_query`, `get_educational_context`, `get_workflow_guidance`, literature routing | Domain feedback, paper downloads |
-| 4 | Publication corpus integration, dedup, integration tests | Full `conversation_manager.py` wiring, Sources panel | — |
-| 5 | Fallback test, docstrings | Cross-intent queries, UI polish, docstrings | Semantic Scholar QA |
-| 6 | Source labels in UI | Connect UI to tab | **Own `rocco_ui.py` tab integration** |
-| 7 | Docs + final search eval | Docs + final assistant eval | — |
-| 8–9 | Poster + paper (independent) | Poster + paper (independent) | Review drafts only |
+> **Note (May 2026):** Revised for one intern with realistic ramp-up. Week 1 is program orientation (no project work). Bernie is away Weeks 2–3; intern works self-directed. Weeks 3 and 5 are short (4-day). Intern has light capacity in Weeks 8–9 alongside poster/paper.
 
-All 51 tasks are tracked at: https://github.com/orgs/digital-porous-media/projects/3
+| Week | Dates | Intern | Bernie |
+|------|-------|--------|--------|
+| 1 | May 31–Jun 6 | Program orientation — no project work | Pre-sprint prep + front-load: `literature_search.py`, `query_expander.yaml`/`educational.yaml`, `expand_query`/`get_educational_context`/`get_workflow_guidance` in `tools.py`, literature routing, `domain_workflows.yaml`, `tutorials.yaml` cataloguing |
+| 2 | Jun 7–13 | Onboarding + Neo4j coverage audit (`audit_schema.py`, Cypher in browser) | Away |
+| 3 *(short)* | Jun 14–20 | `publication_corpus.py` — chunk PDFs, tag chunks with dataset IDs from `RelatedPublication` nodes | Away |
+| 4 | Jun 21–27 | `graph_store.py`: `semantic_search()` + `filter_by_metadata()` | Back; `conversation_manager.py`; review intern pub corpus output; fill `domain_workflows.yaml` gaps |
+| 5 *(short)* | Jun 28–Jul 4 | `graph_store.py`: `search_datasets()` combined query + source labels | Cross-intent queries + docstrings; Semantic Scholar edge cases |
+| 6 | Jul 5–11 | `component_search()` + `USE_NEO4J=false` fallback + `tests/assistant/test_graph_store.py` | `assistant_ui.py` shell + `rocco_ui.py` tab integration + pub corpus dedup (#32) |
+| 7 | Jul 12–18 | Connect `graph_store.py` to UI; 10-query smoke tests; bug fixes | Prompt review + polish; unblock integration issues |
+| 8–9 | Jul 19–Aug 1 | `docs/search_layer.md` + poster/paper | Review drafts |
+
+**Intern owns:** `publication_corpus.py`, `graph_store.py`, `tests/assistant/test_graph_store.py`, `docs/search_layer.md`
+**Bernie owns:** `assistant_ui.py`, `conversation_manager.py`, `expand_query`/`get_educational_context`/`get_workflow_guidance` in `tools.py`, `literature_search.py`, all three new prompts (`assistant.yaml`, `query_expander.yaml`, `educational.yaml`), `domain_workflows.yaml`, `tutorials.yaml`, `rocco_ui.py` tab integration
+**Deferred post-v2.0.0:** `build_tutorial_index.py` + `tutorial_vector_store/`; separate `docs/assistant_architecture.md` and `docs/adding_tutorials.md`
+
+Project board: https://github.com/orgs/digital-porous-media/projects/3
 
 ---
 
