@@ -22,16 +22,61 @@ class VectorStoreManager:
     def create_from_documents(self, documents: List[Document]) -> VectorStore:
         """
         Create a new vector store from documents.
-        
+
         Args:
             documents: List of Document objects to index
-            
+
         Returns:
             Created vector store
         """
-        self.vector_store = FAISS.from_documents(
-            documents,
-            self.embedder.embeddings  #get_embeddings()
+        import logging
+        logger = logging.getLogger(__name__)
+
+        texts = [doc.page_content for doc in documents]
+        logger.info(f"Embedding {len(documents)} documents...")
+
+        # Embed in batches to avoid timeouts and handle failures gracefully
+        batch_size = 32
+        all_embeddings = []
+        valid_docs = []
+        valid_texts = []
+
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            batch_docs = documents[i : i + batch_size]
+
+            try:
+                batch_embeddings = self.embedder.embed_documents(batch_texts)
+                # Verify we got embeddings for all texts in batch
+                if len(batch_embeddings) != len(batch_texts):
+                    logger.warning(
+                        f"Batch {i//batch_size}: Expected {len(batch_texts)} embeddings, "
+                        f"got {len(batch_embeddings)}. Skipping batch."
+                    )
+                    continue
+
+                all_embeddings.extend(batch_embeddings)
+                valid_texts.extend(batch_texts)
+                valid_docs.extend(batch_docs)
+            except Exception as e:
+                logger.error(f"Failed to embed batch {i//batch_size}: {str(e)}")
+                continue
+
+        if not valid_docs:
+            raise ValueError("No documents were successfully embedded")
+
+        if len(valid_docs) < len(documents):
+            logger.warning(
+                f"Successfully embedded {len(valid_docs)}/{len(documents)} documents "
+                f"({len(documents) - len(valid_docs)} failed or skipped)"
+            )
+
+        # Create FAISS store from pre-computed embeddings using from_embeddings
+        text_embedding_pairs = list(zip(valid_texts, all_embeddings))
+        self.vector_store = FAISS.from_embeddings(
+            text_embeddings=text_embedding_pairs,
+            embedding=self.embedder.embeddings,
+            metadatas=[doc.metadata for doc in valid_docs],
         )
         return self.vector_store
     

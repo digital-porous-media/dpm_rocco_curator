@@ -191,16 +191,31 @@ python evaluate_description.py <description_text>
 Example: `python evaluate_description.py "This is a porous media dataset..."`
 
 ### Testing
+
+**IMPORTANT: Always run tests before committing changes.** This catches refactoring regressions early.
+
 ```bash
-# All tests
-pytest tests/
+# Run all tests
+pytest tests/ -v
 
-# Single test file
-pytest tests/test_file.py
+# Run specific test suites
+pytest tests/test_curator_integration.py -v  # Tests evaluator, editor, screener
+pytest tests/test_vector_store.py -v         # Tests embedding and vector store
+pytest tests/test_llm_client.py -v           # Tests LLM client configuration
 
-# With verbose output
-pytest -v
+# Run with coverage
+pytest tests/ --cov=src --cov-report=term-missing
 ```
+
+**Key Test Coverage:**
+- **`test_curator_integration.py`** — Verifies that RoccoClient interface changes don't break evaluator, editor, or screener. This catches the `send_prompt()` AttributeError bug.
+- **`test_vector_store.py`** — Tests embedding batch handling, document alignment, and graceful failure recovery. Catches issues from API changes (e.g., switching to SambaNova embeddings).
+- **`test_llm_client.py`** — Tests provider routing, configuration, and backward compatibility.
+
+**Before Refactoring:**
+1. Make sure all tests pass: `pytest tests/ -v`
+2. After refactoring a public method/interface (like `RoccoClient`), verify tests still pass
+3. If your change affects evaluator, editor, or screener, the curator integration tests will catch it
 
 ### Manual Testing
 ```bash
@@ -383,7 +398,7 @@ src/assistant/
 ├── graph_store.py            # Neo4j vector index + structured Cypher search
 ├── publication_corpus.py     # FAISS over chunked paper PDFs
 ├── literature_search.py      # Semantic Scholar API wrapper (Bernie pre-builds)
-├── llm.py                    # ChatOpenAI + OpenAIEmbeddings singletons for assistant
+├── llm.py                    # RoccoClient + OpenAIEmbeddings singletons (unified with curator)
 └── assistant_ui.py           # Streamlit UI — added as new tab in rocco_ui.py Week 6
 
 src/prompts/                  # new prompts alongside existing ones
@@ -474,17 +489,17 @@ Both are also triggerable via the stretch-goal index management API (`src/assist
 
 ### LLM / Agent Stack for the Assistant
 
-The assistant module uses a **separate** LLM layer from the curator (`src/llm/client.py`):
+The assistant module shares the **unified** LLM client with the curator:
 
 | Component | Class | Module | Notes |
 |-----------|-------|--------|-------|
-| Chat LLM | `ChatOpenAI` | `langchain_openai` | Configured from same `.env` vars; works with SambaNova, OpenAI, etc. |
-| Embeddings | `OpenAIEmbeddings` | `langchain_openai` | Custom `EMBEDDING_URL` for SambaNova embedding endpoint |
+| Chat LLM | `RoccoClient` | `src.llm.client` | Inherits from `BaseChatModel`; works with all providers (OpenAI, SambaNova, etc.) |
+| Embeddings | `OpenAIEmbeddings` | `langchain_openai` | Custom `EMBEDDING_URL` for provider-specific embedding endpoint |
 | Agent | `create_react_agent` | `langgraph.prebuilt` | LangGraph ReAct; replaces legacy `AgentExecutor` (removed in langchain 1.x) |
 | Memory | `MemorySaver` | `langgraph.checkpoint.memory` | In-process per-session history; resets on restart |
 | Neo4j Vector Search | `Neo4jVector` | `langchain_neo4j` | Vectorstore abstraction for semantic search over dataset embeddings |
 
-The curator still uses `LLMClient` (`src/llm/client.py`) — do not change that.
+Both curator and assistant use `RoccoClient` from `src/llm/client.py`.
 
 **Installation:** langchain-neo4j is in the optional `[graph]` extra:
 ```bash
@@ -563,4 +578,17 @@ Project board: https://github.com/orgs/digital-porous-media/projects/3
 - Renamed `"context_chunk"` source type to **`"uploaded_document"`** for better UX clarity
 - Updated everywhere: `src/llm/schemas.py`, `src/prompts/editor.yaml`, all documentation
 - No code logic change — just more intuitive naming for end users
+
+### Unified LLM Client Architecture (May 2026)
+- **Refactored `RoccoClient`** to inherit from both `LLMClient` and `BaseChatModel`
+  - Eliminates separate `ChatOpenAI` layer in `src/assistant/llm.py`
+  - Single source of truth for all LLM configuration (curator + assistant)
+  - Works directly with LangChain/LangGraph (implements `BaseChatModel` interface)
+- **Deleted `src/assistant/rocco_chat_model.py`** — adapter pattern no longer needed
+- **Updated `src/assistant/llm.py`** — now instantiates `RoccoClient` directly
+- **Pydantic integration** — declared all `RoccoClient` attributes as Pydantic fields to work with `BaseChatModel`
+  - Fields: `provider`, `api_key`, `api_url`, `model`, `timeout`, `temperature`
+  - `client` and `logger` use `exclude=True` (instance-only, not serialized)
+- **Pattern**: Inherit from both parent classes, call `BaseChatModel.__init__` first (Pydantic setup), then `LLMClient.__init__` (environment config)
+- **Benefit**: Curator and assistant now share identical LLM configuration with zero duplication
 
