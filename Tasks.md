@@ -166,6 +166,10 @@ Intern starts Jun 7. Bernie is away Weeks 2–3. Everything below must be done b
 - [ ] Catalogue DPM Portal tutorials; extend `tutorials.yaml` to 20+ entries (#23)
 - [ ] Implement `src/assistant/literature_search.py` (#17)
 - [ ] Draft `src/prompts/query_expander.yaml` + `educational.yaml` (#24)
+  - **Note:** `educational.yaml` system prompt must instruct the LLM to output equations
+    using LaTeX delimiters (`$...$` inline, `$$...$$` block). The YAML source files use
+    plain Unicode math — that is intentional; the rendering fix lives in the prompt and
+    in `assistant_ui.py` (pass responses through `st.markdown()`). See CLAUDE.md §Equation Rendering.
 - [ ] Implement `expand_query`, `get_educational_context`, `get_workflow_guidance` in `tools.py` (#29)
 - [ ] Wire two-tier literature routing into `tools.py` (#30)
 - [ ] Define 20 representative test queries (#18)

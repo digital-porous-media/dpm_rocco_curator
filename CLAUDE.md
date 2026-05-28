@@ -456,6 +456,29 @@ Follow the existing versioned YAML pattern in `src/prompts/`. New files:
 - `query_expander.yaml` — LLM query expansion
 - `educational.yaml` — domain Q&A and workflow synthesis
 
+### Equation Rendering
+
+`data/domain_workflows.yaml` uses plain Unicode/ASCII math (e.g., `k = Q μ L / (A ΔP)`) — this
+is intentional and fine for LLM ingestion. Do **not** convert the YAML to LaTeX.
+
+The fix is at the **prompt + rendering layer**:
+
+1. **`educational.yaml` system prompt** must instruct the LLM to output equations in LaTeX
+   delimiters: inline `$...$`, block `$$...$$`. Example instruction:
+   ```
+   When including mathematical expressions, always use LaTeX delimiters:
+   inline: $k = Q \mu L / (A \Delta P)$  — block: $$P_c = \frac{2\sigma\cos\theta}{r}$$
+   Do not use plain-text math notation in responses.
+   ```
+2. **`assistant_ui.py`** must render assistant responses via `st.markdown()` (KaTeX renders
+   `$...$` automatically). If the model emits `\(...\)` / `\[...\]` style instead, add a
+   pre-render substitution:
+   ```python
+   text = text.replace(r'\(', '$').replace(r'\)', '$')
+   text = text.replace(r'\[', '$$').replace(r'\]', '$$')
+   st.markdown(text)
+   ```
+
 ### Vector Indexes
 
 Two indexes are built by `scripts/build_dataset_vector_index.py`:
