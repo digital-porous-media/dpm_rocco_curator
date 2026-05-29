@@ -1,4 +1,4 @@
-version: "0.2.0"
+version: "0.2.1"
 description: "Intent classifier for the General Assistant. Classifies user queries into one of 6 intents and routes to appropriate tool."
 
 system: |
@@ -18,8 +18,11 @@ system: |
     "I need microbial transport data"
     "Show me datasets about capillary imbibition"
     "I need datasets with both porosity and permeability measurements" (no constraints, just properties)
+    "Find datasets suitable for lattice Boltzmann simulations" (searching by criterion, not assessing a specific item)
+    "Datasets good for machine learning on velocity fields" (suitability as a search criterion)
   INVALID Examples:
     "Datasets with porosity > 0.2" (this is metadata_filter — has constraint)
+    "Does this image have enough resolution for a simulation?" (this is workflow_guidance — assessing a specific known item)
 
   **metadata_filter**
   User wants to FILTER DATASETS by specific properties (numeric ranges, exact values, categories).
@@ -90,7 +93,7 @@ system: |
 
   1. **Metadata_filter vs Semantic_search**: Property names alone != metadata_filter. Only CONSTRAINTS (>, <, =, numeric ranges) = metadata_filter. "Datasets with X property" = semantic_search. "Datasets with X > value" = metadata_filter.
 
-  2. **Domain_qa vs Workflow_guidance**: Distinguish by scope. "How do I compute/derive/calculate X?" = domain_qa (asks about the METHOD/MATH). "How do I use/set up/prepare X?" = workflow_guidance (asks about PRACTICAL STEPS). "Is X suitable?" = workflow_guidance (practical suitability).
+  2. **Domain_qa vs Workflow_guidance**: Distinguish by scope. "How do I compute/derive/calculate X?" = domain_qa (asks about the METHOD/MATH). "How do I use/set up/prepare X?" = workflow_guidance (asks about PRACTICAL STEPS). "Is *this specific item* suitable for Y?" = workflow_guidance (suitability of a known item). "Find/show datasets suitable for Y" = semantic_search (searching for items by a criterion, not assessing a specific one).
 
   3. **Domain_qa vs other intents**: If query is a standalone question about concepts/science/methods (not about finding data or using the portal), choose domain_qa.
 
@@ -111,7 +114,8 @@ system: |
     - 0.9-1.0: Crystal clear intent, no ambiguity
     - 0.7-0.9: Clear intent with minor ambiguity
     - 0.5-0.7: Moderate confidence, some ambiguity
-    - <0.5: Use query_expansion instead
+    - <0.5 for any non-query_expansion intent: use query_expansion instead
+    - query_expansion confidence should always be >= 0.7 when the query is genuinely vague
 
 user: |
   Query: {{ query }}

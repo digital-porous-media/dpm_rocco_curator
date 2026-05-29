@@ -235,16 +235,14 @@ class TestVectorStorePartialFailure:
             for i in range(179)
         ]
 
-        # Mock: batches succeed/fail to simulate API issues
+        # 179 docs / batch_size=32 → 6 batches: [0-31],[32-63],[64-95],[96-127],[128-159],[160-178]
         batch_results = [
-            [[0.1, 0.2] for _ in range(32)],  # Batch 0: success (0-31)
-            [[0.1, 0.2] for _ in range(32)],  # Batch 1: success (32-63)
-            [[0.1, 0.2] for _ in range(32)],  # Batch 2: success (64-95)
-            [],  # Batch 3: failure (96-127)
-            [[0.1, 0.2] for _ in range(6)],  # Batch 4: partial (128-133)
-            [],  # Batch 5: failure (134-165)
-            [],  # Batch 6: failure (166-177)
-            [[0.1, 0.2] for _ in range(1)],  # Batch 7: success (178)
+            [[0.1, 0.2] for _ in range(32)],  # Batch 0: success (docs 0-31)
+            [[0.1, 0.2] for _ in range(32)],  # Batch 1: success (docs 32-63)
+            [[0.1, 0.2] for _ in range(32)],  # Batch 2: success (docs 64-95)
+            [],                                # Batch 3: failure (docs 96-127)
+            [[0.1, 0.2] for _ in range(6)],   # Batch 4: partial mismatch — 6 != 32, skipped
+            [],                                # Batch 5: failure (docs 160-178, 19 docs)
         ]
 
         mock_embedder.embed_documents = MagicMock(side_effect=batch_results)
@@ -261,5 +259,5 @@ class TestVectorStorePartialFailure:
             # Verify only successfully embedded docs were included
             call_args = mock_faiss.call_args
             text_embeddings = call_args.kwargs["text_embeddings"]
-            # 32 + 32 + 32 + 6 + 1 = 103 (close to the 102 from the real bug)
-            assert len(text_embeddings) == 103
+            # 32 + 32 + 32 = 96 (batches 3-5 fail or are skipped due to mismatch)
+            assert len(text_embeddings) == 96

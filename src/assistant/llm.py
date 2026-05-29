@@ -16,9 +16,19 @@ from src.llm.embeddings import get_embeddings
 
 load_dotenv()
 
-# Unified LLM client: RoccoClient (implements BaseChatModel for LangChain/LangGraph)
-# Temperature 0.3 for structured outputs (intent classifier); can be overridden per-call
-chat_model = RoccoClient(temperature=0.3)
+_chat_model = None
+_embeddings = None
 
-# Embeddings model (auto-selected from LLM_PROVIDER)
-embeddings = get_embeddings()
+
+def get_chat_model() -> RoccoClient:
+    global _chat_model
+    if _chat_model is None:
+        _chat_model = RoccoClient(temperature=0.3)
+    return _chat_model
+
+
+def get_embeddings_model():
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = get_embeddings()
+    return _embeddings

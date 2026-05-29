@@ -7,9 +7,9 @@ Run with:
 """
 
 import json
+import os
 import pytest
 from src.prompts.loader import load_prompt, render
-from src.assistant.llm import chat_model
 
 
 def extract_json(text: str) -> dict:
@@ -38,13 +38,23 @@ def extract_json(text: str) -> dict:
     raise json.JSONDecodeError("No valid JSON found in response", text, 0)
 
 
+@pytest.fixture(scope="module")
+def chat_model():
+    from dotenv import load_dotenv
+    load_dotenv()
+    if not (os.getenv("LLM_API_KEY") or os.getenv("SAMBANOVA_API_KEY")):
+        pytest.skip("No LLM API key set — skipping live LLM tests")
+    from src.assistant.llm import get_chat_model
+    return get_chat_model()
+
+
 @pytest.fixture
 def prompt_data():
     """Load the assistant intent classifier prompt."""
     return load_prompt("assistant")
 
 
-def classify_query(query: str, prompt_data: dict) -> dict:
+def classify_query(query: str, prompt_data: dict, chat_model) -> dict:
     """Classify a single query using the intent classifier prompt."""
     system = prompt_data["system"]
     user = render(prompt_data["user"], query=query)
@@ -95,10 +105,10 @@ def classify_query(query: str, prompt_data: dict) -> dict:
     ],
 )
 def test_intent_classification(
-    prompt_data, query: str, expected_intent: str, min_confidence: float
+    chat_model, prompt_data, query: str, expected_intent: str, min_confidence: float
 ):
     """Test that queries are classified into the correct intent."""
-    result = classify_query(query, prompt_data)
+    result = classify_query(query, prompt_data, chat_model)
 
     assert (
         result["intent"] == expected_intent
@@ -108,9 +118,9 @@ def test_intent_classification(
     ), f"Expected confidence >= {min_confidence}, got {result['confidence']}"
 
 
-def test_json_output_format(prompt_data):
+def test_json_output_format(chat_model, prompt_data):
     """Test that intent classifier returns valid JSON with required fields."""
-    result = classify_query("Show datasets with porosity > 0.2", prompt_data)
+    result = classify_query("Show datasets with porosity > 0.2", prompt_data, chat_model)
 
     assert isinstance(result, dict), "Response must be a dictionary"
     assert "intent" in result, "Response must have 'intent' field"
@@ -120,7 +130,7 @@ def test_json_output_format(prompt_data):
     assert 0 <= result["confidence"] <= 1, "'confidence' must be between 0 and 1"
 
 
-def test_valid_intents(prompt_data):
+def test_valid_intents(chat_model, prompt_data):
     """Test that only valid intents are returned."""
     valid_intents = {
         "semantic_search",
@@ -141,7 +151,7 @@ def test_valid_intents(prompt_data):
     ]
 
     for query in queries:
-        result = classify_query(query, prompt_data)
+        result = classify_query(query, prompt_data, chat_model)
         assert (
             result["intent"] in valid_intents
         ), f"Invalid intent '{result['intent']}' for query '{query}'"

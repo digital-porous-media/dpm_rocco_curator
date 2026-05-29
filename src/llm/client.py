@@ -2,7 +2,6 @@ import logging
 import os
 from typing import Optional, Dict, Any, List, ClassVar
 import openai
-import httpx
 
 from pydantic import Field
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
@@ -87,12 +86,9 @@ class LLMClient:
         # Determine model
         self.model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
 
-        # Initialize OpenAI-compatible client
-        # Note: verify=False is a development workaround for self-signed TACC certs
         self.client = openai.OpenAI(
             api_key=self.api_key,
             base_url=self.api_url,
-            http_client=httpx.Client(verify=False)
         )
         self.timeout = timeout
 
