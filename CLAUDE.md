@@ -602,6 +602,16 @@ Project board: https://github.com/orgs/digital-porous-media/projects/3
 - Updated everywhere: `src/llm/schemas.py`, `src/prompts/editor.yaml`, all documentation
 - No code logic change — just more intuitive naming for end users
 
+### langchain-community Sunset — Migration Planned (May 2026)
+- `langchain-community` is being sunset (no new integrations; maintenance-only). See https://github.com/langchain-ai/langchain-community/issues/674.
+- **Pinned** to `>=0.4.1,<0.5.0` in `pyproject.toml` to prevent silent breakage.
+- **Migration is deferred** to a dedicated branch (`chore/migrate-langchain-community`) once replacement packages stabilize. Do not remove the pin or bump the package without completing the migration below.
+- Files that need to change when migrating:
+  - `src/ingestor/document_ingestor.py` — `PyPDFLoader` → `langchain-pypdf`; `Docx2txtLoader` → native `python-docx` or standalone package
+  - `src/retriever/retriever.py` — `FAISS` → standalone `langchain-faiss` (not yet released as of May 2026) or direct `faiss-cpu` wrapper
+  - `tests/test_vector_store.py` — update imports to match retriever
+- See `Tasks.md` §langchain-community Migration for the full checklist.
+
 ### Unified LLM Client Architecture (May 2026)
 - **Refactored `RoccoClient`** to inherit from both `LLMClient` and `BaseChatModel`
   - Eliminates separate `ChatOpenAI` layer in `src/assistant/llm.py`

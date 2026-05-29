@@ -201,6 +201,28 @@ Board updated to reflect revised schedule (Bernie front-loads to Week 1; away We
 
 ---
 
+## langchain-community Migration (Future — Separate Branch)
+
+`langchain-community` has been sunset (no new features; maintenance-only). See https://github.com/langchain-ai/langchain-community/issues/674.
+The package is pinned to `>=0.4.1,<0.5.0` in `pyproject.toml` to prevent silent breakage from future removals.
+
+Create a dedicated branch (`chore/migrate-langchain-community`) when the replacement packages stabilize. Work required:
+
+- [ ] **`src/ingestor/document_ingestor.py`** — replace `langchain_community.document_loaders.PyPDFLoader`
+  with `langchain_pypdf.PyPDFLoader` (install: `pip install langchain-pypdf`); replace
+  `Docx2txtLoader` with native `python-docx` loading or the equivalent standalone package
+- [ ] **`src/retriever/retriever.py`** — replace `langchain_community.vectorstores.FAISS`
+  once a dedicated `langchain-faiss` package exists; alternatively wrap `faiss-cpu` directly
+  since `VectorStoreManager` already abstracts the interface
+- [ ] **`tests/test_vector_store.py`** — update matching import after retriever is migrated
+- [ ] **`pyproject.toml`** — remove `langchain-community` dep; add replacement packages
+- [ ] Run full test suite (`pytest tests/ -v`) after migration; verify RAG pipeline end-to-end
+
+Track the FAISS situation at https://github.com/langchain-ai/langchain-community/issues/674 —
+a dedicated standalone package may be released; migrate then rather than reimplementing from scratch.
+
+---
+
 ## Notes
 
 - **Conda env:** Always `conda activate rocco_ai` before running anything
