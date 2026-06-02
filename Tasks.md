@@ -170,6 +170,9 @@ Intern starts Jun 7. Bernie is away Weeks 2–3. Everything below must be done b
     using LaTeX delimiters (`$...$` inline, `$$...$$` block). The YAML source files use
     plain Unicode math — that is intentional; the rendering fix lives in the prompt and
     in `assistant_ui.py` (pass responses through `st.markdown()`). See CLAUDE.md §Equation Rendering.
+  - **Note:** `educational.yaml` must enforce the tiered knowledge source policy (see CLAUDE.md §Knowledge Source Policy): tools-first for domain Q&A, pre-trained fallback with disclaimer, tools-only for dataset facts. Do not blanket-restrict to tool-only knowledge.
+- [ ] Fix `conversation_manager.py` system prompt — replace blanket "do not answer from pre-trained knowledge" with tiered policy (tools-first; pre-trained allowed with source disclaimer for general domain knowledge). See CLAUDE.md §Knowledge Source Policy.
+- [ ] Fix `general_chat` tool in `tools.py` — remove "answer only from provided context" restriction; this tool receives no context, so the restriction produces nonsensical non-answers. It is a placeholder until `get_educational_context` is wired up.
 - [ ] Implement `expand_query`, `get_educational_context`, `get_workflow_guidance` in `tools.py` (#29)
 - [ ] Wire two-tier literature routing into `tools.py` (#30)
 - [ ] Define 20 representative test queries (#18)

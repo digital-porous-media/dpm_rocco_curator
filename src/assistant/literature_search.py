@@ -4,10 +4,17 @@ Semantic Scholar API wrapper for live literature search.
 Used as fallback when publication FAISS confidence < 0.75.
 If SEMANTIC_SCHOLAR_API_KEY is set in the environment, requests are authenticated;
 otherwise unauthenticated requests are used (shared rate limit, fine for dev).
+
+Rate limiting: 1 request/second enforced per instance via a sleep-based throttle.
+This matches the Semantic Scholar authenticated rate limit (1 RPS per API key).
+Note: if the server moves to multi-process deployment (e.g. Gunicorn workers),
+replace this with a Redis-backed distributed rate limiter (e.g. the `limits` library).
 """
 
 import os
 import logging
+import threading
+import time
 from dataclasses import dataclass
 
 import requests
@@ -19,7 +26,7 @@ _FIELDS = "title,authors,abstract,year,externalIds,citationCount,openAccessPdf,u
 
 
 @dataclass
-class LiteratureResult:
+class Paper:
     title: str
     authors: list[str]
     abstract: str | None
@@ -35,13 +42,24 @@ class LiteratureSearch:
     def __init__(self):
         api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
         self._headers = {"x-api-key": api_key} if api_key else {}
+        self._min_interval = 1.0
+        self._lock = threading.Lock()
+        self._last_call: float = 0.0
 
-    def search(self, query: str, limit: int = 5) -> list[LiteratureResult]:
+    def _throttle(self):
+        with self._lock:
+            elapsed = time.monotonic() - self._last_call
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last_call = time.monotonic()
+
+    def search_external_literature(self, query: str, max_results: int = 5) -> list[Paper]:
         """Search Semantic Scholar for papers matching query."""
+        self._throttle()
         try:
             resp = requests.get(
                 f"{_BASE_URL}/paper/search",
-                params={"query": query, "limit": limit, "fields": _FIELDS},
+                params={"query": query, "limit": max_results, "fields": _FIELDS},
                 headers=self._headers,
                 timeout=10,
             )
@@ -52,8 +70,9 @@ class LiteratureSearch:
 
         return [self._parse(p) for p in resp.json().get("data", [])]
 
-    def recommendations(self, paper_id: str, limit: int = 5) -> list[LiteratureResult]:
+    def recommendations(self, paper_id: str, limit: int = 5) -> list[Paper]:
         """Get recommended papers similar to a given Semantic Scholar paper ID."""
+        self._throttle()
         try:
             resp = requests.get(
                 f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{paper_id}",
@@ -69,10 +88,10 @@ class LiteratureSearch:
         return [self._parse(p) for p in resp.json().get("recommendedPapers", [])]
 
     @staticmethod
-    def _parse(paper: dict) -> LiteratureResult:
+    def _parse(paper: dict) -> Paper:
         authors = [a.get("name", "") for a in paper.get("authors", [])]
         oa = paper.get("openAccessPdf") or {}
-        return LiteratureResult(
+        return Paper(
             title=paper.get("title", ""),
             authors=authors,
             abstract=paper.get("abstract"),

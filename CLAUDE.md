@@ -449,6 +449,21 @@ Source labels on all results: `[graph match]`, `[semantic match]`, `[paper match
 - Session state for the new tab must be namespaced (Bernie adds `curator_` prefix to all existing keys in Week 6)
 - Never assert a dataset property that isn't present in the graph — honest gap responses required
 
+### Knowledge Source Policy (conversation_manager.py + educational.yaml)
+
+The system prompt must **not** blanket-restrict the LLM to tool-only knowledge. The right policy is tiered:
+
+| Question type | Policy | Example |
+|--------------|--------|---------|
+| Dataset facts / portal content | **Tools only** — no pre-trained fallback. Hallucinated dataset properties erode researcher trust. | "How many sandstone datasets have φ > 0.2?" |
+| Domain Q&A / workflows | **Tools first** (`domain_workflows.yaml`, publication FAISS). Fall back to pre-trained with explicit disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
+| Foundational concepts | **Pre-trained knowledge is fine** — these are stable and well-established. | "What is porosity?" |
+
+**Applies to:**
+- `conversation_manager.py` system prompt — replace "do not answer from pre-trained knowledge" with "prefer tool results; for general domain knowledge you may draw on your expertise but make the source clear"
+- `educational.yaml` system prompt — same tiered framing; instruct the LLM to distinguish between portal knowledge base results vs. general domain knowledge
+- `general_chat` tool in `tools.py` — currently broken because it also forbids pre-trained knowledge while receiving no context; fix by removing that restriction (this tool is a placeholder until `get_educational_context` is wired up)
+
 ### Prompts for New Modules
 
 Follow the existing versioned YAML pattern in `src/prompts/`. New files:

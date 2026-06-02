@@ -1,12 +1,13 @@
+import json
 import logging
 import os
-from typing import Optional, Dict, Any, List, ClassVar
+from typing import Optional, Dict, Any, List
 import openai
 
 from pydantic import Field
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 
@@ -225,6 +226,16 @@ class RoccoClient(BaseChatModel):
         """
         return self.llm_client.send_prompt(prompt, context, params)
 
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        """Enable tool use for LangGraph ReAct agents."""
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+        formatted = [convert_to_openai_tool(t) for t in tools]
+        extra: Dict[str, Any] = {"tools": formatted}
+        if tool_choice is not None:
+            extra["tool_choice"] = tool_choice
+        extra.update(kwargs)
+        return self.bind(**extra)
+
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -232,25 +243,61 @@ class RoccoClient(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """
-        Generate a response from the LLM.
-
-        Converts LangChain messages to LLMClient format and back.
-        """
-        system_content = None
-        user_content = None
-
+        """Generate a response, supporting tool calls for LangGraph agents."""
+        oai_messages = []
         for msg in messages:
             if msg.type == "system":
-                system_content = msg.content
+                oai_messages.append({"role": "system", "content": msg.content})
             elif msg.type in ("human", "user"):
-                user_content = msg.content
+                oai_messages.append({"role": "user", "content": msg.content})
+            elif msg.type == "ai":
+                oai_msg: Dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    oai_msg["tool_calls"] = [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc["args"]),
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                oai_messages.append(oai_msg)
+            elif msg.type == "tool":
+                oai_messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.tool_call_id,  # type: ignore[attr-defined]
+                    "content": msg.content,
+                })
 
-        response_text = self.llm_client.send_prompt(
-            prompt=user_content or "",
-            context=system_content,
-            params={"temperature": self.temperature},
-        )
-        message = AIMessage(content=response_text)
-        generation = ChatGeneration(message=message, text=response_text)
-        return ChatResult(generations=[generation])
+        call_params: Dict[str, Any] = {
+            "model": self.model,
+            "messages": oai_messages,
+            "temperature": self.temperature,
+            "timeout": self.timeout,
+        }
+        if stop:
+            call_params["stop"] = stop
+        call_params.update(kwargs)
+
+        response = self.llm_client.client.chat.completions.create(**call_params)
+        choice = response.choices[0].message
+
+        if choice.tool_calls:
+            tool_calls = [
+                {
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "args": json.loads(tc.function.arguments),
+                    "type": "tool_call",
+                }
+                for tc in choice.tool_calls
+            ]
+            message = AIMessage(content=choice.content or "", tool_calls=tool_calls)
+        else:
+            content = _strip_json_fences(choice.content or "")
+            message = AIMessage(content=content)
+
+        return ChatResult(generations=[ChatGeneration(message=message, text=message.content)])

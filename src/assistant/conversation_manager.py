@@ -15,10 +15,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from src.assistant.tools import build_langchain_tools
 
 SYSTEM_PROMPT = (
-    "You are an expert researcher providing information on porous media from the "
-    "Digital Porous Media Portal. Be as helpful as possible and return as much "
-    "information as possible. Only use information provided via your tools — do not "
-    "answer from pre-trained knowledge. If you cannot find the answer, say so."
+    "You are Rocco, an expert research assistant for the Digital Porous Media Portal. "
+    "Answer the user's question directly. When you call a tool, relay its response to the user "
+    "verbatim or with light formatting — do not summarize, evaluate, or comment on the tool's "
+    "output. For portal-specific questions (datasets, statistics) use your tools and report "
+    "only what they return. For general domain knowledge, answer from your expertise."
 )
 
 
@@ -32,10 +33,10 @@ class ConversationManager:
     """
 
     def __init__(self):
-        from src.assistant.llm import chat_model
+        from src.assistant.llm import get_chat_model
 
         self._agent = create_react_agent(
-            chat_model,
+            get_chat_model(),
             build_langchain_tools(),
             prompt=SYSTEM_PROMPT,
             checkpointer=MemorySaver(),

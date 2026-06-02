@@ -8,7 +8,7 @@ Intern B owns (Week 3):   get_educational_context, get_workflow_guidance,
                           expand_query, search_literature
 """
 
-from langchain_core.tools import Tool
+from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
@@ -23,6 +23,7 @@ def _get_graph_store():
     return _graph_store
 
 
+@tool
 def search_datasets(query: str) -> str:
     """Find datasets by semantic similarity to a natural language query."""
     results = _get_graph_store().search(query)
@@ -37,23 +38,26 @@ def search_datasets(query: str) -> str:
     return "\n\n".join(lines)
 
 
+@tool
 def get_dataset_details(question: str) -> str:
     """Answer structured questions about dataset properties using Cypher. Source: [cypher match]"""
     return _get_graph_store().cypher_qa(question)
 
 
+@tool
 def general_chat(query: str) -> str:
     """
     General porous media discussion not covered by dataset search or Cypher.
     Placeholder until educational.yaml (Intern B, Week 3) is wired up.
     """
-    from src.assistant.llm import llm
+    from src.assistant.llm import get_chat_model
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert researcher in porous media. Answer only from provided context; "
-                   "if you don't know, say so."),
+        ("system", "You are an expert researcher in porous media. Answer the user's question "
+                   "thoroughly using your knowledge. If the question is about specific datasets "
+                   "or portal content you don't have access to, say so explicitly."),
         ("human", "{input}"),
     ])
-    chain = prompt | llm | StrOutputParser()
+    chain = prompt | get_chat_model() | StrOutputParser()
     return chain.invoke({"input": query})
 
 
@@ -87,20 +91,4 @@ def search_literature(query: str) -> str:
 
 def build_langchain_tools() -> list:
     """Return the list of LangChain Tool objects for the ConversationManager agent."""
-    return [
-        Tool.from_function(
-            name="General Chat",
-            description="For general discussion of porous media not covered by other tools",
-            func=general_chat,
-        ),
-        Tool.from_function(
-            name="Dataset Description Search",
-            description="For when you need to find information about datasets based on their descriptions",
-            func=search_datasets,
-        ),
-        Tool.from_function(
-            name="Porous Media Dataset Information",
-            description="Provide information about porous media datasets using structured property queries",
-            func=get_dataset_details,
-        ),
-    ]
+    return [general_chat, search_datasets, get_dataset_details]
