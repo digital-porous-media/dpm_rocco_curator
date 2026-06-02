@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", message=r"Accessing `__path__`", module="transformers")
+
 import streamlit as st
 from src.assistant.assistant_ui import render_assistant_tab
 
