@@ -146,41 +146,60 @@ for r in comp: print(r['metadata'].get('componentTitle'), '->', r['metadata'].ge
 
 ---
 
-## Pre-Sprint: Bernie Before Week 2 (May 27 – Jun 6)
+## Pre-Sprint: Bernie Before Week 2 (May 27 – Jun 6) — **COMPLETE**
 
-Intern starts Jun 7. Bernie is away Weeks 2–3. Everything below must be done before Jun 7.
+Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Jun 7.
 
-### Must be done this week (May 27–30) — intern is blocked without these
+### Completed this week (May 27–30)
 
-- [~] ~~Download curated papers into `data/curated_papers/` (#13)~~ — **Cancelled.** Local PDF corpus dropped due to copyright risk; literature search uses Semantic Scholar API only. (#13 closed)
-- [ ] Write intern onboarding doc (#16)
-- [ ] Record or write Rocco codebase walkthrough (#19)
-- [ ] Write `CONTRIBUTING.md` (#14)
-- [ ] Add pytest scaffolding `tests/assistant/conftest.py` (#15)
-- [ ] Confirm intern has repo access, `rocco_ai` env setup instructions, `.env.example`, Neo4j
+- [x] ~~Download curated papers into `data/curated_papers/` (#13)~~ — **Cancelled.** Local PDF corpus dropped due to copyright risk; literature search uses Semantic Scholar API only. (#13 closed)
+- [x] Write intern onboarding doc (#16)
+- [x] Record or write Rocco codebase walkthrough (#19)
+- [x] Write `CONTRIBUTING.md` (#14)
+- [x] Add pytest scaffolding `tests/assistant/conftest.py` (#15)
+- [x] Confirm intern has repo access, `rocco_ai` env setup instructions, `.env.example`, Neo4j
 
-### Must be done during Week 1 (May 31 – Jun 6) — intern is in orientation; Bernie works self-directed
+### Completed during Week 1 (May 31 – Jun 6)
 
-- [ ] Author `data/domain_workflows.yaml` — 15 DRP workflows (#11)
-- [ ] Draft `data/tutorials.yaml` skeleton — 10 verified entries (#12)
-- [ ] Catalogue DPM Portal tutorials; extend `tutorials.yaml` to 20+ entries (#23)
-- [ ] Implement `src/assistant/literature_search.py` (#17)
-- [ ] Draft `src/prompts/query_expander.yaml` + `educational.yaml` (#24)
-  - **Note:** `educational.yaml` system prompt must instruct the LLM to output equations
-    using LaTeX delimiters (`$...$` inline, `$$...$$` block). The YAML source files use
-    plain Unicode math — that is intentional; the rendering fix lives in the prompt and
-    in `assistant_ui.py` (pass responses through `st.markdown()`). See CLAUDE.md §Equation Rendering.
-  - **Note:** `educational.yaml` must enforce the tiered knowledge source policy (see CLAUDE.md §Knowledge Source Policy): tools-first for domain Q&A, pre-trained fallback with disclaimer, tools-only for dataset facts. Do not blanket-restrict to tool-only knowledge.
-- [ ] Fix `conversation_manager.py` system prompt — replace blanket "do not answer from pre-trained knowledge" with tiered policy (tools-first; pre-trained allowed with source disclaimer for general domain knowledge). See CLAUDE.md §Knowledge Source Policy.
-- [ ] Fix `general_chat` tool in `tools.py` — remove "answer only from provided context" restriction; this tool receives no context, so the restriction produces nonsensical non-answers. It is a placeholder until `get_educational_context` is wired up.
-- [ ] Implement `expand_query`, `get_educational_context`, `get_workflow_guidance` in `tools.py` (#29)
-- [ ] Implement `search_literature` in `tools.py` — direct Semantic Scholar call via `LiteratureSearch` (#30) *(no two-tier routing; local PDF corpus dropped)*
-- [ ] Define 20 representative test queries (#18)
-- [ ] Finish infra: load graph, verify 176 datasets (see Environment & Infrastructure above)
+- [x] Author `data/domain_workflows.yaml` — 24 DRP workflows (#11) *(exceeds 15 target)*
+- [x] Draft `data/tutorials.yaml` skeleton — 20+ verified entries (#12)
+- [x] Catalogue DPM Portal tutorials; extend `tutorials.yaml` to 20+ entries (#23)
+- [x] Implement `src/assistant/literature_search.py` (#17)
+- [x] Draft `src/prompts/query_expander.yaml` + `educational.yaml` (#24)
+- [x] Fix `conversation_manager.py` system prompt — implement tiered knowledge policy
+- [x] Fix `general_chat` tool in `tools.py` — remove "answer only from provided context" restriction
+- [x] Implement `expand_query`, `get_educational_context`, `get_workflow_guidance` in `tools.py` (#29)
+- [x] Implement `search_literature` in `tools.py` — direct Semantic Scholar call via `LiteratureSearch` (#30)
+- [x] Define 20 representative test queries (#18)
+- [x] Finish infra: load graph, verify 176 datasets (see Environment & Infrastructure above)
 
 ---
 
-## GitHub Project Board — Updated Jun 2, 2026
+## Week 4 (Jun 21–27) — IN PROGRESS
+
+### Bernie's Tasks
+
+- [x] Integrate JRS's `julia/graph-store` branch into `src/assistant/graph_store.py`
+  - [x] Merge branch with full commit history
+  - [x] Fold raw-driver primitives (`semantic_search`, `filter_by_metadata`, `search_datasets`, `execute_cypher`, `get_schema_blueprint`) into existing `GraphStore`
+  - [x] Add injection-safe helpers (`_SAFE_KEY_RE`, `_validate_keys`, `_build_where_clause`)
+  - [x] Add `SearchResult` dataclass for low-level search methods
+  - [x] Fix bugs: correct default `index_name` to `"datasetEmbedding"`, fix test patch paths
+  - [x] Migrate tests from top-level to `tests/assistant/test_graph_store.py` (22 tests passing)
+  - [x] Delete duplicate top-level files
+  - [x] Commit with full integration message
+- [ ] Review `conversation_manager.py` — add docstrings for cross-intent routing (LangGraph agent dispatch logic)
+- [ ] Review `domain_workflows.yaml` — fill any structural gaps; verify 24 workflows cover the core DRP pipeline
+- [ ] Prepare documentation for JRS's Week 5 work — ensure `SearchResult` interface is clearly documented for `search_datasets()` hybrid queries
+
+### JRS's Tasks (Week 4)
+
+- [ ] `graph_store.py`: finalize `semantic_search()` + `filter_by_metadata()` based on integrated raw-driver methods
+- [ ] Begin Week 5 work: `search_datasets()` combined query + source labels (hybrid vector+metadata in one Cypher call)
+
+---
+
+## GitHub Project Board — Updated Jun 23, 2026
 
 Board updated to reflect revised schedule (Bernie front-loads to Week 1; away Weeks 2–3).
 

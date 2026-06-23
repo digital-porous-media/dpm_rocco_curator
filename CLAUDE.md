@@ -637,3 +637,16 @@ Project board: https://github.com/orgs/digital-porous-media/projects/3
 - **Pattern**: Inherit from both parent classes, call `BaseChatModel.__init__` first (Pydantic setup), then `LLMClient.__init__` (environment config)
 - **Benefit**: Curator and assistant now share identical LLM configuration with zero duplication
 
+### GraphStore Raw-Driver Integration (June 2026, Week 4)
+- **Merged `julia/graph-store` branch** — JRS's standalone `Neo4jGraphStore` implementation folded into `src/assistant/graph_store.py`
+- **Unified architecture** — `GraphStore` now has two code layers:
+  - **High-level** (existing, Week 1–3): `search()`, `component_search()`, `cypher_qa()` via langchain-neo4j — used by `tools.py`
+  - **Low-level** (new, Week 4–5): `semantic_search()`, `filter_by_metadata()`, `search_datasets()`, `execute_cypher()`, `get_schema_blueprint()` — raw `neo4j.GraphDatabase.driver` for JRS's Week 5 hybrid queries
+- **Injection safety** — added `_SAFE_KEY_RE`, `_validate_keys()`, `_build_where_clause()` helpers from JRS
+- **SearchResult dataclass** — low-level methods return `SearchResult` (dataset_id, score, properties) while high-level methods continue returning dicts
+- **Bug fixes on merge**:
+  - Fixed default `index_name` from `"dataset-embeddings"` → `"datasetEmbedding"` (matches Neo4j index name from `build_dataset_vector_index.py`)
+  - Fixed test patch paths from `"neo4j_graph_store.*"` → `"src.assistant.graph_store.*"`
+- **Tests** — migrated `test_graph_store.py` from top-level to `tests/assistant/test_graph_store.py` (22 tests, all passing)
+- **Zero churn** — kept `GraphStore` class name (not renamed to `Neo4jGraphStore`), no changes to `tools.py` imports, existing high-level interface unchanged
+
