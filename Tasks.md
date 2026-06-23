@@ -152,7 +152,7 @@ Intern starts Jun 7. Bernie is away Weeks 2–3. Everything below must be done b
 
 ### Must be done this week (May 27–30) — intern is blocked without these
 
-- [ ] Download curated papers into `data/curated_papers/` (#13) — intern needs these for Week 3
+- [~] ~~Download curated papers into `data/curated_papers/` (#13)~~ — **Cancelled.** Local PDF corpus dropped due to copyright risk; literature search uses Semantic Scholar API only. (#13 closed)
 - [ ] Write intern onboarding doc (#16)
 - [ ] Record or write Rocco codebase walkthrough (#19)
 - [ ] Write `CONTRIBUTING.md` (#14)
@@ -174,30 +174,32 @@ Intern starts Jun 7. Bernie is away Weeks 2–3. Everything below must be done b
 - [ ] Fix `conversation_manager.py` system prompt — replace blanket "do not answer from pre-trained knowledge" with tiered policy (tools-first; pre-trained allowed with source disclaimer for general domain knowledge). See CLAUDE.md §Knowledge Source Policy.
 - [ ] Fix `general_chat` tool in `tools.py` — remove "answer only from provided context" restriction; this tool receives no context, so the restriction produces nonsensical non-answers. It is a placeholder until `get_educational_context` is wired up.
 - [ ] Implement `expand_query`, `get_educational_context`, `get_workflow_guidance` in `tools.py` (#29)
-- [ ] Wire two-tier literature routing into `tools.py` (#30)
+- [ ] Implement `search_literature` in `tools.py` — direct Semantic Scholar call via `LiteratureSearch` (#30) *(no two-tier routing; local PDF corpus dropped)*
 - [ ] Define 20 representative test queries (#18)
 - [ ] Finish infra: load graph, verify 176 datasets (see Environment & Infrastructure above)
 
 ---
 
-## GitHub Project Board — Updated May 27, 2026
+## GitHub Project Board — Updated Jun 2, 2026
 
 Board updated to reflect revised schedule (Bernie front-loads to Week 1; away Weeks 2–3).
 
 ### Reassigned to Bernie
 - `#23` Catalogue `tutorials.yaml` → Bernie, week=1
 - `#25` Prototype `assistant_ui.py` → Bernie, week=6
-- `#32` Integrate publication corpus into search; handle dedup → Bernie, week=6
 
 ### Rescheduled
 - `#24` `query_expander.yaml` + `educational.yaml` → week=1 (front-loaded)
 - `#29` `expand_query`, educational tools → week=1 (front-loaded; was week=3)
-- `#30` Literature routing → week=1 (front-loaded; was week=3)
+- `#30` Literature routing → week=1 (simplified: direct Semantic Scholar call only)
 - `#31` Review intern search output + domain_workflows gaps → week=4 (was week=3; Bernie away)
 - `#36` `USE_NEO4J=false` fallback + docstrings → week=6 (was week=5; matches revised intern scope)
 
 ### Closed
 - `#28` Source labels + 10 search queries → closed; scope folded into `#52`
+- `#13` Collect curated papers → **closed** (local PDF corpus dropped; copyright risk)
+- `#27` [JRS] Implement publication_corpus.py → **closed** (task dropped; intern freed for Week 3)
+- `#32` [BCC] Integrate publication corpus into search → **closed** (dropped with corpus)
 
 ### Created
 - `#52` [JRS] Week 5: `search_datasets()` combined query + source labels (Intern-A, P0)

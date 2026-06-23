@@ -45,7 +45,15 @@ def chat_model():
     if not (os.getenv("LLM_API_KEY") or os.getenv("SAMBANOVA_API_KEY")):
         pytest.skip("No LLM API key set — skipping live LLM tests")
     from src.assistant.llm import get_chat_model
-    return get_chat_model()
+    import openai
+    model = get_chat_model()
+    try:
+        model.invoke([{"role": "user", "content": "ping"}])
+    except openai.InternalServerError as e:
+        if "503" in str(e) or "not available" in str(e).lower():
+            pytest.skip(f"LLM model unavailable (503) — skipping live LLM tests: {e}")
+        raise
+    return model
 
 
 @pytest.fixture

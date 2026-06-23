@@ -297,7 +297,6 @@ class RoccoClient(BaseChatModel):
             ]
             message = AIMessage(content=choice.content or "", tool_calls=tool_calls)
         else:
-            content = _strip_json_fences(choice.content or "")
-            message = AIMessage(content=content)
+            message = AIMessage(content=choice.content or "")
 
         return ChatResult(generations=[ChatGeneration(message=message, text=message.content)])

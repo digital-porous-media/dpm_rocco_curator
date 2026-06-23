@@ -16,8 +16,6 @@ env/
 *.faiss
 *.pkl
 faiss_index/
-data/publication_vector_store/
-data/curated_papers/
 data/metadata/
 
 # Streamlit session files

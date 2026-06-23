@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Active task board:** https://github.com/orgs/digital-porous-media/projects/3
+
 ---
 
 # Rocco: Domain-Agnostic AI Research Assistant Framework
@@ -396,7 +398,6 @@ src/assistant/
 ├── conversation_manager.py   # LangGraph ReAct agent (intent → dispatch → synthesize)
 ├── assistant.py              # one-line re-export of ConversationManager (backwards compat)
 ├── graph_store.py            # Neo4j vector index + structured Cypher search
-├── publication_corpus.py     # FAISS over chunked paper PDFs
 ├── literature_search.py      # Semantic Scholar API wrapper (Bernie pre-builds)
 ├── llm.py                    # RoccoClient + OpenAIEmbeddings singletons (unified with curator)
 └── assistant_ui.py           # Streamlit UI — added as new tab in rocco_ui.py Week 6
@@ -410,42 +411,38 @@ src/prompts/                  # new prompts alongside existing ones
 data/
 ├── tutorials.yaml                 # 20+ user goals → verified portal tutorial URLs
 ├── domain_workflows.yaml          # 15 DRP workflows (Bernie authors; do not edit without domain review)
-├── metadata/                      # scraped DRP metadata JSONs — GITIGNORED
-├── curated_papers/                # licensed PDFs — GITIGNORED, do not commit
-└── publication_vector_store/      # generated FAISS index — GITIGNORED
+└── metadata/                      # scraped DRP metadata JSONs — GITIGNORED
 
 scripts/
 ├── scrape_metadata.py             # downloads DRP metadata JSONs from TACC Corral
-├── build_dataset_vector_index.py  # embeds dataset nodes → Neo4j vector index
-└── build_publication_index.py     # chunks PDFs → data/publication_vector_store/
+└── build_dataset_vector_index.py  # embeds dataset nodes → Neo4j vector index
 
 tests/assistant/
 ├── conftest.py                    # fixtures: mock Neo4j driver, small FAISS index
 ├── test_graph_store.py
-├── test_publication_corpus.py
 └── test_search_integration.txt
 ```
 
 ### Search Architecture
 
-Three-layer search — all handled in `graph_store.py`:
+Two-layer search — all handled in `graph_store.py`:
 
 1. **Neo4j vector index** — semantic similarity over dataset nodes (embeddings stored as node properties via `db.index.vector`), queried via `langchain-neo4j` abstractions for vector retrieval. Replaces the old separate FAISS-over-descriptions approach.
 2. **Neo4j structured filtering** — exact Cypher queries on `Sample`/`DigitalDataset` properties. Combined with vector search in a single query where possible.
-3. **Publication FAISS** — chunked full-text of associated papers, tagged by dataset ID. Separate from the graph because chunked documents don't fit as graph nodes.
 
-Source labels on all results: `[graph match]`, `[semantic match]`, `[paper match]`, `[graph+paper]`.
+Literature search uses the **Semantic Scholar API** only (see `literature_search.py`). A local full-text PDF corpus was considered but dropped due to copyright concerns — publisher PDFs cannot be legally chunked and stored even under institutional access licenses. Semantic Scholar provides titles, abstracts, DOIs, and citation counts, which is sufficient for the assistant's use cases.
+
+Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic scholar]`.
 
 ### Literature Strategy
 
-- **Curated papers** — PDFs in `data/curated_papers/`; embedded via `DocumentIngestor` into `data/publication_vector_store/`
-- **Semantic Scholar** — free API, one `SEMANTIC_SCHOLAR_API_KEY` in server `.env` (no per-user keys)
-- **Routing** — publication FAISS first (≥0.75 confidence); fall back to Semantic Scholar; always label source
+- **Semantic Scholar** — free API, one `SEMANTIC_SCHOLAR_API_KEY` in server `.env` (no per-user keys); provides titles, abstracts, DOIs, citation counts
+- A local full-text PDF corpus was considered and dropped — see §Search Architecture for rationale
 
 ### Key Design Constraints
 
 - `graph_store.py` must accept `filters: dict` (not hardcoded field names) — required for future Croissant file-level metadata extension
-- `USE_NEO4J=false` env flag must allow the assistant to fall back to publication FAISS only
+- `USE_NEO4J=false` env flag must allow the assistant to degrade gracefully (Semantic Scholar still works)
 - Session state for the new tab must be namespaced (Bernie adds `curator_` prefix to all existing keys in Week 6)
 - Never assert a dataset property that isn't present in the graph — honest gap responses required
 
@@ -456,7 +453,7 @@ The system prompt must **not** blanket-restrict the LLM to tool-only knowledge. 
 | Question type | Policy | Example |
 |--------------|--------|---------|
 | Dataset facts / portal content | **Tools only** — no pre-trained fallback. Hallucinated dataset properties erode researcher trust. | "How many sandstone datasets have φ > 0.2?" |
-| Domain Q&A / workflows | **Tools first** (`domain_workflows.yaml`, publication FAISS). Fall back to pre-trained with explicit disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
+| Domain Q&A / workflows | **Tools first** (`domain_workflows.yaml`, Semantic Scholar). Fall back to pre-trained with explicit disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
 | Foundational concepts | **Pre-trained knowledge is fine** — these are stable and well-established. | "What is porosity?" |
 
 **Applies to:**

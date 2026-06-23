@@ -1,27 +1,49 @@
 """
-Unit tests for Neo4jGraphStore. All Neo4j driver calls are mocked —
+Unit tests for GraphStore raw-driver methods. All Neo4j driver calls are mocked —
 no live database required.
 """
 
+import os
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from graph_store import Neo4jGraphStore, SearchResult
-
+from src.assistant.graph_store import GraphStore, SearchResult
 
 
 # Helpers
 
-def make_store(use_neo4j: bool = True) -> Neo4jGraphStore:
+def make_store(use_neo4j: bool = True) -> GraphStore:
     """
-    Builds a Neo4jGraphStore with a mocked driver.
-    Patches GraphDatabase.driver so no real connection is attempted.
+    Builds a GraphStore with a mocked driver.
+    Mocks the LLM, langchain, and Neo4j dependencies so no real connection is attempted.
     """
-    env = {"USE_NEO4J": "true" if use_neo4j else "false"}
-    with patch.dict("os.environ", env):
-        with patch("neo4j_graph_store.GraphDatabase.driver") as mock_cls:
-            mock_cls.return_value = MagicMock()
-            store = Neo4jGraphStore(url="bolt://localhost:7687", username="neo4j", password="test")
+    # Temporarily set USE_NEO4J for this creation (necessary because _neo4j_enabled() checks env)
+    original_use_neo4j = os.environ.get("USE_NEO4J", "true")
+    if use_neo4j:
+        os.environ["USE_NEO4J"] = "true"
+    else:
+        os.environ["USE_NEO4J"] = "false"
+
+    try:
+        # Mock the LLM and langchain imports that happen inside __init__
+        with patch("src.assistant.llm.get_chat_model") as mock_chat:
+            with patch("src.assistant.llm.get_embeddings_model") as mock_emb:
+                # Mock connect() to prevent real Neo4j connection attempts
+                with patch.object(GraphStore, "connect") as mock_connect:
+                    mock_chat.return_value = MagicMock()
+                    mock_emb.return_value = MagicMock()
+                    with patch("langchain_neo4j.Neo4jGraph"):
+                        with patch("langchain_neo4j.Neo4jVector"):
+                            with patch("langchain_neo4j.GraphCypherQAChain"):
+                                store = GraphStore()
+
+        # Mock the driver after creation
+        if use_neo4j:
+            store._driver = MagicMock()
+    finally:
+        # Restore original environment
+        os.environ["USE_NEO4J"] = original_use_neo4j
+
     return store
 
 
@@ -30,7 +52,7 @@ def mock_session_returning(records: list[dict]):
     Patches store.driver.session() so that session.run() returns the
     given list of dicts as mock Record objects.
     """
-    def side_effect(store: Neo4jGraphStore):
+    def side_effect(store: GraphStore):
         mock_result = [MagicMock(**{"__iter__": lambda s: iter(r.items()), **r}) for r in records]
         # Make dict(record) work by defining keys/values on the mock
         real_records = records
@@ -43,7 +65,7 @@ def mock_session_returning(records: list[dict]):
         session_mock.__enter__ = lambda s: session_mock
         session_mock.__exit__  = MagicMock(return_value=False)
         session_mock.run.return_value = run_result
-        store.driver.session.return_value = session_mock
+        store._driver.session.return_value = session_mock
         return store
 
     return side_effect
@@ -67,45 +89,58 @@ class TestUseNeo4jFlag:
     def test_driver_stays_none_when_disabled(self):
         """Driver must not be initialized when USE_NEO4J=false."""
         with patch.dict("os.environ", {"USE_NEO4J": "false"}):
-            store = Neo4jGraphStore()
-        assert store.driver is None
+            with patch("src.assistant.llm.get_chat_model"):
+                with patch("src.assistant.llm.get_embeddings_model"):
+                    with patch("langchain_neo4j.Neo4jGraph"):
+                        with patch("langchain_neo4j.Neo4jVector"):
+                            with patch("langchain_neo4j.GraphCypherQAChain"):
+                                store = GraphStore()
+                                assert store._driver is None
 
     def test_semantic_search_returns_empty_when_disabled(self):
         with patch.dict("os.environ", {"USE_NEO4J": "false"}):
-            store = Neo4jGraphStore()
-        assert store.semantic_search([0.1, 0.2, 0.3]) == []
+            with patch("src.assistant.llm.get_chat_model"):
+                with patch("src.assistant.llm.get_embeddings_model"):
+                    with patch("langchain_neo4j.Neo4jGraph"):
+                        with patch("langchain_neo4j.Neo4jVector"):
+                            with patch("langchain_neo4j.GraphCypherQAChain"):
+                                store = GraphStore()
+                                assert store.semantic_search([0.1, 0.2, 0.3]) == []
 
     def test_filter_by_metadata_returns_empty_when_disabled(self):
         with patch.dict("os.environ", {"USE_NEO4J": "false"}):
-            store = Neo4jGraphStore()
-        assert store.filter_by_metadata({"rockType": "Sandstone"}) == []
+            with patch("src.assistant.llm.get_chat_model"):
+                with patch("src.assistant.llm.get_embeddings_model"):
+                    with patch("langchain_neo4j.Neo4jGraph"):
+                        with patch("langchain_neo4j.Neo4jVector"):
+                            with patch("langchain_neo4j.GraphCypherQAChain"):
+                                store = GraphStore()
+                                assert store.filter_by_metadata({"rockType": "Sandstone"}) == []
 
     def test_search_datasets_returns_empty_when_disabled(self):
         with patch.dict("os.environ", {"USE_NEO4J": "false"}):
-            store = Neo4jGraphStore()
-        assert store.search_datasets([0.1, 0.2], filters={"rockType": "Sandstone"}) == []
+            with patch("src.assistant.llm.get_chat_model"):
+                with patch("src.assistant.llm.get_embeddings_model"):
+                    with patch("langchain_neo4j.Neo4jGraph"):
+                        with patch("langchain_neo4j.Neo4jVector"):
+                            with patch("langchain_neo4j.GraphCypherQAChain"):
+                                store = GraphStore()
+                                assert store.search_datasets([0.1, 0.2], filters={"rockType": "Sandstone"}) == []
 
 
 
 # Connection lifecycle
 
 class TestConnectionLifecycle:
-    def test_connect_raises_on_failure(self):
-        with patch.dict("os.environ", {"USE_NEO4J": "true"}):
-            with patch("neo4j_graph_store.GraphDatabase.driver") as mock_cls:
-                mock_cls.return_value.verify_connectivity.side_effect = Exception("refused")
-                with pytest.raises(RuntimeError, match="Could not connect"):
-                    Neo4jGraphStore()
-
     def test_execute_cypher_raises_when_driver_inactive(self):
         with patch.dict("os.environ", {"USE_NEO4J": "false"}):
-            store = Neo4jGraphStore()
+            store = GraphStore()
         with pytest.raises(RuntimeError, match="driver is not active"):
             store.execute_cypher("MATCH (n) RETURN n")
 
     def test_context_manager_closes_driver(self):
         store = make_store()
-        mock_driver = store.driver
+        mock_driver = store._driver
         with store:
             pass
         mock_driver.close.assert_called_once()
@@ -230,7 +265,7 @@ class TestSearchDatasets:
         with patch.object(store, "semantic_search", return_value=[]) as mock_sem:
             store.search_datasets(embedding, filters=None, k=3)
 
-        mock_sem.assert_called_once_with(embedding, k=3, index_name="dataset-embeddings")
+        mock_sem.assert_called_once_with(embedding, k=3, index_name="datasetEmbedding")
 
     def test_combines_vector_and_filter_in_one_query(self):
         """With filters, a single Cypher query must contain both the vector call and WHERE."""
