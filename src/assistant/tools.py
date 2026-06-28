@@ -254,6 +254,28 @@ def get_educational_context(question: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Portal documentation search (stub — full pipeline pending)
+# ---------------------------------------------------------------------------
+
+@tool
+def search_portal_docs(question: str) -> str:
+    """Search the DPM Portal user documentation for how-to guides and metadata schema reference.
+
+    Covers: dataset submission guidelines, portal navigation, metadata field definitions,
+    and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs.
+
+    NOTE: Full implementation pending — the portal docs ingestion pipeline (fetch → chunk →
+    vector index) has not been built yet. When implemented, this tool will query a FAISS or
+    Neo4j vector index built from the dpm_docs markdown pages.
+    """
+    return (
+        "Portal documentation search is not yet available. "
+        "For step-by-step workflow guidance, try get_workflow_guidance(). "
+        "For structured dataset property queries, try get_dataset_details()."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Literature search tool (Bernie)
 # ---------------------------------------------------------------------------
 
@@ -283,6 +305,7 @@ def build_langchain_tools() -> list:
     return [
         search_datasets,
         get_dataset_details,
+        search_portal_docs,
         get_workflow_guidance,
         get_educational_context,
         search_literature,

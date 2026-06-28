@@ -350,6 +350,18 @@ workflows:
         sub-REV, and how the REV was determined. To determine the REV,
         compute target properties on sub-volumes of increasing linear size
         until the curve plateaus — see global representativeness best practices."
+    decision_points:
+      - question: "Is effective porosity (connected pore fraction) significantly
+          less than total porosity?"
+        branches:
+          "Yes (effective << total, large isolated-pore fraction)": "A
+            significant disconnected pore fraction is present. Run
+            [[connected-component-analysis]] to quantify isolated clusters
+            before any transport simulation — flow solvers on non-percolating
+            domains return zero flux."
+          "No (effective ≈ total)": "Pore space is well-connected; proceed
+            directly to transport property estimation
+            ([[lbm-single-phase]], [[dns-permeability]], etc.)."
     references:
       - "Gostick et al. (2019), Journal of Open Source Software (PoreSpy),
         10.21105/joss.01296"
@@ -518,6 +530,16 @@ workflows:
       - "For standard pore-scale permeability estimation, [[lbm-single-phase]]
         is the simpler and faster approach; DNS is warranted when geometric
         boundary-layer accuracy or non-Darcy effects are the specific focus."
+    decision_points:
+      - question: "Is geometric boundary-layer fidelity or non-Darcy flow
+          (Re > 1) the primary concern?"
+        branches:
+          "Yes (boundary-layer accuracy required or Re > 1)": "DNS on an
+            unstructured body-fitted mesh is warranted; report Reynolds number
+            and confirm the solver handles inertial terms."
+          "No (standard Darcy-regime permeability)": "Use [[lbm-single-phase]]
+            — it is faster and avoids the meshing step with comparable
+            accuracy for Stokes flow."
     references:
       - "Blunt et al. (2013), Advances in Water Resources,
         10.1016/j.advwatres.2012.03.003"
@@ -568,6 +590,15 @@ workflows:
       - "MICP from segmented images systematically under-predicts entry
         pressures for narrow throats due to discretization; expect a
         constant offset, not a slope error."
+    decision_points:
+      - question: "Is the displacement purely non-wetting (strong drainage),
+          or does partial wettability or imbibition need to be modeled?"
+        branches:
+          "Purely non-wetting drainage": "Morphological MICP is appropriate
+            and computationally fast; no fluid dynamics required."
+          "Partial wettability or imbibition required": "Use a pore-network
+            drainage/imbibition simulation ([[relative-permeability-pnm]])
+            that supports contact-angle boundary conditions."
     references:
       - "Hilpert & Miller (2001), Advances in Water Resources,
         10.1016/S0309-1708(01)00045-2"
@@ -679,6 +710,18 @@ workflows:
         network modeling ([[relative-permeability-pnm]]) is orders of magnitude
         faster with comparable accuracy; use direct simulation when viscous or
         inertial effects are significant."
+    decision_points:
+      - question: "What is the capillary number (Ca = μv / σ) for the
+          displacement of interest?"
+        branches:
+          "Ca < ~1e-5 (capillary-dominated)": "Quasi-static pore network
+            modeling ([[relative-permeability-pnm]]) provides comparable
+            accuracy at a fraction of the computational cost; prefer it
+            unless dynamic effects are the specific focus."
+          "Ca ≥ ~1e-5 or viscous/inertial effects are significant": "Direct
+            multiphase simulation (color-gradient LBM, VOF, or level-set)
+            is required to capture viscous fingering, snap-off dynamics, and
+            inertial flow regimes."
     references:
       - "McClure et al. (2021), Computational Geosciences,
         10.1007/s10596-020-10028-9"
@@ -736,6 +779,17 @@ workflows:
         contact-angle fitting is noisy."
       - "Smoothing the rock surface before angle measurement is essential;
         raw voxelized surfaces bias angles toward 45°/90°."
+    decision_points:
+      - question: "Does the contact-angle distribution show a single mode or
+          multiple modes?"
+        branches:
+          "Single mode (strongly water-wet θ < 60° or strongly oil-wet θ > 120°)":
+            "A single representative contact angle is sufficient for
+            downstream simulations; report the median and interquartile range."
+          "Bimodal or broad distribution (mixed-wet)": "Assign per-mineral
+            contact angles in downstream simulations ([[multiphase-direct]]);
+            a single average angle will misrepresent the displacement
+            behavior in mixed-wettability systems."
     references:
       - "AlRatrout et al. (2017), Advances in Water Resources,
         10.1016/j.advwatres.2017.07.018"
@@ -789,6 +843,18 @@ workflows:
       - "Validate against an analytical or experimental dissolution case
         (e.g., calcite-CO2 in a Hele-Shaw cell) before trusting full
         4D predictions."
+    decision_points:
+      - question: "What is the Damköhler number (Da = reaction rate /
+          advection rate)?"
+        branches:
+          "High Da (>> 1, reaction fast relative to transport)": "Dissolution
+            is transport-limited and tends to be spatially uniform. Coarser
+            time steps are acceptable; focus on capturing surface-area
+            evolution."
+          "Low Da (<< 1, transport fast relative to reaction)": "Wormholing
+            regime; reaction fronts channel into preferential paths. Use
+            refined meshes near the inlet, smaller time steps, and longer
+            simulation times to capture wormhole competition."
     references:
       - "Molins et al. (2014), Environmental Science & Technology,
         10.1021/es5013438"
@@ -837,6 +903,17 @@ workflows:
       - "Synchrotron datasets often have systematic dose-induced drift in
         intensity — re-threshold per frame or normalize against a stable
         air/solid reference."
+    decision_points:
+      - question: "Are consecutive volumes adequately co-registered (solid
+          skeleton misalignment ≤ 1 voxel)?"
+        branches:
+          "Yes": "Proceed to per-frame fluid segmentation and event
+            (Haines jump / snap-off) detection."
+          "No (residual > 1 voxel)": "Revisit registration parameters or
+            apply a deformable registration stage for samples under mechanical
+            load. Do not proceed to event detection until alignment is
+            confirmed — a single mis-registered frame propagates false
+            displacement events through the entire time series."
     references:
       - "Berg et al. (2013), PNAS,
         10.1073/pnas.1221373110"
@@ -889,6 +966,16 @@ workflows:
         sub-voxel apertures (≤2 voxels) cannot be quantified reliably."
       - "Report the fracture orientation relative to the bedding/loading
         axis; flow anisotropy can be 10× depending on direction."
+    decision_points:
+      - question: "Does contact area fraction exceed ~30% of the fracture plane?"
+        branches:
+          "Yes (≥ 30% contact area)": "The cubic-law estimate is unreliable;
+            solve flow directly via [[lbm-single-phase]] on the 3D fracture
+            volume for accurate transmissivity."
+          "No (< 30% contact area)": "The Reynolds (local cubic law) equation
+            on the aperture field is a fast and sufficiently accurate first
+            estimate; validate against LBM if transmissivity is the primary
+            deliverable."
     references:
       - "Brown (1987), Journal of Geophysical Research,
         10.1029/JB092iB02p01337"
@@ -1313,6 +1400,17 @@ workflows:
       - "If changing the threshold by ±5 gray levels toggles the domain
         between percolating and non-percolating, the threshold sits in a
         critical transition region — report this sensitivity."
+    decision_points:
+      - question: "Does a percolating (end-to-end spanning) cluster exist in
+          the target flow direction?"
+        branches:
+          "Yes": "Proceed to transport simulation using the spanning cluster;
+            effective porosity is the spanning-cluster voxel fraction."
+          "No": "Do not proceed to flow simulation — solvers return zero flux
+            on a non-percolating domain. Check: (1) is the imaged volume
+            sub-REV? Try a larger sub-volume. (2) Is the threshold
+            over-aggressive? Try lowering it by a few gray levels and re-run
+            [[connected-component-analysis]]."
     references:
       - "Hoshen & Kopelman (1976), Physical Review B,
         10.1103/PhysRevB.14.3438"
@@ -1439,7 +1537,10 @@ workflows:
       - "PoreSpy (two-point correlation, chord length, Minkowski functionals)"
       - "scikit-image (regionprops, sub-volume analysis)"
     example_datasets:
-      - []
+      - "DRP-247: Heterogeneous Mt. Simon Sandstone — multi-region pore
+        structure ideal for demonstrating sub-volume porosity variance analysis"
+      - "DRP-118: Tight Carbonate — strongly heterogeneous pore system with
+        disconnected micro-pores and sub-resolution porosity; CoV typically > 1"
     best_practices:
       - "Heterogeneity classification should precede REV determination: a
         homogeneous sample converges to an REV quickly; a strongly
