@@ -168,7 +168,15 @@ Do not use any APOC procedures or functions. Use only standard Cypher.
 Fine Tuning:
 - Sometimes relevant keywords may be contained in the description instead of just the title.
 - People may use "projects" and "datasets" interchangeably.
-- Avoid UNION/UNION ALL unless necessary. Prefer combining conditions with OR in a single MATCH.
+- When a condition applies to multiple sub-node types (e.g. DigitalDataset and AnalysisDataset),
+  use OPTIONAL MATCH for each type separately, then combine with OR in the WHERE clause on named variables.
+  Never combine two different labels in a single MATCH pattern like (n:`LabelA OR alias`:LabelB) — that is invalid syntax.
+  Example for "segmented datasets":
+    MATCH (d:Dataset)
+    OPTIONAL MATCH (d)<-[:PART_OF]-(dd:DigitalDataset)
+    OPTIONAL MATCH (d)<-[:PART_OF]-(ad:AnalysisDataset)
+    WHERE dd.segmented = 'yes' OR ad.segmented = 'yes'
+    RETURN DISTINCT d.identifier, d.title
 - If you do use UNION, all branches must return the same column names.
 
 Schema:
@@ -315,7 +323,7 @@ RETURN
 
         return results
 
-    def hybrid_search(self, query: str, filters: dict = None, top_k: int = 7) -> list[dict]:
+    def hybrid_search(self, query: str, filters: dict = None, top_k: int = 5) -> list[dict]:
         """
         Hybrid BM25 + vector search with Reciprocal Rank Fusion.
 

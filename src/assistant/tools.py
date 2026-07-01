@@ -11,6 +11,7 @@ Bernie owns:              get_educational_context, get_workflow_guidance,
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -217,10 +218,22 @@ def _workflow_context_str(workflows: list[dict], tutorials: list[dict]) -> str:
     if tutorials:
         access = _load_tutorials().get("access_instructions", {})
         steps_txt = " → ".join(access.get("steps", []))
-        tut_lines = ["## Portal Tutorials", f"Access: {steps_txt}"]
+        tut_lines = [
+            "## Portal Tutorials",
+            f"How to access: {steps_txt}",
+            "",
+            "Relevant notebooks:",
+        ]
         for t in tutorials:
-            tut_lines.append(f"  - Goal: {t['goal']}")
-            tut_lines.append(f"    Notebook: {t['notebook']}")
+            nb_path = t["notebook"]
+            # Derive a readable name: strip chapter prefix and extension
+            nb_filename = nb_path.split("/")[-1]
+            # e.g. "5-2-1_lbm_d2q9_bgk.ipynb" → "lbm_d2q9_bgk"
+            name_part = nb_filename.replace(".ipynb", "")
+            # Strip leading chapter number like "5-2-1_"
+            name_clean = re.sub(r"^\d[\d\-]*_", "", name_part).replace("_", " ")
+            tut_lines.append(f'  - **{name_clean}** — {t["goal"]}')
+            tut_lines.append(f'    Path in Community Data: `{nb_path}`')
         parts.append("\n".join(tut_lines))
 
     return "\n\n".join(parts)
@@ -231,23 +244,24 @@ def _workflow_context_str(workflows: list[dict], tutorials: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 @tool
-def search_datasets(query: str) -> str:
-    """Find datasets by semantic similarity to a natural language query, including suitability queries like 'datasets suitable for LBM' or purpose-based queries."""
+def search_datasets(query: str, top_k: int = 5) -> str:
+    """Find datasets by semantic similarity to a natural language query. Use for dataset discovery, finding datasets by rock type or imaging method, and suitability queries like 'sandstone datasets suitable for LBM simulation'. Do NOT use for how-to or workflow questions (e.g. 'how to compute permeability') — those belong to get_workflow_guidance."""
     expansion = expand_query(query)
     expanded = expansion.get("expanded_query", query)
     filters = expansion.get("inferred_filters", {})
     rationale = expansion.get("rationale", "")
 
     graph_store = _get_graph_store()
-    results = graph_store.hybrid_search(expanded, filters=filters, top_k=7)
+    results = graph_store.hybrid_search(expanded, filters=filters, top_k=top_k)
 
     # Second-pass: component-level search to catch datasets whose parent description
     # has weak signal but whose sub-nodes (e.g. AnalysisDataset) score better.
     seen_dois = {r.get("metadata", {}).get("doi") for r in results if r.get("metadata", {}).get("doi")}
-    comp_results = graph_store.component_search(expanded, top_k=7)
+    comp_results = graph_store.component_search(expanded, top_k=top_k)
     extras = 0
+    extra_limit = max(3, top_k - len(results))
     for cr in comp_results:
-        if extras >= 3:
+        if extras >= extra_limit:
             break
         cm = cr.get("metadata", {})
         doi = cm.get("doi", "")
@@ -277,7 +291,7 @@ def search_datasets(query: str) -> str:
 
     output = "\n\n".join(lines)
     if rationale:
-        output += f"\n\n[search rationale: {rationale}]"
+        output = f"[search reasoning: {rationale}]\n\n" + output
     return output
 
 

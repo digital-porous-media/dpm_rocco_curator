@@ -11,7 +11,7 @@ import streamlit as st
 
 from src.assistant.conversation_manager import ConversationManager
 
-_DOI_RE = re.compile(r'DOI:\s*(10\.\S+)')
+_DOI_RE = re.compile(r'DOI:\s*(10\.[^\s)]+)')
 
 
 def _linkify_dois(text: str) -> str:
@@ -54,4 +54,4 @@ def render_assistant_tab() -> None:
             rendered = _linkify_dois(response)
             st.markdown(rendered)
 
-        st.session_state.assistant_messages.append({"role": "assistant", "content": rendered})
+        st.session_state.assistant_messages.append({"role": "assistant", "content": response})

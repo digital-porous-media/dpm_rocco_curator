@@ -51,7 +51,7 @@ tutorials:
 
   - goal: "Characterize pore morphology with Minkowski functionals"
     notebook: "3_morphological_characterization/3-2_minkowski_functionals.ipynb"
-    keywords: [Minkowski, porosity, surface area, euler, morphology, characterization, metrics, curvature, topology]
+    keywords: [Minkowski, porosity, compute porosity, measure porosity, calculate porosity, surface area, euler, morphology, characterization, metrics, curvature, topology, voxel count]
 
   - goal: "Determine a representative elementary volume (REV)"
     notebook: "3_morphological_characterization/3-3_competent_subset.ipynb"
@@ -67,7 +67,7 @@ tutorials:
 
   - goal: "Identify connected pore space and measure connectivity"
     notebook: "3_morphological_characterization/3-6_connected_components.ipynb"
-    keywords: [connected, connectivity, percolation, pore network, labeling, clusters]
+    keywords: [connected, connectivity, percolation, pore network, labeling, clusters, porosity, effective porosity, connected pore space]
 
   - goal: "Measure fluid-fluid interfacial areas"
     notebook: "3_morphological_characterization/3-7_interface_area.ipynb"

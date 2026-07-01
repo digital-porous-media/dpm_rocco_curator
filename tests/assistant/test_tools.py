@@ -234,4 +234,4 @@ class TestBuildLangchainTools:
 
     def test_returns_list_of_correct_length(self):
         from src.assistant.tools import build_langchain_tools
-        assert len(build_langchain_tools()) == 5
+        assert len(build_langchain_tools()) == 6

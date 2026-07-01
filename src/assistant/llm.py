@@ -32,3 +32,13 @@ def get_embeddings_model():
     if _embeddings is None:
         _embeddings = get_embeddings()
     return _embeddings
+
+
+class _LazyEmbeddings:
+    """Proxy that initializes the embeddings model on first use."""
+
+    def __getattr__(self, name):
+        return getattr(get_embeddings_model(), name)
+
+
+embeddings = _LazyEmbeddings()
