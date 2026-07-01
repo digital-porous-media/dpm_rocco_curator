@@ -43,12 +43,63 @@ load_dotenv()
 # Text builder
 # ---------------------------------------------------------------------------
 
+# Set to False to embed raw descriptions (may include code blocks and boilerplate).
+# Set to True to strip code-like content before embedding, improving semantic
+# signal for descriptions that contain Python/Matlab code or file format instructions.
+# Changing this flag requires rebuilding the index: python scripts/build_dataset_vector_index.py
+STRIP_CODE_FROM_DESCRIPTIONS = True
+
+
+import re as _re
+
+
+def _clean_description_for_embedding(text: str) -> str:
+    """Strip code blocks, URLs, and boilerplate from a description before embedding.
+
+    The stored description in Neo4j is not modified — this only affects the text
+    fed to the embedding model.
+    """
+    lines = text.splitlines()
+    cleaned = []
+    in_code_block = False
+    for line in lines:
+        stripped = line.strip()
+        # Toggle fenced code blocks
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        # Skip lines that look like code or boilerplate
+        if _re.match(r"^(from|import)\s+\w", stripped):
+            continue
+        if _re.match(r"^\w[\w.]*\s*=\s*\w", stripped):  # assignment
+            continue
+        if _re.match(r"^[\w.]+\(", stripped):  # bare function call
+            continue
+        if _re.match(r"^[#%]", stripped):  # Python/shell/Matlab comment
+            continue
+        if _re.match(r"^https?://", stripped):  # URL-only line
+            continue
+        if _re.match(r"^-{3,}$", stripped):  # horizontal rule
+            continue
+        # Skip repeated section headers that add no semantic content
+        if _re.match(r"^(load data in|filenames and keys|for comments|usage:|prerequisites:|please see the readme|see the repo)", stripped, _re.IGNORECASE):
+            continue
+        # Skip lines that are only a URL (possibly trailing context)
+        if _re.search(r"https?://\S+$", stripped) and len(stripped.split()) <= 10:
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
 def _build_embedding_text(dataset: dict, samples: list[dict], digital_datasets: list[dict]) -> str:
     """Assemble a structured text blob for embedding from a dataset and its sub-nodes."""
     parts: list[str] = []
 
     title = dataset.get("title") or ""
     description = dataset.get("description") or ""
+    if STRIP_CODE_FROM_DESCRIPTIONS:
+        description = _clean_description_for_embedding(description)
     if title:
         parts.append(f"Title: {title}")
     if description:
@@ -272,6 +323,12 @@ class IndexBuilder:
 
         vectors = self._embeddings.embed_documents(texts)
 
+        if len(vectors) != len(batch):
+            # API returned a partial batch — fall back to one-at-a-time so nothing is skipped.
+            print(f"\n  Warning: API returned {len(vectors)}/{len(batch)} vectors at offset {offset}. "
+                  f"Retrying individually...")
+            vectors = [self._embeddings.embed_documents([t])[0] for t in texts]
+
         if self._EMBEDDING_DIM_CACHE is None and vectors:
             IndexBuilder._EMBEDDING_DIM_CACHE = len(vectors[0])
 
@@ -312,6 +369,11 @@ class IndexBuilder:
 
         vectors = self._embeddings.embed_documents(texts)
 
+        if len(vectors) != len(batch):
+            print(f"\n  Warning: API returned {len(vectors)}/{len(batch)} vectors at offset {offset}. "
+                  f"Retrying individually...")
+            vectors = [self._embeddings.embed_documents([t])[0] for t in texts]
+
         with self._driver.session() as session:
             for row, vector in zip(batch, vectors):
                 session.run(
@@ -346,6 +408,13 @@ class IndexBuilder:
                 }}}}
             """)
         print(f"Vector index 'datasetEmbedding' ready (dim={dim}).")
+        with self._driver.session() as session:
+            session.run("""
+                CREATE FULLTEXT INDEX datasetDescriptionFulltext IF NOT EXISTS
+                FOR (d:Dataset) ON EACH [d.title, d.description]
+                OPTIONS { indexConfig: { `fulltext.analyzer`: 'english' } }
+            """)
+        print("Fulltext index 'datasetDescriptionFulltext' ready.")
 
     def _verify(self) -> None:
         print("\nRound-trip verification...")

@@ -71,7 +71,47 @@ def _load_tutorials() -> dict:
 # ---------------------------------------------------------------------------
 
 def _match_workflows(query: str, max_results: int = 3) -> list[dict]:
-    """Return up to max_results workflows whose keywords overlap with query."""
+    """Return up to max_results workflows semantically relevant to query."""
+    from src.assistant.llm import get_chat_model
+
+    data = _load_workflows()
+    all_workflows = data.get("workflows", [])
+
+    index_lines = []
+    for wf in all_workflows:
+        desc = wf.get("description", "").replace("\n", " ").strip()[:120]
+        index_lines.append(f"- {wf['id']}: {wf.get('name', wf['id'])} — {desc}")
+    index_str = "\n".join(index_lines)
+
+    system = (
+        "You are a workflow retrieval system. Given a user query and a list of workflows, "
+        "return a JSON array of the most relevant workflow IDs. Return at most "
+        f"{max_results} IDs, ordered by relevance. Return ONLY valid JSON, no explanation. "
+        "If nothing is relevant, return []."
+    )
+    user_msg = f"Query: {query}\n\nWorkflows:\n{index_str}"
+
+    try:
+        raw = get_chat_model().send_prompt(user_msg, context=system, params={"temperature": 0, "max_tokens": 100})
+        # Strip markdown code fences if present
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        ids = json.loads(cleaned.strip())
+        if not isinstance(ids, list):
+            raise ValueError("not a list")
+    except Exception as e:
+        logger.warning("_match_workflows semantic call failed (%s); falling back to keyword match", e)
+        return _match_workflows_keyword(query, max_results)
+
+    id_to_wf = {wf["id"]: wf for wf in all_workflows}
+    return [id_to_wf[wid] for wid in ids if wid in id_to_wf][:max_results]
+
+
+def _match_workflows_keyword(query: str, max_results: int = 3) -> list[dict]:
+    """Keyword fallback — used only when the LLM call fails."""
     data = _load_workflows()
     query_lower = query.lower()
     scored = []
@@ -84,16 +124,18 @@ def _match_workflows(query: str, max_results: int = 3) -> list[dict]:
     return [wf for _, wf in scored[:max_results]]
 
 
-def _match_tutorials(query: str) -> list[dict]:
-    """Return tutorials whose keywords overlap with query."""
+def _match_tutorials(query: str, max_results: int = 5) -> list[dict]:
+    """Return up to max_results tutorials whose keywords overlap with query, ranked by hit count."""
     data = _load_tutorials()
     query_lower = query.lower()
-    matched = []
+    scored = []
     for t in data.get("tutorials", []):
         keywords = [str(k).lower() for k in t.get("keywords", [])]
-        if any(kw in query_lower for kw in keywords):
-            matched.append(t)
-    return matched
+        hits = sum(1 for kw in keywords if kw in query_lower)
+        if hits > 0:
+            scored.append((hits, t))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [t for _, t in scored[:max_results]]
 
 
 def _global_practices_context(query: str) -> str:
@@ -120,6 +162,25 @@ def _global_practices_context(query: str) -> str:
             lines.append(f"Global best practices — {section}:")
             for item in gbp[section]:
                 lines.append(f"  - {item}")
+    return "\n".join(lines)
+
+
+def _literature_fallback_context(query: str, max_results: int = 3) -> str:
+    """Return a literature context block for use when no tutorials match."""
+    try:
+        papers = _get_lit_search().search_external_literature(query, max_results=max_results)
+    except Exception as e:
+        logger.warning("Literature fallback search failed: %s", e)
+        return ""
+    if not papers:
+        return ""
+    lines = ["## Related Literature [semantic scholar]"]
+    for p in papers:
+        authors = ", ".join(p.authors[:3]) + (" et al." if len(p.authors) > 3 else "")
+        doi_str = f" DOI: {p.doi}" if p.doi else ""
+        lines.append(f"  - {p.title} ({p.year}) — {authors}{doi_str}")
+        if p.abstract:
+            lines.append(f"    {p.abstract[:200].rstrip()}…")
     return "\n".join(lines)
 
 
@@ -171,17 +232,53 @@ def _workflow_context_str(workflows: list[dict], tutorials: list[dict]) -> str:
 
 @tool
 def search_datasets(query: str) -> str:
-    """Find datasets by semantic similarity to a natural language query."""
-    results = _get_graph_store().search(query)
+    """Find datasets by semantic similarity to a natural language query, including suitability queries like 'datasets suitable for LBM' or purpose-based queries."""
+    expansion = expand_query(query)
+    expanded = expansion.get("expanded_query", query)
+    filters = expansion.get("inferred_filters", {})
+    rationale = expansion.get("rationale", "")
+
+    graph_store = _get_graph_store()
+    results = graph_store.hybrid_search(expanded, filters=filters, top_k=7)
+
+    # Second-pass: component-level search to catch datasets whose parent description
+    # has weak signal but whose sub-nodes (e.g. AnalysisDataset) score better.
+    seen_dois = {r.get("metadata", {}).get("doi") for r in results if r.get("metadata", {}).get("doi")}
+    comp_results = graph_store.component_search(expanded, top_k=7)
+    extras = 0
+    for cr in comp_results:
+        if extras >= 3:
+            break
+        cm = cr.get("metadata", {})
+        doi = cm.get("doi", "")
+        if doi and doi not in seen_dois:
+            seen_dois.add(doi)
+            results.append({
+                "text": cr["text"],
+                "metadata": {"title": cm.get("datasetTitle", "Unknown"), "doi": doi},
+                "source_label": "[component match]",
+            })
+            extras += 1
+
     if not results:
         return "No datasets found matching that query."
     lines = []
     for r in results:
         meta = r.get("metadata", {})
         title = meta.get("title", "Unknown")
-        doi = meta.get("doi", "")
-        lines.append(f"[graph match] {title} (DOI: {doi})\n{r['text'][:300]}")
-    return "\n\n".join(lines)
+        raw_doi = meta.get("doi", "")
+        # Normalize: strip any number of leading https://doi.org/ prefixes
+        doi_id = raw_doi
+        while doi_id.startswith("https://doi.org/"):
+            doi_id = doi_id[len("https://doi.org/"):]
+        doi_str = f"DOI: {doi_id}" if doi_id else ""
+        label = r.get("source_label", "[graph match]")
+        lines.append(f"{label} {title} ({doi_str})\n{r['text'][:300]}")
+
+    output = "\n\n".join(lines)
+    if rationale:
+        output += f"\n\n[search rationale: {rationale}]"
+    return output
 
 
 @tool
@@ -223,7 +320,8 @@ def get_workflow_guidance(goal: str) -> str:
 
     workflows = _match_workflows(goal, max_results=3)
     tutorials = _match_tutorials(goal)
-    context = _workflow_context_str(workflows, tutorials)
+    lit_ctx = _literature_fallback_context(goal) if not tutorials else ""
+    context = "\n\n".join(p for p in [_workflow_context_str(workflows, tutorials), lit_ctx] if p)
 
     prompt = load_prompt("educational")
     system = render(prompt["system"], context=context)
@@ -240,10 +338,11 @@ def get_educational_context(question: str) -> str:
 
     workflows = _match_workflows(question, max_results=3)
     tutorials = _match_tutorials(question)
+    lit_ctx = _literature_fallback_context(question) if not tutorials else ""
     workflow_ctx = _workflow_context_str(workflows, tutorials)
     global_ctx = _global_practices_context(question)
 
-    parts = [p for p in [workflow_ctx, global_ctx] if p]
+    parts = [p for p in [workflow_ctx, global_ctx, lit_ctx] if p]
     context = "\n\n".join(parts)
 
     prompt = load_prompt("educational")

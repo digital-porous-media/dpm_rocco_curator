@@ -126,13 +126,42 @@ def _build_where_clause(properties: dict) -> tuple[str, dict]:
 # langchain_neo4j imports are deferred to __init__ so that USE_NEO4J=false
 # works without triggering the neo4j driver (which has heavy optional deps).
 
+# Hardcoded schema fed to GraphCypherQAChain (refresh_schema=False means langchain
+# won't introspect via apoc.meta.data, so we supply it manually).
+MANUAL_SCHEMA = """
+Node labels and properties:
+  Dataset        — identifier, datasetNumber (int), title, description, doi, authors, license, publicationDate
+  Sample         — identifier, datasetNumber (int), title, porousMediaType, porosity (float, 27% populated),
+                   source, location, geographicOrigin, grainSizeAvg (float), grainSizeMin (float), grainSizeMax (float)
+                   porousMediaType values: beads, carbonate, coal, fibrous_media, granite, other, sandstone, soil
+                   source values: artificial, natural
+  DigitalDataset — identifier, datasetNumber (int), title, description, voxelDimensions, segmented, numberOfFiles (int), fileTypes (list)
+                   segmented values: yes, no
+  AnalysisDataset — identifier, datasetNumber (int), title, description, type, segmented, numberOfFiles (int), fileTypes (list)
+                   type values: geometric_analysis, other, simulation
+  RelatedPublication — title, authors, abstract, link, publicationDate, datasetNumber (int)
+
+Relationships (all use PART_OF or INPUT_FOR — no other relationship types exist):
+  (Sample)-[:PART_OF]->(Dataset)
+  (DigitalDataset)-[:PART_OF]->(Dataset)
+  (AnalysisDataset)-[:PART_OF]->(Dataset)
+  (RelatedPublication)-[:PART_OF]->(Dataset)
+  (Sample)-[:INPUT_FOR]->(DigitalDataset)
+  (DigitalDataset)-[:INPUT_FOR]->(AnalysisDataset)
+
+Important:
+  - porosity is on Sample nodes, NOT on Dataset nodes. Always join via PART_OF.
+  - porousMediaType (e.g. "sandstone") is on Sample nodes, NOT on Dataset nodes.
+  - Use OPTIONAL MATCH for sparse properties (porosity, grainSize*, geographicOrigin).
+  - Use case-insensitive matching for string values: toLower(s.porousMediaType) = 'sandstone'
+"""
+
 CYPHER_GENERATION_TEMPLATE = """
 You are an expert Neo4j Developer translating user questions into Cypher to answer
 questions about porous media datasets from the Digital Porous Media Portal.
-Convert the user's question based on the schema.
 
-Use only the provided relationship types and properties in the schema.
-Do not use any other relationship types or properties that are not provided.
+Use ONLY the node labels, relationship types, and properties listed below.
+Do not invent labels, relationship types, or properties.
 Do not return entire nodes or embedding properties.
 Do not use any APOC procedures or functions. Use only standard Cypher.
 
@@ -143,7 +172,7 @@ Fine Tuning:
 - If you do use UNION, all branches must return the same column names.
 
 Schema:
-{schema}
+""" + MANUAL_SCHEMA + """
 
 Question:
 {question}
@@ -151,7 +180,7 @@ Question:
 Cypher Query:
 """
 
-_cypher_prompt = PromptTemplate.from_template(CYPHER_GENERATION_TEMPLATE)
+_cypher_prompt = PromptTemplate(input_variables=["question"], template=CYPHER_GENERATION_TEMPLATE)
 
 
 class GraphStore:
@@ -283,6 +312,114 @@ RETURN
                 if skip:
                     continue
             results.append(result)
+
+        return results
+
+    def hybrid_search(self, query: str, filters: dict = None, top_k: int = 7) -> list[dict]:
+        """
+        Hybrid BM25 + vector search with Reciprocal Rank Fusion.
+
+        Runs vector similarity search and Neo4j fulltext (BM25) search in parallel,
+        then merges results using RRF. This handles vocabulary mismatch: datasets whose
+        descriptions use different words than the query (e.g. "LBM transport simulation"
+        vs "velocity field FNO") are caught by BM25 even when vector similarity is low.
+
+        Requires the `datasetDescriptionFulltext` fulltext index (created by
+        build_dataset_vector_index.py or manually via CREATE FULLTEXT INDEX).
+
+        Returns list of dicts with keys: text, metadata, source_label ("[hybrid match]").
+        """
+        if not self._enabled:
+            return []
+
+        candidate_k = top_k * 2  # fetch extra candidates so RRF has room to rerank
+
+        # --- Vector search ---
+        retriever = self._vector_index.as_retriever(search_kwargs={"k": candidate_k})
+        vec_docs = retriever.invoke(query)
+
+        # Build rank lookup by DOI: {doi: rank (0-based)}
+        vec_rank: dict[str, int] = {}
+        vec_meta: dict[str, dict] = {}  # doi -> metadata dict for result assembly
+        for rank, doc in enumerate(vec_docs):
+            doi = doc.metadata.get("doi", "")
+            if doi and doi not in vec_rank:
+                vec_rank[doi] = rank
+                vec_meta[doi] = {"meta": doc.metadata, "text": doc.page_content}
+
+        # --- BM25 fulltext search ---
+        bm25_rank: dict[str, int] = {}
+        bm25_meta: dict[str, dict] = {}
+        try:
+            with self._driver.session() as session:
+                rows = session.run(
+                    """
+                    CALL db.index.fulltext.queryNodes('datasetDescriptionFulltext', $search_query,
+                        {limit: $limit})
+                    YIELD node, score
+                    RETURN node.doi AS doi, node.title AS title,
+                           node.description AS description,
+                           node.datasetNumber AS datasetNumber,
+                           [(s)-[:PART_OF]->(node) | s.title] AS sampleTitles
+                    """,
+                    search_query=query,
+                    limit=candidate_k,
+                ).data()
+            for rank, row in enumerate(rows):
+                doi = row.get("doi", "")
+                if doi and doi not in bm25_rank:
+                    bm25_rank[doi] = rank
+                    bm25_meta[doi] = {
+                        "meta": {
+                            "title": row["title"],
+                            "doi": doi,
+                            "datasetNumber": row.get("datasetNumber"),
+                            "sampleTitles": row.get("sampleTitles") or [],
+                        },
+                        "text": row.get("description") or row.get("title") or "",
+                    }
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "hybrid_search: BM25 query failed (%s); falling back to vector only", e
+            )
+
+        # --- RRF merge ---
+        all_dois = set(vec_rank) | set(bm25_rank)
+        penalty = candidate_k + 1  # rank assigned to a DOI absent from one list
+        k_rrf = 60  # standard RRF constant
+
+        scored: list[tuple[float, str]] = []
+        for doi in all_dois:
+            r_vec = vec_rank.get(doi, penalty)
+            r_bm25 = bm25_rank.get(doi, penalty)
+            rrf = 1.0 / (r_vec + k_rrf) + 1.0 / (r_bm25 + k_rrf)
+            scored.append((rrf, doi))
+        scored.sort(reverse=True)
+
+        # --- Apply filters and assemble results ---
+        results = []
+        for _, doi in scored:
+            if len(results) >= top_k:
+                break
+            entry = vec_meta.get(doi) or bm25_meta.get(doi)
+            if entry is None:
+                continue
+            meta = entry["meta"]
+            if filters:
+                skip = False
+                for key, value in filters.items():
+                    meta_val = meta.get(key)
+                    if meta_val is not None and str(meta_val).lower() != str(value).lower():
+                        skip = True
+                        break
+                if skip:
+                    continue
+            results.append({
+                "text": entry["text"],
+                "metadata": meta,
+                "source_label": "[hybrid match]",
+            })
 
         return results
 

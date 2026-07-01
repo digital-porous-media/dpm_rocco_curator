@@ -445,6 +445,7 @@ Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic sc
 - `USE_NEO4J=false` env flag must allow the assistant to degrade gracefully (Semantic Scholar still works)
 - Session state for the new tab must be namespaced (Bernie adds `curator_` prefix to all existing keys in Week 6)
 - Never assert a dataset property that isn't present in the graph — honest gap responses required
+- **Never modify dataset metadata pulled from the DRP.** All `title`, `description`, `doi`, `authors`, and sub-node properties are published, public data. Do not edit these values in Neo4j or in any data loading/indexing script. Improvements to retrieval must come from the embedding/search layer, not from altering source data.
 
 ### Knowledge Source Policy (conversation_manager.py + educational.yaml)
 
