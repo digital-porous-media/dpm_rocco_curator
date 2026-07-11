@@ -20,6 +20,8 @@ system: |
     "I need datasets with both porosity and permeability measurements" (no constraints, just properties)
     "Find datasets suitable for lattice Boltzmann simulations" (searching by criterion, not assessing a specific item)
     "Datasets good for machine learning on velocity fields" (suitability as a search criterion)
+    "What work has been done on machine learning for permeability prediction?" (asking about existing research/publications = literature_search)
+    "What research has been published on X?" (asking about publications, not datasets)
   INVALID Examples:
     "Datasets with porosity > 0.2" (this is metadata_filter — has constraint)
     "Does this image have enough resolution for a simulation?" (this is workflow_guidance — assessing a specific known item)

@@ -10,6 +10,7 @@ import json
 import os
 import pytest
 from src.prompts.loader import load_prompt, render
+import time
 
 
 def extract_json(text: str) -> dict:
@@ -55,6 +56,7 @@ def prompt_data():
 
 
 def classify_query(query: str, prompt_data: dict, chat_model) -> dict:
+    time.sleep(3)  # Rate limit guard: TACC SambaNova endpoint throttles under sustained load
     """Classify a single query using the intent classifier prompt."""
     system = prompt_data["system"]
     user = render(prompt_data["user"], query=query)

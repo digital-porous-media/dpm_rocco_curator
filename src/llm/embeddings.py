@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Provider-aware embedding factory for Rocco.
 

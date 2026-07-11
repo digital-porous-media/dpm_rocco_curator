@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import requests
 
@@ -29,11 +30,11 @@ _FIELDS = "title,authors,abstract,year,externalIds,citationCount,openAccessPdf,u
 class Paper:
     title: str
     authors: list[str]
-    abstract: str | None
-    year: int | None
-    doi: str | None
-    citation_count: int | None
-    pdf_url: str | None
+    abstract: Optional[str]
+    year: Optional[int]
+    doi: Optional[str]
+    citation_count: Optional[int]
+    pdf_url: Optional[str]
     url: str
     source: str = "[semantic scholar]"
 

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Neo4j vector index + structured Cypher search over dataset nodes.
 
