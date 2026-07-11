@@ -54,39 +54,46 @@ class LiteratureSearch:
                 time.sleep(self._min_interval - elapsed)
             self._last_call = time.monotonic()
 
+    def _get_with_retry(self, url: str, params: dict, max_retries: int = 3) -> requests.Response | None:
+        """GET with exponential backoff on 429."""
+        for attempt in range(max_retries):
+            self._throttle()
+            try:
+                resp = requests.get(url, params=params, headers=self._headers, timeout=10)
+                if resp.status_code == 429:
+                    wait = 2 ** attempt * 5  # 5s, 10s, 20s
+                    logger.warning("Semantic Scholar rate limited (429); retrying in %ds", wait)
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp
+            except requests.RequestException as e:
+                logger.warning("Semantic Scholar request failed: %s", e)
+                return None
+        logger.warning("Semantic Scholar: gave up after %d retries (429)", max_retries)
+        return None
+
     def search_external_literature(self, query: str, max_results: int = 5) -> list[Paper]:
         """Search Semantic Scholar for papers matching query."""
-        self._throttle()
-        try:
-            resp = requests.get(
-                f"{_BASE_URL}/paper/search",
-                params={"query": query, "limit": max_results, "fields": _FIELDS},
-                headers=self._headers,
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.warning("Semantic Scholar search failed: %s", e)
+        resp = self._get_with_retry(
+            f"{_BASE_URL}/paper/search",
+            params={"query": query, "limit": max_results, "fields": _FIELDS},
+        )
+        if resp is None:
             return []
-
         return [self._parse(p) for p in resp.json().get("data", [])]
 
     def recommendations(self, paper_id: str, limit: int = 5) -> list[Paper]:
         """Get recommended papers similar to a given Semantic Scholar paper ID."""
-        self._throttle()
-        try:
-            resp = requests.get(
-                f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{paper_id}",
-                params={"limit": limit, "fields": _FIELDS},
-                headers=self._headers,
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.warning("Semantic Scholar recommendations failed: %s", e)
+        resp = self._get_with_retry(
+            f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{paper_id}",
+            params={"limit": limit, "fields": _FIELDS},
+        )
+        if resp is None:
             return []
 
         return [self._parse(p) for p in resp.json().get("recommendedPapers", [])]
+
 
     @staticmethod
     def _parse(paper: dict) -> Paper:
