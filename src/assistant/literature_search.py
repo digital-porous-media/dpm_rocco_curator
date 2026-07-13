@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Semantic Scholar API wrapper for live literature search.
 
@@ -41,6 +42,7 @@ class Paper:
 
 class LiteratureSearch:
     def __init__(self):
+        """Initialize LiteratureSearch with optional Semantic Scholar API key and rate limiter."""
         api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
         self._headers = {"x-api-key": api_key} if api_key else {}
         self._min_interval = 1.0
@@ -48,6 +50,7 @@ class LiteratureSearch:
         self._last_call: float = 0.0
 
     def _throttle(self):
+        """Enforce a minimum interval between API calls to respect the 1 RPS rate limit."""
         with self._lock:
             elapsed = time.monotonic() - self._last_call
             if elapsed < self._min_interval:
@@ -97,6 +100,7 @@ class LiteratureSearch:
 
     @staticmethod
     def _parse(paper: dict) -> Paper:
+        """Parse a raw Semantic Scholar API paper dict into a Paper dataclass."""
         authors = [a.get("name", "") for a in paper.get("authors", [])]
         oa = paper.get("openAccessPdf") or {}
         return Paper(

@@ -235,3 +235,74 @@ class TestBuildLangchainTools:
     def test_returns_list_of_correct_length(self):
         from src.assistant.tools import build_langchain_tools
         assert len(build_langchain_tools()) == 6
+
+
+# ---------------------------------------------------------------------------
+# USE_NEO4J=false smoke test
+# ---------------------------------------------------------------------------
+
+class TestUseNeo4jFalseGracefulFallback:
+    """
+    Smoke tests verifying the assistant falls back gracefully when Neo4j is
+    disabled. With USE_NEO4J=false, graph queries return empty results and the
+    assistant routes through LiteratureSearch (Semantic Scholar) instead.
+    No graph queries should be attempted.
+    """
+
+    def test_search_datasets_returns_no_results_message(self):
+        """search_datasets should return a friendly message, not raise, when Neo4j is off."""
+        with patch.dict("os.environ", {"USE_NEO4J": "false"}):
+            with patch("src.assistant.tools._graph_store", None):
+                with patch("src.assistant.graph_store.GraphStore.hybrid_search", return_value=[]):
+                    with patch("src.assistant.graph_store.GraphStore.component_search", return_value=[]):
+                        with patch("src.assistant.tools.expand_query", return_value={
+                            "expanded_query": "sandstone",
+                            "inferred_filters": {},
+                            "rationale": "",
+                        }):
+                            from src.assistant.tools import search_datasets
+                            result = search_datasets.func("sandstone datasets")
+
+        assert isinstance(result, str)
+        assert "No datasets found" in result
+
+    def test_search_literature_works_without_neo4j(self):
+        """search_literature uses Semantic Scholar only — must work regardless of USE_NEO4J."""
+        papers = [_fake_paper("Pore Scale Paper", doi="10.9999/test")]
+        with patch.dict("os.environ", {"USE_NEO4J": "false"}):
+            with patch("src.assistant.tools._get_lit_search") as mock_factory:
+                mock_ls = MagicMock()
+                mock_ls.search_external_literature.return_value = papers
+                mock_factory.return_value = mock_ls
+
+                from src.assistant.tools import search_literature
+                result = search_literature.func("pore scale modeling")
+
+        assert "[semantic scholar]" in result
+        assert "Pore Scale Paper" in result
+
+    def test_get_dataset_details_returns_string_without_neo4j(self):
+        """get_dataset_details should degrade gracefully when Neo4j is disabled."""
+        with patch.dict("os.environ", {"USE_NEO4J": "false"}):
+            with patch("src.assistant.tools._graph_store", None):
+                with patch("src.assistant.graph_store.GraphStore.cypher_qa", return_value=""):
+                    from src.assistant.tools import get_dataset_details
+                    result = get_dataset_details.func("what is the porosity of DRP-1?")
+
+        assert isinstance(result, str)
+
+    def test_no_graph_queries_when_neo4j_disabled(self):
+        """Verify execute_cypher is never called when USE_NEO4J=false."""
+        with patch.dict("os.environ", {"USE_NEO4J": "false"}):
+            with patch("src.assistant.graph_store.GraphStore.execute_cypher") as mock_cypher:
+                with patch("src.assistant.tools.expand_query", return_value={
+                    "expanded_query": "sandstone",
+                    "inferred_filters": {},
+                    "rationale": "",
+                }):
+                    with patch("src.assistant.graph_store.GraphStore.hybrid_search", return_value=[]):
+                        with patch("src.assistant.graph_store.GraphStore.component_search", return_value=[]):
+                            from src.assistant.tools import search_datasets
+                            search_datasets.func("sandstone datasets")
+
+        mock_cypher.assert_not_called()

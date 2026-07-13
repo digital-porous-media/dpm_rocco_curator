@@ -200,6 +200,7 @@ class GraphStore:
     """
 
     def __init__(self):
+        """Initialize GraphStore; connects to Neo4j unless USE_NEO4J=false, in which case all search methods return empty results immediately."""
         self._enabled = os.getenv("USE_NEO4J", "true").lower() != "false"
         if not self._enabled:
             self._graph = None
@@ -506,9 +507,11 @@ RETURN
             self._driver.close()
 
     def __enter__(self):
+        """Support use as a context manager — returns self."""
         return self
 
     def __exit__(self, *_):
+        """Close the Neo4j connection on context manager exit."""
         self.close()
 
     def execute_cypher(self, query: str, parameters: dict = None) -> list[dict]:
