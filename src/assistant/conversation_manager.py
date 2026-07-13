@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Shared conversation manager for the General Assistant.
 
