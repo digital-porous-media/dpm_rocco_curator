@@ -275,7 +275,7 @@ def search_datasets(query: str, top_k: int = 5) -> str:
             extras += 1
 
     if not results:
-        return "No datasets found matching that query."
+        return "No datasets found matching that query. Try broadening your search — for example, remove specific filters, use more general terminology, or search by rock type (sandstone, carbonate, coal) or imaging method (micro-CT, FIB-SEM)."
     lines = []
     for r in results:
         meta = r.get("metadata", {})
