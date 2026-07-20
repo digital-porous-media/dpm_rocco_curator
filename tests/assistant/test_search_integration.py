@@ -181,6 +181,32 @@ class TestSemanticSearch:
         )
 
 
+@pytest.mark.search_layer
+class TestComponentSearch:
+    """Structural coverage for component_search() — no existing mock test exercised this method."""
+
+    def test_component_search_structural(self, mock_graph_store):
+        results = mock_graph_store.component_search("segmented sandstone sample", top_k=5)
+        assert isinstance(results, list)
+
+
+@pytest.mark.search_layer
+class TestCombinedSearch:
+    """
+    Coverage for GraphStore.search_datasets() — the low-level method that combines
+    vector similarity and metadata filters in a single Cypher query (see CLAUDE.md
+    Search Architecture). Distinct from the search_datasets *tool* in tools.py, which
+    uses hybrid_search() + component_search() instead.
+    """
+
+    def test_search_datasets_combined_structural(self, mock_graph_store):
+        fake_embedding = [0.0] * 8
+        results = mock_graph_store.search_datasets(
+            fake_embedding, filters={"porousMediaType": "sandstone"}, k=5
+        )
+        assert isinstance(results, list)
+
+
 # ---------------------------------------------------------------------------
 # M — metadata_filter
 # ---------------------------------------------------------------------------
@@ -251,6 +277,23 @@ class TestMetadataFilter:
             "Which datasets contain both a segmented image and a simulation analysis?"
         )
         assert result is not None or result == ""
+
+    def test_sparse_field_guard_instruction_in_cypher_prompt(self):
+        """
+        cypher_qa() delegates to an LLM-generated Cypher chain (GraphCypherQAChain),
+        so the actual query text isn't inspectable without a live LLM + Neo4j
+        connection. This verifies the guardrail instruction that should produce
+        that guard is still present in the schema/prompt fed to the LLM — a
+        regression check that the sparse-field handling directive (porosity,
+        grainSize*, geographicOrigin are sparsely populated) hasn't been dropped.
+        """
+        from src.assistant.graph_store import MANUAL_SCHEMA
+
+        lower = MANUAL_SCHEMA.lower()
+        assert "optional match" in lower, "Sparse-field guidance must instruct OPTIONAL MATCH usage"
+        assert "porosity" in lower and "sparse" in lower, (
+            "Sparse-field guidance must call out porosity as a sparsely populated property"
+        )
 
     @pytest.mark.skipif(
         not (os.getenv("LLM_API_KEY") or os.getenv("SAMBANOVA_API_KEY")),
@@ -359,6 +402,61 @@ class TestDomainQA:
             "Response should not unconditionally recommend direct simulation for all cases."
         )
 
+    def test_d5_no_portal_topic_fallback_disclaimer(self, chat_model):
+        """D-5: topic outside domain_workflows.yaml — must disclaim as general knowledge, not fabricate portal data."""
+        from src.assistant.tools import get_educational_context, _load_workflows
+
+        # Confirm the topic isn't keyword-matched in domain_workflows.yaml, so any
+        # answer necessarily comes from pre-trained knowledge per the tiered
+        # Knowledge Source Policy (CLAUDE.md).
+        query = "What is the Peng-Robinson equation of state used for in reservoir engineering?"
+        data = _load_workflows()
+        query_lower = query.lower()
+        for wf in data.get("workflows", []):
+            keywords = [str(k).lower() for k in wf.get("keywords", [])]
+            assert not any(kw in query_lower for kw in keywords), (
+                f"Test query unexpectedly matched workflow '{wf.get('id')}' — pick a query "
+                "with no keyword overlap so the fallback path is actually exercised."
+            )
+
+        response = _run_tool(get_educational_context, query)
+        assert response is not None
+        lower = response.lower()
+        disclaimer_terms = [
+            "don't have portal-specific",
+            "do not have portal-specific",
+            "general knowledge",
+            "generally",
+            "not specific to the dpm portal",
+            "not specific to the portal",
+        ]
+        assert any(t in lower for t in disclaimer_terms), (
+            f"Expected a disclaimer marking this as general (non-portal) knowledge.\nGot: {response[:300]}"
+        )
+
+    def test_d6_workflow_not_in_yaml_no_fabricated_tutorial(self, chat_model):
+        """D-6: honest gap — must not invent a tutorial/notebook name for a topic absent from tutorials.yaml."""
+        from src.assistant.tools import get_educational_context, _load_tutorials
+
+        query = "Is there a tutorial notebook for simulating nuclear magnetic resonance (NMR) relaxometry?"
+        data = _load_tutorials()
+        query_lower = query.lower()
+        for t in data.get("tutorials", []):
+            keywords = [str(k).lower() for k in t.get("keywords", [])]
+            assert not any(kw in query_lower for kw in keywords), (
+                f"Test query unexpectedly matched tutorial '{t.get('goal')}' — pick a topic "
+                "with no keyword overlap so the no-tutorial-found path is actually exercised."
+            )
+
+        response = _run_tool(get_educational_context, query)
+        assert response is not None
+        lower = response.lower()
+        # No fabricated notebook path (tutorials.yaml entries all reference a
+        # "notebook" key that looks like "N-N-N_name.ipynb")
+        assert ".ipynb" not in lower, (
+            f"Response must not fabricate a notebook filename for an uncovered topic.\nGot: {response[:300]}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # W — workflow_guidance
@@ -435,6 +533,20 @@ class TestWorkflowGuidance:
         # Does not conflate with REV
         assert "resolution" in lower
 
+    def test_w5_rev_check_best_practice(self, chat_model):
+        """W-5: representative elementary volume — distinct best-practice check from resolution (W-3)."""
+        from src.assistant.tools import get_workflow_guidance
+
+        response = _run_tool(
+            get_workflow_guidance,
+            "How do I determine if my sample sub-volume is large enough to be representative before running simulations?",
+        )
+        assert response is not None
+        lower = response.lower()
+        assert "representative elementary volume" in lower or "rev" in lower, (
+            f"Expected REV terminology in response.\nGot: {response[:300]}"
+        )
+
     def test_w4_jupyterhub_access_instructions(self, chat_model):
         """W-4: JupyterHub access — three steps, Community Data, no fabricated alternate paths."""
         from src.assistant.tools import get_workflow_guidance
@@ -481,7 +593,34 @@ class TestQueryExpansion:
         assert len(expanded) > len("I want to study multiphase flow"), (
             "expanded_query must be more specific than the input"
         )
+        # "multiphase flow" is a strong enough signal that at least one filter
+        # should be inferred (e.g. segmented=yes, type=simulation) — not just
+        # an expanded sentence with no structured signal extracted.
+        assert result.get("inferred_filters"), (
+            "Expected at least one inferred filter for a query with a clear domain signal"
+        )
         # No invented schema fields
+        for key in result.get("inferred_filters", {}).keys():
+            assert key in self.VALID_FILTER_FIELDS, (
+                f"inferred_filters contains invalid schema field: '{key}'"
+            )
+
+    def test_q3_already_specific_query_not_overexpanded(self, chat_model):
+        """Q-3: an already well-specified query should not be distorted with unrelated filters."""
+        from src.assistant.tools import expand_query
+
+        specific_query = (
+            "Segmented micro-CT datasets of Bentheimer sandstone with porosity above 0.2"
+        )
+        result = _run_tool(expand_query, specific_query)
+        assert isinstance(result, dict), "expand_query must return a dict"
+        expanded = result["expanded_query"].lower()
+        # Core entities from the original query must survive expansion
+        for term in ["sandstone", "porosity"]:
+            assert term in expanded, (
+                f"expand_query dropped '{term}' from an already-specific query.\nGot: {expanded}"
+            )
+        # No invented schema fields, same guard as Q-1
         for key in result.get("inferred_filters", {}).keys():
             assert key in self.VALID_FILTER_FIELDS, (
                 f"inferred_filters contains invalid schema field: '{key}'"
@@ -575,3 +714,15 @@ class TestLiteratureSearch:
             assert has_reactive and has_co2, (
                 f"Results must address both reactive transport and CO2.\nGot: {response[:300]}"
             )
+
+    def test_l4_semantic_scholar_unreachable(self):
+        """L-4: Semantic Scholar network failure must degrade gracefully, not raise."""
+        import requests
+        from unittest.mock import patch
+        from src.assistant.tools import search_literature
+
+        with patch("requests.get", side_effect=requests.exceptions.ConnectionError("boom")):
+            response = _run_tool(search_literature, "relative permeability")
+
+        assert response is not None
+        assert "no papers found" in response.lower()

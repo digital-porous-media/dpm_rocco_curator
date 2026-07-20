@@ -571,6 +571,29 @@ APOC is **not required**. The Cypher generation prompt in `graph_store.py` expli
 
 Project board: https://github.com/orgs/digital-porous-media/projects/3
 
+### Remaining Work Before Project Conclusion (as of Jul 20, 2026)
+
+Weeks 1–5 code is complete, including `conversation_manager.py`, `graph_store.py` (all methods:
+`search()`, `component_search()`, `semantic_search()`, `filter_by_metadata()`, `search_datasets()`),
+`assistant_ui.py`, and the `rocco_ui.py` tab integration. **The GitHub project board is stale** —
+issues #37, #38, #39, #41, #52 show Open/In Progress but their code is merged; they need to be
+closed before #42 is treated as unblocked in the tracker.
+
+Actual remaining work:
+- **#42** (Week 6–7) — Run the full 20-query acceptance suite (already written as automated tests
+  in `tests/assistant/test_search_integration.py`) through the tabbed `rocco_ui.py`; demo to BCC,
+  MP, ME. This is an execution/verification task, not authoring.
+- **Fix hanging test suite** — `pytest tests/assistant/test_graph_store.py` passes in isolation
+  (22/22), but `pytest tests/assistant/` (full directory) hangs indefinitely, likely on an
+  unmocked live network call (Semantic Scholar or Neo4j) somewhere in `test_search_integration.py`
+  or `test_tools.py`. Needs to be fixed before #43 can rely on a clean `pytest tests/ -v` run.
+- **#43** (Week 7) — Final index rebuild + evaluation + `docs/assistant.md`
+- **#45** (Week 7) — README, handoff doc, tag `v2.0.0`, demo video
+- **#46 / #48** (Week 8) — Poster write-up (Intern-A) + review (Bernie)
+- **#49 / #51** (Week 9) — Paper write-up (Intern-A) + review (Bernie)
+
+See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checklist.
+
 ---
 
 ## Recent Changes

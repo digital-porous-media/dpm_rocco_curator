@@ -175,7 +175,7 @@ Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Ju
 
 ---
 
-## Week 4 (Jun 21–27) — IN PROGRESS
+## Week 4 (Jun 21–27) — COMPLETE
 
 ### Bernie's Tasks
 
@@ -188,14 +188,46 @@ Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Ju
   - [x] Migrate tests from top-level to `tests/assistant/test_graph_store.py` (22 tests passing)
   - [x] Delete duplicate top-level files
   - [x] Commit with full integration message
-- [ ] Review `conversation_manager.py` — add docstrings for cross-intent routing (LangGraph agent dispatch logic)
-- [ ] Review `domain_workflows.yaml` — fill any structural gaps; verify 24 workflows cover the core DRP pipeline
-- [ ] Prepare documentation for JRS's Week 5 work — ensure `SearchResult` interface is clearly documented for `search_datasets()` hybrid queries
+- [x] Review `conversation_manager.py` — add docstrings for cross-intent routing (#37, module docstring documents intent→tool routing table + cross-intent handling)
+- [x] Review `domain_workflows.yaml` — fill any structural gaps; verify 24 workflows cover the core DRP pipeline (#31)
+- [x] Prepare documentation for JRS's Week 5 work — `search_datasets()` fully implemented with docstring at `graph_store.py:626`
 
-### JRS's Tasks (Week 4)
+### JRS's Tasks (Week 4–5)
 
-- [ ] `graph_store.py`: finalize `semantic_search()` + `filter_by_metadata()` based on integrated raw-driver methods
-- [ ] Begin Week 5 work: `search_datasets()` combined query + source labels (hybrid vector+metadata in one Cypher call)
+- [x] `graph_store.py`: finalize `semantic_search()` + `filter_by_metadata()` based on integrated raw-driver methods
+- [x] `search_datasets()` combined query + source labels (hybrid vector+metadata in one Cypher call) — implemented (#52); **board still shows this as Todo, needs to be closed to unblock #42**
+
+---
+
+## Week 5–6 — COMPLETE (code), board reconciliation needed
+
+- [x] Cross-intent queries; distinguish paper sources; docstrings for `conversation_manager.py` (#37) — done, board still shows Open
+- [x] Review Semantic Scholar edge cases; unblock integration issues (#38) — done via `_get_with_retry` (429 backoff, throttling) in `literature_search.py`; board still shows Open
+- [x] Modify `rocco_ui.py` to add General Assistant tab (#39) — done, `_PAGES` nav + `render_assistant_tab()` wired; board still shows Open
+- [x] Surface source labels in UI; verify search stack in tabbed UI (#40)
+- [x] Connect `assistant_ui.py` into General Assistant tab (#41) — done, board still shows In Progress
+
+**Action item:** close #37, #38, #39, #41, #52 on the GitHub project board — code for all five is merged, but the board hasn't been updated to reflect it. This is blocking #42 from being unblocked in the tracker even though there's no real code dependency left.
+
+---
+
+## Remaining Work Before Project Conclusion (Week 6–9)
+
+### Week 6–7 (Jul 5–18)
+
+- [ ] **#42** — Run the full 20-query acceptance suite through the tabbed `rocco_ui.py`; demo to BCC, MP, and ME
+  - All 20 queries already exist as automated tests in `tests/assistant/test_search_integration.py` (S-1..4, M-1..3, D-1..4, W-1..4, Q-1..2, L-1..3) — this task is *execution*, not authoring
+  - Demo must show both tabs (Curator + General Assistant) working independently with no session-state collision
+- [ ] **Investigate hanging test suite** — `pytest tests/assistant/test_graph_store.py` passes cleanly (22/22, ~6s), but `pytest tests/assistant/` (full directory) hangs indefinitely. Likely a live network call (Semantic Scholar or Neo4j) in `test_search_integration.py` or `test_tools.py` that isn't mocked/skipped when it should be. Must be fixed before #43's "final index rebuild, evaluation" can rely on `pytest tests/ -v` passing cleanly.
+- [ ] **#43** — Final index rebuild (`build_dataset_vector_index.py`, `build_publication_index.py`), evaluation, write `docs/assistant.md`
+- [ ] **#45** — README updates, handoff doc, tag `v2.0.0`, record demo video
+
+### Week 8–9 (Jul 19–Aug 1)
+
+- [ ] **#46** — Write and submit poster (Intern-A)
+- [ ] **#48** — Review poster draft (Bernie)
+- [ ] **#49** — Write and submit paper (Intern-A)
+- [ ] **#51** — Review paper draft (Bernie)
 
 ---
 
