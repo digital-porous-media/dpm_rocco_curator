@@ -90,6 +90,69 @@ def _neo4j_enabled() -> bool:
     return os.getenv("USE_NEO4J", "true").lower() == "true"
 
 
+def _passes_filters(metadata: dict, filters: dict | None) -> bool:
+    """
+    Checks a result's metadata against a post-retrieval filter dict.
+
+    A filter key that's absent from metadata (None) is treated as "unknown,
+    don't exclude" rather than a mismatch, since sparse/unmapped properties
+    shouldn't silently drop otherwise-relevant results.
+    """
+    if not filters:
+        return True
+    for key, value in filters.items():
+        meta_val = metadata.get(key)
+        if meta_val is not None and str(meta_val).lower() != str(value).lower():
+            return False
+    return True
+
+
+def _row_field(row: dict, *names: str):
+    """Look up a Cypher result column by suffix match, e.g. names="title" matches
+    both 'title' and 'd.title' — GraphCypherQAChain result keys carry the variable
+    prefix from the RETURN clause, which varies by generated query."""
+    for key, value in row.items():
+        if any(key == n or key.endswith("." + n) for n in names):
+            return value
+    return None
+
+
+def _format_dataset_rows(rows: list) -> str | None:
+    """
+    Deterministically render Cypher rows that look like a dataset listing (every row
+    has a title) as a markdown bullet list — title and DOI only, exactly as stored,
+    never retyped by an LLM. Returns None for shapes that aren't a dataset listing
+    (aggregates, counts, single-property lookups), so those still fall through to the
+    QA chain's own prose answer.
+
+    This exists because GraphCypherQAChain's QA-answer LLM call is not reliably
+    steerable by prompt instructions alone (this model intermittently ignores
+    formatting/grounding instructions) — moving the one high-stakes shape (dataset
+    identity + DOI) into code removes that failure mode entirely rather than trying
+    to phrase the prompt more carefully.
+    """
+    if not rows or not all(isinstance(r, dict) for r in rows):
+        return None
+    titles = [_row_field(r, "title") for r in rows]
+    if not all(titles):
+        return None
+
+    # A generated query can join through a sub-node type with multiple rows per
+    # Dataset (e.g. one DigitalDataset row per voxel-dimensions value) — dedupe by
+    # (title, doi) so the same dataset isn't listed once per sub-node row.
+    seen = set()
+    lines = []
+    for row, title in zip(rows, titles):
+        doi = _row_field(row, "doi")
+        dedupe_key = (title, doi)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        doi_str = doi if doi else "not available"
+        lines.append(f"- **{title}** (DOI: {doi_str})")
+    return "\n".join(lines)
+
+
 def _validate_keys(properties: dict) -> None:
     """
     Raises ValueError if any property key contains characters that could
@@ -136,8 +199,21 @@ Node labels and properties:
                    source, location, geographicOrigin, grainSizeAvg (float), grainSizeMin (float), grainSizeMax (float)
                    porousMediaType values: beads, carbonate, coal, fibrous_media, granite, other, sandstone, soil
                    source values: artificial, natural
+                   porosity has NO consistent scale: some datasets store it as a 0-1 fraction
+                   (e.g. 0.39), others as a 0-100 percent value (e.g. 30.0, 50.0) — there is no
+                   units field to distinguish them. A raw numeric comparison like
+                   "s.porosity > 0.3" will incorrectly also match every percent-scale value
+                   (since 30 > 0.3 is trivially true). Always normalize with a CASE expression
+                   before comparing, treating any value greater than 1 as a percentage:
+                     WHERE CASE WHEN s.porosity > 1 THEN s.porosity / 100 ELSE s.porosity END > 0.3
   DigitalDataset — identifier, datasetNumber (int), title, description, voxelDimensions, segmented, numberOfFiles (int), fileTypes (list)
                    segmented values: yes, no
+                   voxelDimensions is free text, e.g.:
+                     "X, Y, Z units (in micrometers): 3.3113, 3.3113, 3.3113"
+                     "X, Y, Z units (in millimeters): 0.488, 0.488, 1.25"
+                   There is no 'x' delimiter between numbers, and units vary (micrometers,
+                   millimeters, etc.) — always check the unit substring before comparing values,
+                   and convert to a common unit (e.g. millimeters * 1000 = micrometers).
   AnalysisDataset — identifier, datasetNumber (int), title, description, type, segmented, numberOfFiles (int), fileTypes (list)
                    type values: geometric_analysis, other, simulation
   RelatedPublication — title, authors, abstract, link, publicationDate, datasetNumber (int)
@@ -155,6 +231,9 @@ Important:
   - porousMediaType (e.g. "sandstone") is on Sample nodes, NOT on Dataset nodes.
   - Use OPTIONAL MATCH for sparse properties (porosity, grainSize*, geographicOrigin).
   - Use case-insensitive matching for string values: toLower(s.porousMediaType) = 'sandstone'
+  - Any query that RETURNs Dataset rows must also RETURN d.doi (in addition to
+    d.identifier/d.title) — the DOI is the user-facing citation for a dataset, and it
+    must come from this field, never invented. It is fine if d.doi is null for some rows.
 """
 
 CYPHER_GENERATION_TEMPLATE = """
@@ -172,13 +251,51 @@ Fine Tuning:
 - When a condition applies to multiple sub-node types (e.g. DigitalDataset and AnalysisDataset),
   use OPTIONAL MATCH for each type separately, then combine with OR in the WHERE clause on named variables.
   Never combine two different labels in a single MATCH pattern like (n:`LabelA OR alias`:LabelB) — that is invalid syntax.
-  Example for "segmented datasets":
+  Example for "segmented datasets" (an OR condition — any one sub-node type matching is enough):
     MATCH (d:Dataset)
     OPTIONAL MATCH (d)<-[:PART_OF]-(dd:DigitalDataset)
     OPTIONAL MATCH (d)<-[:PART_OF]-(ad:AnalysisDataset)
     WHERE dd.segmented = 'yes' OR ad.segmented = 'yes'
     RETURN DISTINCT d.identifier, d.title
+- When a question requires MULTIPLE conditions across different optionally-matched sub-nodes
+  to ALL be true (an AND condition, e.g. "datasets with both a segmented image AND a simulation
+  analysis"), do NOT put WHERE directly after the last OPTIONAL MATCH. Neo4j scopes a WHERE
+  immediately following OPTIONAL MATCH as part of that match's own pattern predicate — if the
+  predicate fails, OPTIONAL MATCH still emits a row with the variable bound to NULL, silently
+  defeating the filter and returning every dataset. Always add an explicit WITH before the
+  WHERE so it filters the accumulated row instead:
+    MATCH (d:Dataset)
+    OPTIONAL MATCH (d)<-[:PART_OF]-(dd:DigitalDataset)
+    OPTIONAL MATCH (d)<-[:PART_OF]-(ad:AnalysisDataset)
+    WITH d, dd, ad
+    WHERE dd.segmented = 'yes' AND ad.type = 'simulation'
+    RETURN DISTINCT d.identifier, d.title
 - If you do use UNION, all branches must return the same column names.
+- porosity is stored on Sample nodes with an inconsistent scale (see Schema below) —
+  always normalize with a CASE expression before filtering, e.g. for "porosity above 0.3":
+    MATCH (d:Dataset)
+    OPTIONAL MATCH (d)<-[:PART_OF]-(s:Sample)
+    WITH d, s
+    WHERE CASE WHEN s.porosity > 1 THEN s.porosity / 100 ELSE s.porosity END > 0.3
+    RETURN DISTINCT d.identifier, d.title
+- voxelDimensions on DigitalDataset is free text with an embedded unit and no 'x' delimiter
+  between the three numbers (see Schema below) — to filter on a numeric voxel size threshold,
+  extract the first number after the colon, then convert to a common unit (micrometers) before
+  comparing. Example for "voxel size smaller than 2 microns":
+    MATCH (d:Dataset)
+    OPTIONAL MATCH (d)<-[:PART_OF]-(dd:DigitalDataset)
+    WITH d, dd,
+      toFloat(split(split(dd.voxelDimensions, ': ')[1], ', ')[0]) AS rawValue,
+      toLower(dd.voxelDimensions) AS unitText
+    WITH d, dd,
+      CASE
+        WHEN unitText CONTAINS 'nanomet' THEN rawValue / 1000.0
+        WHEN unitText CONTAINS 'millimet' THEN rawValue * 1000.0
+        WHEN unitText CONTAINS 'micromet' THEN rawValue
+        ELSE null
+      END AS voxelSizeMicrometers
+    WHERE voxelSizeMicrometers IS NOT NULL AND voxelSizeMicrometers < 2
+    RETURN DISTINCT d.identifier, d.title, dd.voxelDimensions
 
 Schema:
 """ + MANUAL_SCHEMA + """
@@ -190,6 +307,34 @@ Cypher Query:
 """
 
 _cypher_prompt = PromptTemplate(input_variables=["question"], template=CYPHER_GENERATION_TEMPLATE)
+
+# get_dataset_details' answer is returned to the user untouched (conversation_manager.py
+# treats it as self-contained, precisely so the outer agent never retypes/reformats it —
+# see _SELF_CONTAINED_TOOLS). That means formatting has to come from here, not from an
+# outer synthesis pass: a plain "answer in a sentence" QA prompt renders as one dense
+# run-on paragraph with no visual structure once nothing downstream reformats it.
+QA_GENERATION_TEMPLATE = """\
+You are Rocco, a research assistant for the Digital Porous Media Portal. Use ONLY the \
+information in the Context below to answer the Question. The Context is authoritative — \
+never invent a dataset identifier, title, DOI, or count that isn't present in it, and \
+never supplement from general knowledge.
+
+If the Context is empty, say plainly that no matching datasets were found — do not guess.
+
+Note: a Context that lists individual datasets (title/DOI per row) is reformatted \
+elsewhere and will not reach this prompt — you are only answering counts, aggregates,
+or single-property lookups here. Answer those directly in one or two sentences.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+
+_qa_prompt = PromptTemplate(input_variables=["context", "question"], template=QA_GENERATION_TEMPLATE)
 
 
 class GraphStore:
@@ -234,6 +379,14 @@ class GraphStore:
             text_node_property="description",
             embedding_node_property="datasetEmbedding",
             retrieval_query="""
+OPTIONAL MATCH (dd:DigitalDataset)-[:PART_OF]->(node)
+OPTIONAL MATCH (ad:AnalysisDataset)-[:PART_OF]->(node)
+OPTIONAL MATCH (s:Sample)-[:PART_OF]->(node)
+WITH node, score,
+     collect(DISTINCT dd.segmented) + collect(DISTINCT ad.segmented) AS segmentedVals,
+     collect(DISTINCT dd.voxelDimensions) AS voxelDimVals,
+     collect(DISTINCT s.porousMediaType) AS porousMediaTypeVals,
+     collect(DISTINCT s.source) AS sourceVals
 RETURN
     node.description AS text,
     score,
@@ -241,7 +394,18 @@ RETURN
         title: node.title,
         sampleTitles: [(sample)-[:PART_OF]->(node) | sample.title],
         datasetNumber: node.datasetNumber,
-        doi: node.doi
+        doi: node.doi,
+        segmented: CASE WHEN 'yes' IN segmentedVals THEN 'yes'
+                        WHEN 'no' IN segmentedVals THEN 'no'
+                        ELSE null END,
+        porousMediaType: head(porousMediaTypeVals),
+        source: head(sourceVals),
+        voxelDimensions: CASE
+            WHEN any(v IN voxelDimVals WHERE toLower(v) CONTAINS 'micromet') THEN 'micrometer'
+            WHEN any(v IN voxelDimVals WHERE toLower(v) CONTAINS 'millimet') THEN 'millimeter'
+            WHEN any(v IN voxelDimVals WHERE toLower(v) CONTAINS 'nanomet') THEN 'nanometer'
+            WHEN size(voxelDimVals) > 0 THEN 'other'
+            ELSE null END
     } AS metadata
 """,
         )
@@ -254,16 +418,29 @@ RETURN
             text_node_property="title",
             embedding_node_property="componentEmbedding",
             retrieval_query="""
-MATCH (n)-[:PART_OF]->(d:Dataset)
+MATCH (node)-[:PART_OF]->(d:Dataset)
+OPTIONAL MATCH (s:Sample)-[:PART_OF]->(d)
+WITH node, d, score,
+     collect(DISTINCT s.porousMediaType) AS pmtVals,
+     collect(DISTINCT s.source) AS sourceVals
 RETURN
-    n.title + coalesce(': ' + n.description, '') AS text,
+    node.title + coalesce(': ' + node.description, '') AS text,
     score,
     {
-        componentType:  labels(n)[0],
-        componentTitle: n.title,
-        datasetTitle:   d.title,
-        datasetNumber:  d.datasetNumber,
-        doi:            d.doi
+        componentType:    labels(node)[0],
+        componentTitle:   node.title,
+        datasetTitle:     d.title,
+        datasetNumber:    d.datasetNumber,
+        doi:              d.doi,
+        segmented:        node.segmented,
+        porousMediaType:  coalesce(node.porousMediaType, head(pmtVals)),
+        source:           coalesce(node.source, head(sourceVals)),
+        voxelDimensions:  CASE
+            WHEN node.voxelDimensions IS NULL THEN null
+            WHEN toLower(node.voxelDimensions) CONTAINS 'micromet' THEN 'micrometer'
+            WHEN toLower(node.voxelDimensions) CONTAINS 'millimet' THEN 'millimeter'
+            WHEN toLower(node.voxelDimensions) CONTAINS 'nanomet' THEN 'nanometer'
+            ELSE 'other' END
     } AS metadata
 """,
         )
@@ -273,6 +450,7 @@ RETURN
             graph=self._graph,
             verbose=True,
             cypher_prompt=_cypher_prompt,
+            qa_prompt=_qa_prompt,
             allow_dangerous_requests=True,
             return_intermediate_steps=True,
             top_k=10,
@@ -306,22 +484,14 @@ RETURN
 
         results = []
         for doc in docs:
-            result = {
+            # Apply post-retrieval filter if provided (Cypher-level filtering is a Week 2 enhancement)
+            if not _passes_filters(doc.metadata, filters):
+                continue
+            results.append({
                 "text": doc.page_content,
                 "metadata": doc.metadata,
                 "source_label": "[graph match]",
-            }
-            # Apply post-retrieval filter if provided (Cypher-level filtering is a Week 2 enhancement)
-            if filters:
-                skip = False
-                for key, value in filters.items():
-                    meta_val = doc.metadata.get(key)
-                    if meta_val is not None and str(meta_val).lower() != str(value).lower():
-                        skip = True
-                        break
-                if skip:
-                    continue
-            results.append(result)
+            })
 
         return results
 
@@ -367,10 +537,29 @@ RETURN
                     CALL db.index.fulltext.queryNodes('datasetDescriptionFulltext', $search_query,
                         {limit: $limit})
                     YIELD node, score
+                    OPTIONAL MATCH (dd:DigitalDataset)-[:PART_OF]->(node)
+                    OPTIONAL MATCH (ad:AnalysisDataset)-[:PART_OF]->(node)
+                    OPTIONAL MATCH (s:Sample)-[:PART_OF]->(node)
+                    WITH node, score,
+                         collect(DISTINCT dd.segmented) + collect(DISTINCT ad.segmented) AS segmentedVals,
+                         collect(DISTINCT dd.voxelDimensions) AS voxelDimVals,
+                         collect(DISTINCT s.porousMediaType) AS porousMediaTypeVals,
+                         collect(DISTINCT s.source) AS sourceVals
                     RETURN node.doi AS doi, node.title AS title,
                            node.description AS description,
                            node.datasetNumber AS datasetNumber,
-                           [(s)-[:PART_OF]->(node) | s.title] AS sampleTitles
+                           [(s2)-[:PART_OF]->(node) | s2.title] AS sampleTitles,
+                           CASE WHEN 'yes' IN segmentedVals THEN 'yes'
+                                WHEN 'no' IN segmentedVals THEN 'no'
+                                ELSE null END AS segmented,
+                           head(porousMediaTypeVals) AS porousMediaType,
+                           head(sourceVals) AS source,
+                           CASE
+                               WHEN any(v IN voxelDimVals WHERE toLower(v) CONTAINS 'micromet') THEN 'micrometer'
+                               WHEN any(v IN voxelDimVals WHERE toLower(v) CONTAINS 'millimet') THEN 'millimeter'
+                               WHEN any(v IN voxelDimVals WHERE toLower(v) CONTAINS 'nanomet') THEN 'nanometer'
+                               WHEN size(voxelDimVals) > 0 THEN 'other'
+                               ELSE null END AS voxelDimensions
                     """,
                     search_query=query,
                     limit=candidate_k,
@@ -385,6 +574,10 @@ RETURN
                             "doi": doi,
                             "datasetNumber": row.get("datasetNumber"),
                             "sampleTitles": row.get("sampleTitles") or [],
+                            "segmented": row.get("segmented"),
+                            "porousMediaType": row.get("porousMediaType"),
+                            "source": row.get("source"),
+                            "voxelDimensions": row.get("voxelDimensions"),
                         },
                         "text": row.get("description") or row.get("title") or "",
                     }
@@ -416,15 +609,8 @@ RETURN
             if entry is None:
                 continue
             meta = entry["meta"]
-            if filters:
-                skip = False
-                for key, value in filters.items():
-                    meta_val = meta.get(key)
-                    if meta_val is not None and str(meta_val).lower() != str(value).lower():
-                        skip = True
-                        break
-                if skip:
-                    continue
+            if not _passes_filters(meta, filters):
+                continue
             results.append({
                 "text": entry["text"],
                 "metadata": meta,
@@ -433,27 +619,37 @@ RETURN
 
         return results
 
-    def component_search(self, query: str, top_k: int = 5) -> list[dict]:
+    def component_search(self, query: str, filters: dict = None, top_k: int = 5) -> list[dict]:
         """
         Vector similarity search over individual Sample, DigitalDataset, and AnalysisDataset
         sub-nodes. Each result links back to its parent Dataset.
 
-        Returns list of dicts with keys: text, score, metadata, source_label.
-        metadata keys: componentType, componentTitle, datasetTitle, datasetNumber, doi.
+        Args:
+            query: Natural language search query.
+            filters: Optional dict of property constraints (e.g. {"segmented": "yes"}),
+                     applied the same way as in search()/hybrid_search().
+            top_k: Number of results to return.
+
+        Returns:
+            List of dicts with keys: text, score, metadata, source_label.
+            metadata keys: componentType, componentTitle, datasetTitle, datasetNumber, doi,
+            segmented, porousMediaType, source, voxelDimensions.
         """
         if not self._enabled:
             return []
 
         retriever = self._component_index.as_retriever(search_kwargs={"k": top_k})
         docs = retriever.invoke(query)
-        return [
-            {
+        results = []
+        for doc in docs:
+            if not _passes_filters(doc.metadata, filters):
+                continue
+            results.append({
                 "text": doc.page_content,
                 "metadata": doc.metadata,
                 "source_label": "[component match]",
-            }
-            for doc in docs
-        ]
+            })
+        return results
 
     def get_dataset(self, dataset_id: str) -> dict | None:
         """Fetch full Dataset node properties by datasetNumber."""
@@ -471,10 +667,38 @@ RETURN
         """
         Answer a structured question about datasets using LLM-generated Cypher.
         Source label: [cypher match]
+
+        GraphCypherQAChain's default QA step returns the same generic
+        "I don't know the answer." string whether the generated Cypher
+        genuinely failed or whether it ran fine and matched zero rows. Those
+        are very different outcomes for the caller: the latter is a complete,
+        honest answer ("no matches"), the former is a real failure. Since we
+        run with return_intermediate_steps=True, we can tell them apart by
+        checking whether the last "context" step is an empty list (query
+        executed, zero rows) versus absent/non-empty (something else happened).
+
+        For rows that look like a dataset listing (every row has a title), the
+        bullet list is built directly from these raw rows in Python — see
+        _format_dataset_rows — rather than trusting the QA chain's own LLM call to
+        reproduce titles/DOIs correctly. That LLM call is not reliably steerable by
+        prompt instructions alone; formatting the one high-stakes shape in code
+        removes the failure mode instead of trying to word the prompt more carefully.
+        Other shapes (counts, aggregates) still use the QA chain's own prose answer.
         """
         if not self._enabled or not self._cypher_chain:
             return "Graph search is disabled (USE_NEO4J=false)."
         result = self._cypher_chain.invoke({"query": question})
+
+        steps = result.get("intermediate_steps") or []
+        context_steps = [s["context"] for s in steps if isinstance(s, dict) and "context" in s]
+        if context_steps and context_steps[-1] == []:
+            return "The query ran successfully and found no matching datasets or samples for this question."
+
+        if context_steps:
+            formatted = _format_dataset_rows(context_steps[-1])
+            if formatted:
+                return formatted
+
         return result.get("result", "No answer found.")
 
     # ---------------------------------------------------------------------------

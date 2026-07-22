@@ -14,12 +14,13 @@ from src.assistant.conversation_manager import ConversationManager
 _DOI_RE = re.compile(r'DOI:\s*(10\.[^\s)]+)')
 
 _SOURCE_LABEL_RE = re.compile(
-    r'\[(graph match|semantic match|component match|paper match|semantic scholar|cypher match)\]',
+    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match)\]',
     re.IGNORECASE,
 )
 
 _LABEL_COLORS = {
     "graph match":      "#1f77b4",
+    "hybrid match":     "#1f77b4",
     "semantic match":   "#2ca02c",
     "component match":  "#17becf",
     "paper match":      "#9467bd",
@@ -48,9 +49,20 @@ def _linkify_dois(text: str) -> str:
     return _DOI_RE.sub(lambda m: f'[DOI: {m.group(1)}](https://doi.org/{m.group(1)})', text)
 
 
+def _normalize_latex_delimiters(text: str) -> str:
+    """Convert \\(...\\) / \\[...\\] delimiters to $...$ / $$...$$ so KaTeX renders them.
+
+    Some models (e.g. Llama-4-Maverick via SambaNova/TACC) emit \\(...\\)-style
+    delimiters instead of the $...$ convention Streamlit's KaTeX renderer expects.
+    """
+    text = re.sub(r'\\\((.+?)\\\)', r'$\1$', text, flags=re.DOTALL)
+    text = re.sub(r'\\\[(.+?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
+    return text
+
+
 def _render_response(text: str) -> str:
-    """Apply all response formatting: source badges first, then DOI links."""
-    return _linkify_dois(_labelify_sources(text))
+    """Apply all response formatting: source badges first, then DOI links, then LaTeX normalization."""
+    return _normalize_latex_delimiters(_linkify_dois(_labelify_sources(text)))
 
 
 _WELCOME = (

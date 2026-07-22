@@ -308,6 +308,58 @@ class TestSearchDatasets:
         assert called_params["index_name"] == "custom-idx"
 
 
+# component_search
+
+class TestComponentSearch:
+    def _make_doc(self, metadata: dict, text: str = "some component text"):
+        doc = MagicMock()
+        doc.page_content = text
+        doc.metadata = metadata
+        return doc
+
+    def test_excludes_component_not_matching_filter(self):
+        store = make_store()
+        docs = [
+            self._make_doc({"doi": "1", "porousMediaType": "carbonate", "segmented": "yes"}),
+            self._make_doc({"doi": "2", "porousMediaType": "sandstone", "segmented": "yes"}),
+        ]
+        mock_retriever = MagicMock()
+        mock_retriever.invoke.return_value = docs
+        store._component_index = MagicMock()
+        store._component_index.as_retriever.return_value = mock_retriever
+
+        results = store.component_search("query", filters={"porousMediaType": "sandstone"})
+
+        assert len(results) == 1
+        assert results[0]["metadata"]["doi"] == "2"
+
+    def test_no_filters_returns_all(self):
+        store = make_store()
+        docs = [
+            self._make_doc({"doi": "1", "porousMediaType": "carbonate"}),
+            self._make_doc({"doi": "2", "porousMediaType": "sandstone"}),
+        ]
+        mock_retriever = MagicMock()
+        mock_retriever.invoke.return_value = docs
+        store._component_index = MagicMock()
+        store._component_index.as_retriever.return_value = mock_retriever
+
+        results = store.component_search("query")
+
+        assert len(results) == 2
+
+    def test_missing_metadata_key_does_not_exclude(self):
+        store = make_store()
+        docs = [self._make_doc({"doi": "1"})]  # no porousMediaType key at all
+        mock_retriever = MagicMock()
+        mock_retriever.invoke.return_value = docs
+        store._component_index = MagicMock()
+        store._component_index.as_retriever.return_value = mock_retriever
+
+        results = store.component_search("query", filters={"porousMediaType": "sandstone"})
+
+        assert len(results) == 1
+
 
 # get_schema_blueprint
 

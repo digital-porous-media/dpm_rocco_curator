@@ -22,8 +22,8 @@ class TestQueryExpanderPrompt:
     def test_system_mentions_filter_fields(self):
         prompt = load_prompt("query_expander")
         system = prompt["system"]
-        assert "rock_type" in system
-        assert "modality" in system
+        assert "porousMediaType" in system
+        assert "voxelDimensions" in system
         assert "segmented" in system
 
     def test_renders_user_template(self):

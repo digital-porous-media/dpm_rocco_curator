@@ -43,7 +43,7 @@ class LLMClient:
         api_key: str = None,
         model: str = None,
         provider: str = None,
-        timeout: int = 60
+        timeout: int = None
     ):
         """
         Initialize LLMClient with provider-agnostic configuration.
@@ -54,7 +54,8 @@ class LLMClient:
             model: Model name. Overrides ``LLM_MODEL`` env var. Defaults to ``"gpt-4o-mini"``.
             provider: Shortcut alias (``openai``, ``anthropic``, ``gemini``, ``deepseek``,
                 ``huggingface``, ``ollama``, ``sambanova``). Overrides ``LLM_PROVIDER`` env var.
-            timeout: Request timeout in seconds. Defaults to 60.
+            timeout: Request timeout in seconds. Overrides ``LLM_TIMEOUT`` env var. Defaults to 120
+                (some providers, e.g. SambaNova/TACC, routinely take well over 60s to respond).
         """
         # Load from environment with fallback order:
         # 1. Direct parameter
@@ -91,7 +92,7 @@ class LLMClient:
             api_key=self.api_key,
             base_url=self.api_url,
         )
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else int(os.getenv("LLM_TIMEOUT", "120"))
 
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Using LLM provider: {self.provider}, model: {self.model}, endpoint: {self.api_url}")
@@ -151,7 +152,7 @@ class RoccoClient(BaseChatModel):
     api_key: Optional[str] = Field(default=None, description="API key for the LLM provider")
     api_url: str = Field(default="https://api.openai.com/v1", description="Base URL for the LLM API")
     model: str = Field(default="gpt-4o-mini", description="Model name")
-    timeout: int = Field(default=60, description="Request timeout in seconds")
+    timeout: int = Field(default=120, description="Request timeout in seconds")
     temperature: float = Field(default=0.7, description="Temperature for LLM generation")
     llm_client: Any = Field(default=None, exclude=True, description="Wrapped LLMClient instance")
 
@@ -161,7 +162,7 @@ class RoccoClient(BaseChatModel):
         api_key: str = None,
         model: str = None,
         provider: str = None,
-        timeout: int = 60,
+        timeout: int = None,
         temperature: float = 0.7,
         **kwargs
     ):
@@ -173,10 +174,12 @@ class RoccoClient(BaseChatModel):
             api_key: API key for authentication.
             model: Model name to use.
             provider: Provider shortcut alias (openai, anthropic, etc.).
-            timeout: Request timeout in seconds.
+            timeout: Request timeout in seconds. Overrides ``LLM_TIMEOUT`` env var. Defaults
+                to 120 (some providers, e.g. SambaNova/TACC, routinely take well over 60s).
             temperature: Temperature for LLM generation (0.0-1.0).
             **kwargs: Additional arguments for BaseChatModel.
         """
+        resolved_timeout = timeout if timeout is not None else int(os.getenv("LLM_TIMEOUT", "120"))
         # Determine provider and api_url using same logic as LLMClient
         resolved_provider = provider or os.getenv("LLM_PROVIDER", "").lower()
         if not resolved_provider:
@@ -199,7 +202,7 @@ class RoccoClient(BaseChatModel):
             api_key=api_key or os.getenv("LLM_API_KEY"),
             api_url=resolved_api_url,
             model=model or os.getenv("LLM_MODEL", "gpt-4o-mini"),
-            timeout=timeout,
+            timeout=resolved_timeout,
             temperature=temperature,
             **kwargs
         )

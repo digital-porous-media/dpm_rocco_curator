@@ -243,9 +243,92 @@ def _workflow_context_str(workflows: list[dict], tutorials: list[dict]) -> str:
 # Dataset search tools (Intern A)
 # ---------------------------------------------------------------------------
 
+# Known closed-vocabulary schema values (mirrors graph_store.py's MANUAL_SCHEMA) plus
+# common imaging-method terms. Used to detect queries that already state a concrete
+# schema property, so we can deterministically suppress the search-reasoning narration
+# for those — rather than relying on the LLM to self-classify (unreliable, see HANDOFF.md).
+_ROCK_TYPES = ("beads", "carbonate", "coal", "fibrous_media", "fibrous media",
+               "granite", "sandstone", "soil")
+_SOURCE_TERMS = ("artificial", "natural")
+_SEGMENTED_TERMS = ("segmented", "unsegmented")
+_IMAGING_KEYWORDS = ("micro-ct", "microct", "fib-sem", "fibsem", "x-ray", "xray",
+                     "nano-ct", "nanoct", "sem", "mri")
+_PLAIN_PROPERTY_TERMS = _ROCK_TYPES + _SOURCE_TERMS + _SEGMENTED_TERMS + _IMAGING_KEYWORDS
+
+
+def _summarize_dataset_results(query: str, results: list[dict]) -> list[str]:
+    """One sentence per result describing what the dataset is and how it relates to
+    the query. Batched into a single LLM call. Title/DOI stay verbatim from metadata —
+    only this prose summary is LLM-authored, same pattern as the search lead-in."""
+    from src.assistant.llm import get_chat_model
+
+    texts = [re.sub(r"\s+", " ", r.get("text", "")).strip() for r in results]
+    fallback = [t[:200].rstrip() + ("…" if len(t) > 200 else "") for t in texts]
+
+    system = (
+        "You summarize dataset search results for a research assistant. For each "
+        "dataset below (title, DOI, and description), write ONE short sentence "
+        "(at most 25 words) describing what the dataset is and how it relates to "
+        "the user's query. Base each summary only on the given description — never "
+        "invent details not present in it. Return ONLY a JSON array of strings, one "
+        "per dataset, in the same order given, no markdown fences, no explanation."
+    )
+    numbered = [
+        f"{i}. {r.get('metadata', {}).get('title', 'Unknown')}: {text}"
+        for i, (r, text) in enumerate(zip(results, texts), 1)
+    ]
+    user_msg = f"Query: {query}\n\nDatasets:\n" + "\n".join(numbered)
+
+    try:
+        raw = get_chat_model().send_prompt(
+            user_msg, context=system, params={"temperature": 0.2, "max_tokens": 60 * len(results)}
+        )
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        summaries = json.loads(cleaned.strip())
+        if not isinstance(summaries, list) or len(summaries) != len(results):
+            raise ValueError("summary count mismatch")
+        return [str(s).strip() for s in summaries]
+    except Exception as e:
+        logger.warning("Result summarization failed (%s); falling back to raw snippet", e)
+        return fallback
+
+
+def _is_plain_property_query(query: str) -> bool:
+    """True if the query already names a concrete schema property/keyword directly,
+    rather than describing a task or purpose that requires inferring properties."""
+    lowered = query.lower()
+    return any(term in lowered for term in _PLAIN_PROPERTY_TERMS)
+
+
+def _extract_query_topic_terms(query: str, inferred_filters: dict) -> list[str]:
+    """Pull out the concrete topic term(s) a query is actually asking about, from the
+    known schema/imaging vocabularies plus any filter values expand_query inferred.
+    Used to deterministically detect weak/off-topic semantic search results — no
+    embedding-score threshold required (score scale is model/index-dependent and an
+    arbitrary numeric cutoff would be fragile)."""
+    lowered = query.lower()
+    terms = [term for term in _PLAIN_PROPERTY_TERMS if term in lowered]
+    for value in inferred_filters.values():
+        if isinstance(value, str) and value.strip():
+            terms.append(value.strip().lower().replace("_", " "))
+    return list(dict.fromkeys(terms))  # de-dupe, preserve order
+
+
+def _results_mention_any(results: list[dict], terms: list[str]) -> bool:
+    for r in results:
+        haystack = f"{r.get('text', '')} {r.get('metadata', {}).get('title', '')}".lower()
+        if any(term in haystack for term in terms):
+            return True
+    return False
+
+
 @tool
 def search_datasets(query: str, top_k: int = 5) -> str:
-    """Find datasets by semantic similarity to a natural language query. Use for dataset discovery, finding datasets by rock type or imaging method, and suitability queries like 'sandstone datasets suitable for LBM simulation'. Do NOT use for how-to or workflow questions (e.g. 'how to compute permeability') — those belong to get_workflow_guidance."""
+    """Find datasets by semantic similarity to a natural language query. Use for open-ended dataset discovery and suitability/purpose queries with no precise checkable property named, like 'sandstone datasets suitable for LBM simulation' or 'something good for a teaching demo'. Do NOT use this for queries that name a concrete, checkable property — a numeric threshold or range (e.g. 'porosity above 0.3', 'voxel size smaller than 2 microns', 'resolution finer than 5 micrometers'), a specific metadata value, or multiple values/fields (e.g. 'sandstone or carbonate', 'segmented and porosity above 0.3') — even if a rock type or imaging method is also mentioned; those belong to get_dataset_details, which generates real Cypher and can express comparisons and combinations this tool's filters cannot. This tool's own voxelDimensions filter is a coarse micrometer/millimeter/nanometer bucket only — it cannot express a numeric cutoff like "< 2 microns". Do NOT use for how-to or workflow questions (e.g. 'how to compute permeability') — those belong to get_workflow_guidance."""
     expansion = expand_query(query)
     expanded = expansion.get("expanded_query", query)
     filters = expansion.get("inferred_filters", {})
@@ -257,7 +340,7 @@ def search_datasets(query: str, top_k: int = 5) -> str:
     # Second-pass: component-level search to catch datasets whose parent description
     # has weak signal but whose sub-nodes (e.g. AnalysisDataset) score better.
     seen_dois = {r.get("metadata", {}).get("doi") for r in results if r.get("metadata", {}).get("doi")}
-    comp_results = graph_store.component_search(expanded, top_k=top_k)
+    comp_results = graph_store.component_search(expanded, filters=filters, top_k=top_k)
     extras = 0
     extra_limit = max(3, top_k - len(results))
     for cr in comp_results:
@@ -276,8 +359,9 @@ def search_datasets(query: str, top_k: int = 5) -> str:
 
     if not results:
         return "No datasets found matching that query. Try broadening your search — for example, remove specific filters, use more general terminology, or search by rock type (sandstone, carbonate, coal) or imaging method (micro-CT, FIB-SEM)."
+    summaries = _summarize_dataset_results(query, results)
     lines = []
-    for r in results:
+    for r, summary in zip(results, summaries):
         meta = r.get("metadata", {})
         title = meta.get("title", "Unknown")
         raw_doi = meta.get("doi", "")
@@ -287,11 +371,19 @@ def search_datasets(query: str, top_k: int = 5) -> str:
             doi_id = doi_id[len("https://doi.org/"):]
         doi_str = f"DOI: {doi_id}" if doi_id else ""
         label = r.get("source_label", "[graph match]")
-        lines.append(f"{label} {title} ({doi_str})\n{r['text'][:300]}")
+        lines.append(f"{label} {title} ({doi_str})\n{summary}")
 
     output = "\n\n".join(lines)
-    if rationale:
+    if rationale and not _is_plain_property_query(query):
         output = f"[search reasoning: {rationale}]\n\n" + output
+
+    topic_terms = _extract_query_topic_terms(query, filters)
+    if topic_terms and not _results_mention_any(results, topic_terms):
+        shown = " / ".join(f'"{t}"' for t in topic_terms)
+        output = (
+            f"[weak match: none of the results below directly mention {shown}; "
+            "showing the closest available results, which may not be relevant]\n\n"
+        ) + output
     return output
 
 
@@ -326,6 +418,70 @@ def expand_query(query: str) -> dict:
         return {"expanded_query": query, "inferred_filters": {}, "rationale": "Parse error"}
 
 
+_HONEST_NO_TUTORIAL_MSG = (
+    "We don't currently have a dedicated tutorial for this topic, but we welcome community "
+    "contributions — if you'd like to see one added or are interested in contributing, please "
+    "reach out to the DPM Portal team."
+)
+
+# Matches the "**Goal:** ... **Notebook:** `path.ipynb`" block the educational.yaml prompt
+# instructs the model to use when a real tutorial was retrieved.
+_NOTEBOOK_BLOCK_RE = re.compile(
+    r"\*\*Goal:\*\*[^\n]*\n\s*\*\*Notebook:\*\*\s*`[^`]*\.ipynb`\n?",
+    re.IGNORECASE,
+)
+
+
+_NOTEBOOK_PATH_RE = re.compile(r"[^\s`\"']*\.ipynb")
+
+
+def _strip_fabricated_tutorial_reference(response: str, tutorials: list[dict]) -> str:
+    """Deterministic guard against tutorial-path hallucination.
+
+    Some models (observed with Llama-4-Maverick) fabricate a plausible-looking
+    notebook path even when no real tutorial was retrieved — or, worse, fabricate
+    *additional* paths alongside genuinely retrieved ones — despite the prompt
+    instructing it to only echo paths verbatim from context. Prompt-only fixes
+    reduced but did not eliminate this, so any notebook path not present in the
+    actual `tutorials` match list is stripped, regardless of whether other real
+    paths are also present in the response.
+    """
+    if ".ipynb" not in response.lower():
+        return response
+
+    valid_paths = {t["notebook"] for t in tutorials}
+
+    if not valid_paths:
+        cleaned = _NOTEBOOK_BLOCK_RE.sub("", response).strip()
+        if ".ipynb" in cleaned.lower():
+            # Didn't match the expected block format but still references a notebook —
+            # can't safely excise just the offending part, so replace wholesale.
+            return _HONEST_NO_TUTORIAL_MSG
+        if _HONEST_NO_TUTORIAL_MSG[:20].lower() not in cleaned.lower():
+            cleaned = (cleaned + "\n\n" + _HONEST_NO_TUTORIAL_MSG).strip()
+        return cleaned
+
+    def _drop_invalid_block(match: re.Match) -> str:
+        block = match.group(0)
+        path_match = re.search(r"`([^`]*\.ipynb)`", block)
+        path = path_match.group(1) if path_match else None
+        return block if path in valid_paths else ""
+
+    cleaned = _NOTEBOOK_BLOCK_RE.sub(_drop_invalid_block, response).strip()
+
+    # Catch fabricated paths mentioned outside the expected Goal/Notebook block
+    # format (e.g. inline prose). Excise just the path text — a line may also
+    # contain a genuine path, so dropping the whole line would lose real content.
+    stray_paths = {p for p in _NOTEBOOK_PATH_RE.findall(cleaned) if p not in valid_paths}
+    for p in stray_paths:
+        cleaned = cleaned.replace(p, "")
+    if stray_paths:
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r"\n[ \t]+", "\n", cleaned).strip()
+
+    return cleaned
+
+
 @tool
 def get_workflow_guidance(goal: str) -> str:
     """Return step-by-step DRP workflow guidance for a user goal, with tutorial links."""
@@ -341,7 +497,8 @@ def get_workflow_guidance(goal: str) -> str:
     system = render(prompt["system"], context=context)
     user = render(prompt["user"], question=goal)
 
-    return get_chat_model().send_prompt(user, context=system, params={"temperature": 0.3, "max_tokens": 1000})
+    response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.3, "max_tokens": 1000})
+    return _strip_fabricated_tutorial_reference(response, tutorials)
 
 
 @tool
@@ -363,7 +520,8 @@ def get_educational_context(question: str) -> str:
     system = render(prompt["system"], context=context)
     user = render(prompt["user"], question=question)
 
-    return get_chat_model().send_prompt(user, context=system, params={"temperature": 0.3, "max_tokens": 1000})
+    response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.3, "max_tokens": 1000})
+    return _strip_fabricated_tutorial_reference(response, tutorials)
 
 
 # ---------------------------------------------------------------------------

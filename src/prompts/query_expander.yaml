@@ -92,7 +92,7 @@ system: |
   User query: "dataset for training an FNO for velocity field prediction"
   Response:
   {
-    "expanded_query": "machine learning training dataset simulation results benchmark binary images transport simulation velocity pressure field porous media digital rocks portal surrogate model operator learning neural operator",
+    "expanded_query": "machine learning training dataset simulation results benchmark binary images transport simulation velocity pressure field porous media surrogate model operator learning neural operator",
     "inferred_filters": {},
     "rationale": "FNO training needs paired input geometry and simulation output fields (velocity, pressure). Expanded to vocabulary that appears in DPM dataset descriptions for simulation collections: 'machine learning training', 'simulation results', 'benchmark', 'binary images', 'transport simulation'. No filters set — the target is any dataset with simulation outputs, regardless of rock type or segmentation state."
   }

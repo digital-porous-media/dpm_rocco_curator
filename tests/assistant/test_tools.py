@@ -91,13 +91,23 @@ class TestGetWorkflowGuidance:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_llm_called_once(self):
+    def test_llm_called_for_final_answer(self):
+        """
+        get_workflow_guidance makes two send_prompt calls: an internal
+        _match_workflows() semantic ranking call, then the final answer-synthesis
+        call. Assert the LLM was invoked and the final call is the answer call
+        (its user prompt echoes the question) rather than asserting an exact
+        count, since the ranking call is an internal implementation detail.
+        """
         mock_llm = _mock_chat_model("Guidance response.")
         with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
             from src.assistant.tools import get_workflow_guidance
             get_workflow_guidance.func("lattice Boltzmann permeability")
 
-        mock_llm.send_prompt.assert_called_once()
+        mock_llm.send_prompt.assert_called()
+        last_call = mock_llm.send_prompt.call_args
+        last_user_arg = last_call[0][0] if last_call[0] else last_call[1].get("user")
+        assert "lattice Boltzmann permeability" in last_user_arg
 
     def test_no_keyword_match_still_calls_llm(self):
         """Unrecognised queries fall back to LLM with empty context (pre-trained knowledge)."""
@@ -106,7 +116,7 @@ class TestGetWorkflowGuidance:
             from src.assistant.tools import get_workflow_guidance
             result = get_workflow_guidance.func("completely unrelated xyz query")
 
-        mock_llm.send_prompt.assert_called_once()
+        mock_llm.send_prompt.assert_called()
         assert isinstance(result, str)
 
     def test_context_includes_workflow_info_for_keyword_match(self):
@@ -119,6 +129,53 @@ class TestGetWorkflowGuidance:
         call_kwargs = mock_llm.send_prompt.call_args
         context_arg = call_kwargs[1].get("context") or call_kwargs[0][1]
         assert "Workflow" in context_arg or "segmentation" in context_arg.lower()
+
+
+class TestStripFabricatedTutorialReference:
+    """Guard against notebook-path hallucination, including when it's mixed in
+    alongside genuinely retrieved tutorials (not just the no-match case)."""
+
+    def test_no_tutorials_matched_strips_fabricated_block(self):
+        from src.assistant.tools import _strip_fabricated_tutorial_reference, _HONEST_NO_TUTORIAL_MSG
+        response = (
+            "Here you go:\n"
+            "**Goal:** Compute tortuosity\n"
+            "**Notebook:** `4_image_processing/4-2-5_distance_transform.ipynb`\n"
+        )
+        result = _strip_fabricated_tutorial_reference(response, tutorials=[])
+        assert ".ipynb" not in result
+        assert _HONEST_NO_TUTORIAL_MSG in result
+
+    def test_fabricated_path_stripped_even_with_real_tutorial_present(self):
+        from src.assistant.tools import _strip_fabricated_tutorial_reference
+        real_tutorials = [{"goal": "Simulate LBM permeability", "notebook": "5_simulation/5-2-1_lbm_d2q9_bgk.ipynb"}]
+        response = (
+            "**Goal:** Simulate LBM permeability\n"
+            "**Notebook:** `5_simulation/5-2-1_lbm_d2q9_bgk.ipynb`\n"
+            "**Goal:** Compute tortuosity\n"
+            "**Notebook:** `4_image_processing/4-2-5_distance_transform.ipynb`\n"
+        )
+        result = _strip_fabricated_tutorial_reference(response, real_tutorials)
+        assert "5-2-1_lbm_d2q9_bgk.ipynb" in result
+        assert "4-2-5_distance_transform.ipynb" not in result
+
+    def test_inline_fabricated_path_outside_block_format_is_stripped(self):
+        from src.assistant.tools import _strip_fabricated_tutorial_reference
+        real_tutorials = [{"goal": "Simulate LBM permeability", "notebook": "5_simulation/5-2-1_lbm_d2q9_bgk.ipynb"}]
+        response = (
+            "See 5_simulation/5-2-1_lbm_d2q9_bgk.ipynb for permeability, and "
+            "5_simulation/5-2-3_lbm_d3q7_conductivity.ipynb for conductivity."
+        )
+        result = _strip_fabricated_tutorial_reference(response, real_tutorials)
+        assert "5-2-1_lbm_d2q9_bgk.ipynb" in result
+        assert "5-2-3_lbm_d3q7_conductivity.ipynb" not in result
+
+    def test_real_paths_untouched(self):
+        from src.assistant.tools import _strip_fabricated_tutorial_reference
+        real_tutorials = [{"goal": "g", "notebook": "5_simulation/5-2-1_lbm_d2q9_bgk.ipynb"}]
+        response = "**Goal:** g\n**Notebook:** `5_simulation/5-2-1_lbm_d2q9_bgk.ipynb`\n"
+        result = _strip_fabricated_tutorial_reference(response, real_tutorials)
+        assert result == response.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -134,13 +191,21 @@ class TestGetEducationalContext:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_llm_called_once(self):
+    def test_llm_called_for_final_answer(self):
+        """
+        get_educational_context also makes an internal _match_workflows() ranking
+        call before the answer-synthesis call — see TestGetWorkflowGuidance's
+        equivalent test for why this doesn't assert an exact call count.
+        """
         mock_llm = _mock_chat_model("Educational response.")
         with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
             from src.assistant.tools import get_educational_context
             get_educational_context.func("what is REV?")
 
-        mock_llm.send_prompt.assert_called_once()
+        mock_llm.send_prompt.assert_called()
+        last_call = mock_llm.send_prompt.call_args
+        last_user_arg = last_call[0][0] if last_call[0] else last_call[1].get("user")
+        assert "what is REV?" in last_user_arg
 
     def test_rev_query_includes_global_best_practices(self):
         """A query about REV should pull the 'representativeness' global best practice."""
@@ -220,6 +285,84 @@ class TestSearchLiterature:
 # ---------------------------------------------------------------------------
 # build_langchain_tools
 # ---------------------------------------------------------------------------
+
+class TestSearchDatasetsWeakMatch:
+    """search_datasets should honestly flag results that don't mention the query's
+    topic, instead of silently presenting off-topic hits as ordinary matches."""
+
+    def _mock_result(self, title, text, doi="10.1234/x"):
+        return {"text": text, "metadata": {"title": title, "doi": doi}, "source_label": "[hybrid match]"}
+
+    def test_flags_weak_match_when_no_result_mentions_topic(self):
+        with patch("src.assistant.tools.expand_query", return_value={
+            "expanded_query": "fibrous media datasets",
+            "inferred_filters": {},
+            "rationale": "",
+        }):
+            with patch("src.assistant.tools._get_graph_store") as mock_get_store:
+                store = MagicMock()
+                store.hybrid_search.return_value = [
+                    self._mock_result("Bead Pack Geological Fabrics", "2D bead-packs generated with realistic geological features.")
+                ]
+                store.component_search.return_value = []
+                mock_get_store.return_value = store
+
+                summary = json.dumps(["2D bead-pack dataset with realistic geological features."])
+                with patch("src.assistant.llm.get_chat_model", return_value=_mock_chat_model(summary)):
+                    from src.assistant.tools import search_datasets
+                    result = search_datasets.func("Are there any fibrous media datasets on the portal?")
+
+        assert "[weak match" in result
+        assert "fibrous" in result.lower()
+        # The off-topic result is still shown, not dropped.
+        assert "Bead Pack Geological Fabrics" in result
+
+    def test_no_weak_match_flag_when_topic_is_present(self):
+        with patch("src.assistant.tools.expand_query", return_value={
+            "expanded_query": "coal datasets",
+            "inferred_filters": {},
+            "rationale": "",
+        }):
+            with patch("src.assistant.tools._get_graph_store") as mock_get_store:
+                store = MagicMock()
+                store.hybrid_search.return_value = [
+                    self._mock_result("Moura Coal", "A coal sample dataset.")
+                ]
+                store.component_search.return_value = []
+                mock_get_store.return_value = store
+
+                summary = json.dumps(["A coal sample dataset matching the query."])
+                with patch("src.assistant.llm.get_chat_model", return_value=_mock_chat_model(summary)):
+                    from src.assistant.tools import search_datasets
+                    result = search_datasets.func("Show me datasets from coal samples")
+
+        assert "[weak match" not in result
+
+    def test_summary_falls_back_to_snippet_when_llm_call_fails(self):
+        """If the summarization LLM call fails, the result must still render — using a
+        raw-text fallback snippet — rather than dropping the result or raising."""
+        with patch("src.assistant.tools.expand_query", return_value={
+            "expanded_query": "coal datasets",
+            "inferred_filters": {},
+            "rationale": "",
+        }):
+            with patch("src.assistant.tools._get_graph_store") as mock_get_store:
+                store = MagicMock()
+                store.hybrid_search.return_value = [
+                    self._mock_result("Moura Coal", "A coal sample dataset used for permeability studies.")
+                ]
+                store.component_search.return_value = []
+                mock_get_store.return_value = store
+
+                broken_llm = MagicMock()
+                broken_llm.send_prompt.side_effect = RuntimeError("LLM unavailable")
+                with patch("src.assistant.llm.get_chat_model", return_value=broken_llm):
+                    from src.assistant.tools import search_datasets
+                    result = search_datasets.func("Show me datasets from coal samples")
+
+        assert "Moura Coal" in result
+        assert "A coal sample dataset used for permeability studies" in result
+
 
 class TestBuildLangchainTools:
     def test_returns_all_five_tools(self):
