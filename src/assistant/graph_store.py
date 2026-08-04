@@ -234,7 +234,57 @@ Important:
   - Any query that RETURNs Dataset rows must also RETURN d.doi (in addition to
     d.identifier/d.title) — the DOI is the user-facing citation for a dataset, and it
     must come from this field, never invented. It is fine if d.doi is null for some rows.
+  - authors (on Dataset and RelatedPublication) is a single concatenated "First Last, First
+    Last" string, NOT a list — never compare it with `=`. To find datasets by a named
+    person, use toLower(d.authors) CONTAINS toLower('<name>').
 """
+
+# Derived (not hand-maintained) list of every queryable node-property name in
+# MANUAL_SCHEMA — the single source of truth GraphCypherQAChain's Cypher generation
+# is bound to. Used to keep the agent's tool-routing guidance (which properties make
+# a question belong to get_dataset_details) from drifting out of sync with the schema:
+# a field added here is automatically picked up by callers instead of requiring a
+# second hand-written edit to a routing prompt (see conversation_manager.py, tools.py).
+_SCHEMA_PROPERTY_LINE_RE = re.compile(r"^\s*\w+\s*—\s*(.+)$")
+
+
+def _looks_like_bare_property_list(line: str) -> bool:
+    """True for a wrapped continuation line of a node's property list (e.g. Sample's
+    properties span two lines in MANUAL_SCHEMA without repeating 'Sample —') — as
+    opposed to an annotation line like 'porousMediaType values: beads, ...' or prose,
+    which always contain a colon or non-identifier words."""
+    line = line.strip()
+    if not line or ":" in line:
+        return False
+    for token in line.split(","):
+        name = token.strip().split("(")[0].strip()
+        if not name or not _SAFE_KEY_RE.match(name):
+            return False
+    return True
+
+
+def get_queryable_field_names() -> list[str]:
+    """Parse MANUAL_SCHEMA and return the sorted, deduped list of node property names
+    get_dataset_details can query. Pure string parsing — no Neo4j connection required."""
+    fields: set[str] = set()
+    lines = MANUAL_SCHEMA.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        m = _SCHEMA_PROPERTY_LINE_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        segment = m.group(1)
+        i += 1
+        while i < n and _looks_like_bare_property_list(lines[i]):
+            segment += "," + lines[i]
+            i += 1
+        for raw in segment.split(","):
+            name = raw.strip().split("(")[0].strip()
+            if name and _SAFE_KEY_RE.match(name):
+                fields.add(name)
+    return sorted(fields)
+
 
 CYPHER_GENERATION_TEMPLATE = """
 You are an expert Neo4j Developer translating user questions into Cypher to answer
@@ -296,6 +346,12 @@ Fine Tuning:
       END AS voxelSizeMicrometers
     WHERE voxelSizeMicrometers IS NOT NULL AND voxelSizeMicrometers < 2
     RETURN DISTINCT d.identifier, d.title, dd.voxelDimensions
+- authors on Dataset/RelatedPublication is one concatenated "First Last, First Last"
+  string, not a list — a named person is a substring match, never `=`. Example for
+  "datasets by Jane Doe":
+    MATCH (d:Dataset)
+    WHERE toLower(d.authors) CONTAINS toLower('Jane Doe')
+    RETURN DISTINCT d.identifier, d.title, d.doi
 
 Schema:
 """ + MANUAL_SCHEMA + """

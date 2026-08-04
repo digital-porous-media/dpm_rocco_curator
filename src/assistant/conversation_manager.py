@@ -367,14 +367,21 @@ Answer directly and completely. No tool calls needed, no disclaimers.
 - "How to X", "How do I X", "what are the steps to X", any workflow or method question → get_workflow_guidance (always first; call search_datasets afterward only if the user also wants datasets)
 - **Any query that names a concrete, checkable dataset/sample property — a numeric \
 threshold or range (porosity above/below/between X, grain size less than X), a specific \
-metadata value or set of values (rock type, segmented status, voxel resolution), or a \
-combination of these — → get_dataset_details, even if it also mentions a rock type or \
-imaging method.** search_datasets can only match one value per field and cannot express \
-numeric comparisons at all, so it silently drops these constraints; get_dataset_details \
-generates real Cypher and handles any number/combination of them correctly.
+metadata value or set of values (rock type, segmented status, voxel resolution), a named \
+person (e.g. "datasets by Jane Doe" — maps to the authors field), or a combination of \
+these — → get_dataset_details, even if it also mentions a rock type or imaging method.** \
+The full list of checkable properties is in get_dataset_details' own tool description \
+(derived from the live schema — do not rely on this list of examples being exhaustive; \
+if a query names ANY property in that tool's description, including one not called out \
+here by name, route there). search_datasets can only match one value per field and \
+cannot express numeric comparisons at all, so it silently drops these constraints; \
+get_dataset_details generates real Cypher and handles any number/combination of them \
+correctly.
 - Dataset discovery by topic, suitability, or purpose with no precise checkable \
 property named (e.g. "datasets suitable for LBM simulation", "something good for a \
-teaching demo") → search_datasets
+teaching demo") → search_datasets. (search_datasets also attempts a structured lookup \
+internally first as a safety net for property-shaped queries that reach it anyway, but \
+routing there directly is still preferred.)
 - Portal how-to guides and metadata schema reference → search_portal_docs
 - Porous media science Q&A and best practices → get_educational_context
 - Finding papers or publications → search_literature

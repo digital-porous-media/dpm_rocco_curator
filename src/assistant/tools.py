@@ -255,6 +255,27 @@ _IMAGING_KEYWORDS = ("micro-ct", "microct", "fib-sem", "fibsem", "x-ray", "xray"
                      "nano-ct", "nanoct", "sem", "mri")
 _PLAIN_PROPERTY_TERMS = _ROCK_TYPES + _SOURCE_TERMS + _SEGMENTED_TERMS + _IMAGING_KEYWORDS
 
+# A named person ("datasets by Jane Doe") names a concrete, checkable property — the
+# authors field — just as much as "sandstone" or "segmented" does, but no fixed keyword
+# list can enumerate every possible name. Detect the *pattern* instead: a capitalized
+# multi-word proper-noun phrase following "by"/"from"/"authored by".
+_AUTHOR_QUERY_RE = re.compile(
+    r"\b(?:by|from|authored by)\s+([A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*)+)"
+)
+
+
+def _mentions_named_person(query: str) -> bool:
+    """True if the query plausibly names a specific person (maps to the authors field)."""
+    return bool(_AUTHOR_QUERY_RE.search(query))
+
+
+def _schema_field_names() -> list[str]:
+    """Lazily fetch the derived list of Cypher-queryable schema fields (see
+    graph_store.get_queryable_field_names) — single source of truth, not a
+    hand-maintained duplicate list."""
+    from src.assistant.graph_store import get_queryable_field_names
+    return get_queryable_field_names()
+
 
 def _summarize_dataset_results(query: str, results: list[dict]) -> list[str]:
     """One sentence per result describing what the dataset is and how it relates to
@@ -328,11 +349,33 @@ def _results_mention_any(results: list[dict], terms: list[str]) -> bool:
 
 @tool
 def search_datasets(query: str, top_k: int = 5) -> str:
-    """Find datasets by semantic similarity to a natural language query. Use for open-ended dataset discovery and suitability/purpose queries with no precise checkable property named, like 'sandstone datasets suitable for LBM simulation' or 'something good for a teaching demo'. Do NOT use this for queries that name a concrete, checkable property — a numeric threshold or range (e.g. 'porosity above 0.3', 'voxel size smaller than 2 microns', 'resolution finer than 5 micrometers'), a specific metadata value, or multiple values/fields (e.g. 'sandstone or carbonate', 'segmented and porosity above 0.3') — even if a rock type or imaging method is also mentioned; those belong to get_dataset_details, which generates real Cypher and can express comparisons and combinations this tool's filters cannot. This tool's own voxelDimensions filter is a coarse micrometer/millimeter/nanometer bucket only — it cannot express a numeric cutoff like "< 2 microns". Do NOT use for how-to or workflow questions (e.g. 'how to compute permeability') — those belong to get_workflow_guidance."""
+    """Find datasets by semantic similarity to a natural language query. Use for open-ended dataset discovery and suitability/purpose queries with no precise checkable property named, like 'sandstone datasets suitable for LBM simulation' or 'something good for a teaching demo'. Do NOT use this for queries that name a concrete, checkable property — a numeric threshold or range (e.g. 'porosity above 0.3', 'voxel size smaller than 2 microns', 'resolution finer than 5 micrometers'), a specific metadata value, a named person/author, or multiple values/fields (e.g. 'sandstone or carbonate', 'segmented and porosity above 0.3') — even if a rock type or imaging method is also mentioned; those belong to get_dataset_details, which generates real Cypher and can express comparisons and combinations this tool's filters cannot. This tool's own voxelDimensions filter is a coarse micrometer/millimeter/nanometer bucket only — it cannot express a numeric cutoff like "< 2 microns". Do NOT use for how-to or workflow questions (e.g. 'how to compute permeability') — those belong to get_workflow_guidance. Note: this tool also attempts a structured Cypher lookup first for property-shaped queries (including named authors) as a safety net in case routing missed it — but call get_dataset_details directly when you recognize the property, since it's the more reliable path."""
     expansion = expand_query(query)
     expanded = expansion.get("expanded_query", query)
     filters = expansion.get("inferred_filters", {})
     rationale = expansion.get("rationale", "")
+
+    # Deterministic safety net: don't rely solely on the outer agent's routing having
+    # correctly classified the query up front (see HANDOFF.md — routing-by-example is
+    # brittle for property types no one thought to enumerate, e.g. author names). If the
+    # query looks property-shaped, attempt the structured Cypher path first and use it
+    # if it produced a real, grounded answer; only fall through to semantic/hybrid search
+    # when the structured attempt genuinely found nothing (or the query doesn't look
+    # property-shaped at all, e.g. pure suitability/discovery queries).
+    _NO_STRUCTURED_ANSWER = (
+        "the query ran successfully and found no matching",
+        "no answer found",
+        "graph search is disabled",
+    )
+    looks_structured = bool(filters) or _is_plain_property_query(query) or _mentions_named_person(query)
+    if looks_structured:
+        try:
+            structured = _get_graph_store().cypher_qa(query)
+        except Exception as e:
+            logger.warning("Structured-first lookup failed (%s); falling back to semantic search", e)
+            structured = ""
+        if structured and not structured.strip().lower().startswith(_NO_STRUCTURED_ANSWER):
+            return structured
 
     graph_store = _get_graph_store()
     results = graph_store.hybrid_search(expanded, filters=filters, top_k=top_k)
@@ -391,6 +434,23 @@ def search_datasets(query: str, top_k: int = 5) -> str:
 def get_dataset_details(question: str) -> str:
     """Answer structured questions about dataset properties using Cypher. Source: [cypher match]"""
     return _get_graph_store().cypher_qa(question)
+
+
+# The static docstring above is deliberately generic — the routing detail (which
+# properties count as "structured") is appended dynamically below, derived from
+# graph_store.get_queryable_field_names() rather than a hand-picked example list. This
+# keeps the agent's routing signal in sync with the actual schema fed to
+# GraphCypherQAChain: a field added to MANUAL_SCHEMA is automatically reflected here
+# without a second edit. Wrapped in try/except so a parsing hiccup degrades to the
+# static docstring rather than breaking tool registration.
+try:
+    get_dataset_details.description += (
+        ". Covers any of these dataset/sample properties, including numeric "
+        "comparisons, exact values, or a named person (maps to authors): "
+        + ", ".join(_schema_field_names()) + "."
+    )
+except Exception as _e:  # pragma: no cover - defensive only
+    logger.warning("Could not derive schema field list for get_dataset_details description: %s", _e)
 
 
 # ---------------------------------------------------------------------------
