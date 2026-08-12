@@ -40,21 +40,19 @@ dependencies = [
     "langchain>=0.1.0",
     "openai>=1.0.0",
     "streamlit>=1.35.0",
-    "langchainhub>=0.1.21",
     "langchain-community>=0.4.1,<0.5.0",  # pinned: sunset announced; migrate before removing (see Tasks.md)
     "langchain-huggingface>=1.2.2",
+    "langgraph>=0.2.0",  # required by src/assistant/conversation_manager.py (create_react_agent, MemorySaver); imported unconditionally by rocco_ui.py's assistant tab
+    "requests>=2.31.0",  # used by src/assistant/literature_search.py for the Semantic Scholar API
+    "docx2txt>=0.8",  # required at runtime by langchain_community's Docx2txtLoader (src/ingestor/document_ingestor.py)
     "tenacity!=8.4.0",
     "pydantic>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "numpy>=1.24.0",
+    "python-dotenv>=1.2.2",
     "httpx>=0.24.0",
-    "sentence-transformers>=2.2.0",
     "faiss-cpu>=1.7.4",
     "pypdf>=3.0.0",
-    "regex>=2023.0.0",
     "pyyaml>=6.0",
-    "jinja2>=3.0.0",
-    "python-dotenv>=1.2.2"
+    "jinja2>=3.0.0"
 ]
 
 [project.optional-dependencies]
@@ -62,6 +60,14 @@ graph = [
     "neo4j>=5.27.0",
     "langchain-neo4j>=0.1.1",
     "langchain-openai>=0.2.0",
+]
+local-embeddings = [
+    # Local HuggingFace embedding fallback (src/llm/embeddings.py, src/ingestor/embedder.py).
+    # Only needed if LLM_PROVIDER is ollama/huggingface/anthropic/deepseek WITHOUT an
+    # EMBEDDING_URL/EMBEDDING_MODEL override, or if DocumentEmbedder() is constructed
+    # without an injected `embeddings=`. Pulls in torch (~1.5-2.5GB) — skip for API-based
+    # embedding setups (e.g. EMBEDDING_URL pointing at a remote provider).
+    "sentence-transformers>=2.2.0",
 ]
 docs = [
     "sphinx>=7.0",
@@ -76,6 +82,7 @@ dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
     "isort>=5.12.0",
+    "numpy>=1.24.0",  # only used by tests/assistant/conftest.py fixtures, not by src/
 ]
 benchmarks = [
     "pymc>=6.0.0",
