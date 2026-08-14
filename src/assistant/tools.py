@@ -395,7 +395,15 @@ def search_datasets(query: str, top_k: int = 5) -> str:
             seen_dois.add(doi)
             results.append({
                 "text": cr["text"],
-                "metadata": {"title": cm.get("datasetTitle", "Unknown"), "doi": doi},
+                "metadata": {
+                    "title": cm.get("datasetTitle", "Unknown"),
+                    "doi": doi,
+                    # Which specific sub-node matched (e.g. a single DigitalDataset out
+                    # of several under this dataset) — surfaced to the user below so a
+                    # multi-sample/multi-scan dataset isn't a mystery match.
+                    "component_title": cm.get("componentTitle"),
+                    "component_type": cm.get("componentType"),
+                },
                 "source_label": "[component match]",
             })
             extras += 1
@@ -414,7 +422,10 @@ def search_datasets(query: str, top_k: int = 5) -> str:
             doi_id = doi_id[len("https://doi.org/"):]
         doi_str = f"DOI: {doi_id}" if doi_id else ""
         label = r.get("source_label", "[graph match]")
-        lines.append(f"{label} {title} ({doi_str})\n{summary}")
+        component_title = meta.get("component_title")
+        component_type = meta.get("component_type")
+        matched_via = f' — matched via {component_type} "{component_title}"' if component_title else ""
+        lines.append(f"{label} {title}{matched_via} ({doi_str})\n{summary}")
 
     output = "\n\n".join(lines)
     if rationale and not _is_plain_property_query(query):
@@ -446,8 +457,10 @@ def get_dataset_details(question: str) -> str:
 try:
     get_dataset_details.description += (
         ". Covers any of these dataset/sample properties, including numeric "
-        "comparisons, exact values, or a named person (maps to authors): "
-        + ", ".join(_schema_field_names()) + "."
+        "comparisons, exact values, or a named person explicitly as the subject of a "
+        "dataset/author search (e.g. 'datasets by Jane Doe' — maps to authors; a name "
+        "mentioned incidentally, such as someone introducing themselves, is not this "
+        "case): " + ", ".join(_schema_field_names()) + "."
     )
 except Exception as _e:  # pragma: no cover - defensive only
     logger.warning("Could not derive schema field list for get_dataset_details description: %s", _e)

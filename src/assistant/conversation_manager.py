@@ -103,12 +103,42 @@ _VERIFICATION_DISCLAIMER = (
 )
 
 
+# Bare "nothing to show" tool outputs that short-circuit _build_verbatim_response
+# before _generate_lead_in is ever called — kept at module level so both functions
+# check against the same list instead of a second hand-copied one.
+_BARE_MESSAGE_PREFIXES = (
+    "no datasets found",
+    "the query ran successfully and found no matching",
+    "graph search is disabled",
+    "no answer found",
+)
+
+# Catches a lead-in that asserts no results were found ("No datasets by X were found",
+# "None found", "couldn't find any...") — used to detect when the lead-in LLM invents
+# this framing on its own despite real results sitting right below it. The only
+# legitimate case for this framing is a "[weak match: ...]" tag in tool_output (see
+# _WRAPPER_SYSTEM_PROMPT); a flat no-results tool_output never reaches _generate_lead_in
+# at all, since _build_verbatim_response short-circuits on _BARE_MESSAGE_PREFIXES first.
+_NEGATION_LEADIN_RE = re.compile(
+    r"\bno\b[^.]{0,40}\bfound\b|\bnone found\b|\bnot found\b|"
+    r"\bdid(?:n't| not) find\b|\bweren't found\b|\bwasn't found\b",
+    re.IGNORECASE,
+)
+
+
+_DEFAULT_LEAD_IN = "Here are the datasets matching your query:"
+
+
 def _generate_lead_in(user_input: str, tool_output: str) -> str:
     """Ask the LLM for a one-sentence lead-in, with no access to reproducing the
-    actual result data — the data itself is spliced in by code."""
+    actual result data — the data itself is spliced in by code. Only called for tool
+    output carrying a "[weak match]" or "[search reasoning]" tag (see
+    _build_verbatim_response) — those are the only cases with anything nuanced for
+    the LLM to add; a plain confident match uses _DEFAULT_LEAD_IN directly without an
+    LLM call at all, since the model isn't reliably steerable away from inventing
+    "no results" framing even when tool_output contains none (see history below)."""
     from src.assistant.llm import get_chat_model
 
-    default_lead_in = "Here are the datasets matching your query:"
     try:
         llm = get_chat_model()
         response = llm.invoke([
@@ -119,11 +149,28 @@ def _generate_lead_in(user_input: str, tool_output: str) -> str:
         if raw.startswith("```"):
             raw = raw.split("```", 2)[1]
             raw = raw[len("json"):] if raw.startswith("json") else raw
-        data = json.loads(raw.strip())
-        return (data.get("lead_in") or default_lead_in).strip()
+        lead_in = (json.loads(raw.strip()).get("lead_in") or _DEFAULT_LEAD_IN).strip()
     except Exception as e:
         logger.warning("Lead-in generation failed (%s); using default.", e)
-        return default_lead_in
+        return _DEFAULT_LEAD_IN
+
+    # Deterministic backstop for the "[search reasoning]" case (a positive suitability
+    # match, where a "no match" framing is never correct): the "[weak match]" case is
+    # legitimately allowed to say results weren't found, so this only fires for the
+    # other tagged path. Kept as a second line of defense, not the primary one — a
+    # blocklist of negation phrasings is beatable by paraphrase (this model has been
+    # observed rephrasing around an earlier version of this exact check, e.g. "did not
+    # directly match... but here are some related datasets" instead of "not found").
+    # The real fix is upstream in _build_verbatim_response: this function is no longer
+    # called at all for the plain-match case that originally triggered the bug.
+    if "[weak match" not in tool_output.lower() and _NEGATION_LEADIN_RE.search(lead_in):
+        logger.warning(
+            "Lead-in hallucinated a no-results framing despite real tool output; discarding: %r",
+            lead_in,
+        )
+        return _DEFAULT_LEAD_IN
+
+    return lead_in
 
 
 def _build_verbatim_response(user_input: str, tool_output: str) -> str:
@@ -131,15 +178,21 @@ def _build_verbatim_response(user_input: str, tool_output: str) -> str:
     lead-in sentence comes from the LLM; the closing note is fixed, static text."""
     display_block = _strip_leading_tags(tool_output).strip()
     lowered = display_block.lower()
-    _BARE_MESSAGE_PREFIXES = (
-        "no datasets found",
-        "the query ran successfully and found no matching",
-        "graph search is disabled",
-        "no answer found",
-    )
     if lowered.startswith(_BARE_MESSAGE_PREFIXES):
         return display_block
-    lead_in = _generate_lead_in(user_input, tool_output)
+
+    # An LLM-authored lead-in only has something case-specific to add when tool_output
+    # carries a tag asking for nuance (paraphrase the suitability rationale, or honestly
+    # flag a weak/off-topic match) -- the model is explicitly forbidden from naming
+    # titles/DOIs either way, so for a plain confident match there is nothing for it to
+    # contribute. Skip the LLM call entirely in that case rather than give a free-form
+    # model an opportunity to invent framing that contradicts the real results sitting
+    # right below it (the original "No datasets by X were found" bug, on a tool_output
+    # with zero indication of that).
+    output_lower = tool_output.lower()
+    needs_nuanced_lead_in = "[weak match" in output_lower or "[search reasoning" in output_lower
+    lead_in = _generate_lead_in(user_input, tool_output) if needs_nuanced_lead_in else _DEFAULT_LEAD_IN
+
     return "\n\n".join([lead_in, display_block, _VERIFICATION_DISCLAIMER])
 
 logger = logging.getLogger(__name__)
@@ -349,13 +402,15 @@ You help researchers discover datasets, understand porous media workflows, and f
 ## Knowledge tiers — follow these strictly
 
 **Tier 0 — Conversation, brainstorming, and code assistance \
-(e.g. "hi", "thanks", "can you help me think through my sampling design?", \
+(e.g. "hi", "thanks", "Hi, I'm Bernie", "can you help me think through my sampling design?", \
 "write a script to compute porosity from this CSV", "why is my segmentation pipeline crashing?")**
 Respond directly — no tool call is required for this tier. This covers greetings and small \
-talk, but also open-ended requests that don't map to a specific tool: brainstorming research \
-ideas, writing or debugging code for porous-media-related data work, or talking through \
-methodology. Keep greetings/small talk brief (a sentence or two); code and brainstorming \
-responses can be as long as the task genuinely needs. If the conversation surfaces a need for \
+talk (including self-introductions that happen to contain a name, e.g. "Hi, I'm Bernie" — a \
+name mentioned this way is NOT an author-lookup request and must never trigger \
+get_dataset_details), but also open-ended requests that don't map to a specific tool: \
+brainstorming research ideas, writing or debugging code for porous-media-related data work, \
+or talking through methodology. Keep greetings/small talk brief (a sentence or two); code and \
+brainstorming responses can be as long as the task genuinely needs. If the conversation surfaces a need for \
 an actual dataset lookup, workflow guide, or literature search, go ahead and call the relevant \
 tool per Tiers 1-3 below rather than answering from memory. If the request has no connection \
 to porous media, dataset/DRP research, or the kind of data/analysis work researchers do around \
@@ -388,8 +443,11 @@ if the conversation surfaces a genuine dataset/workflow/literature need.
 - **Any query that names a concrete, checkable dataset/sample property — a numeric \
 threshold or range (porosity above/below/between X, grain size less than X), a specific \
 metadata value or set of values (rock type, segmented status, voxel resolution), a named \
-person (e.g. "datasets by Jane Doe" — maps to the authors field), or a combination of \
-these — → get_dataset_details, even if it also mentions a rock type or imaging method.** \
+person explicitly as the subject of a dataset/author search (e.g. "datasets by Jane \
+Doe", "who has published data on sandstone permeability" — maps to the authors field; a \
+name mentioned incidentally, such as someone introducing themselves — "Hi, I'm Bernie" — \
+is Tier 0, not this case), or a combination of these — → get_dataset_details, even if it \
+also mentions a rock type or imaging method.** \
 The full list of checkable properties is in get_dataset_details' own tool description \
 (derived from the live schema — do not rely on this list of examples being exhaustive; \
 if a query names ANY property in that tool's description, including one not called out \
@@ -460,6 +518,88 @@ Never skip presenting the results. Never ask for clarification before showing re
 """
 
 
+_GATE_SYSTEM_PROMPT = """\
+You are a routing gate in front of a research-assistant chatbot. You do NOT have any \
+tools available in this call — your only job is to decide whether the user's message \
+requires a follow-up call to look something up, or whether it can be answered directly.
+
+Respond with a JSON object only, no markdown fences:
+{"route": "tool"} or {"route": "direct"}
+
+Route to "tool" for anything that needs a lookup: dataset facts/counts/properties, \
+finding datasets, literature search, portal how-to/documentation, or DRP domain \
+workflows/best practices (even if you personally know the general answer — portal-specific \
+workflow guidance should still be looked up first).
+
+Route to "direct" for: greetings, small talk, thanks, self-introductions (a name \
+mentioned this way, e.g. "Hi, I'm Bernie", is NOT a lookup request), brainstorming, \
+general programming/code help, and self-contained foundational science concepts \
+(e.g. "What is porosity?", "Explain Darcy's law") that don't need portal-specific data.
+
+Examples:
+- "Hi! I'm Bernie" -> direct
+- "Hello" -> direct
+- "Thanks, that helps" -> direct
+- "Can you help me think through my sampling design?" -> direct
+- "What is porosity?" -> direct
+- "How many sandstone datasets have porosity > 0.2?" -> tool
+- "Find datasets suitable for LBM simulation" -> tool
+- "How do I compute relative permeability?" -> tool
+- "Find papers on relative permeability" -> tool
+- "How do I upload a dataset to the portal?" -> tool
+- "Hi, I'm Bernie, can you help me find sandstone datasets?" -> tool
+
+If the message mixes small talk with a real request (like the last example), route to "tool" \
+— the agent on the other side will handle the conversational part too.
+"""
+
+
+def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
+    """Ask the LLM, with no tools bound to this call, whether the message needs a
+    follow-up tool-bound turn at all. This is deliberately a separate, tool-free call —
+    binding tools is what exposes the model to emitting native tool-call syntax the
+    backend can't parse, so this call structurally can't produce that failure mode.
+
+    Defaults to True (needs tool) on any parse/call failure: a wrong "tool" guess just
+    costs one wasted lookup, while a wrong "direct" guess would silently skip a real
+    dataset/literature/workflow request — the more expensive mistake of the two.
+    """
+    from src.assistant.llm import get_chat_model
+
+    try:
+        llm = get_chat_model()
+        messages = (
+            [{"role": "system", "content": _GATE_SYSTEM_PROMPT}]
+            + prior[-6:]
+            + [{"role": "user", "content": user_input}]
+        )
+        raw = llm.invoke(messages).content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            raw = raw[len("json"):] if raw.startswith("json") else raw
+        route = str(json.loads(raw.strip()).get("route", "tool")).strip().lower()
+        return route != "direct"
+    except Exception as e:
+        logger.warning("Tool-need gate failed (%s); defaulting to tool-bound agent.", e)
+        return True
+
+
+def _answer_direct(user_input: str, prior: list[dict]) -> str:
+    """Answer without ever exposing the model to tool schemas this turn — used when
+    _classify_needs_tool says no lookup is needed."""
+    from src.assistant.llm import get_chat_model
+
+    try:
+        llm = get_chat_model()
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + prior + [
+            {"role": "user", "content": user_input}
+        ]
+        return _clean_response(llm.invoke(messages).content)
+    except Exception as e:
+        logger.error("Direct-answer call failed: %s", e)
+        return "I encountered an error processing your request. Please try rephrasing."
+
+
 class ConversationManager:
     """
     Wraps a LangGraph ReAct agent with per-session memory.
@@ -505,6 +645,15 @@ class ConversationManager:
             The assistant's response as a string.
         """
         prior = [{"role": m["role"], "content": m["content"]} for m in (history or [])]
+
+        # Tool-need gate: a separate, tools-unbound call that decides whether this turn
+        # needs the tool-bound ReAct agent at all. See _classify_needs_tool docstring —
+        # this exists because the tool-bound agent below is what exposes the model to
+        # its native tool-call syntax, which is the actual source of the malformed-output
+        # failures this gate is meant to prevent by not reaching that code path at all.
+        if not _classify_needs_tool(user_input, prior):
+            return _answer_direct(user_input, prior)
+
         messages = prior + [{"role": "user", "content": user_input}]
         try:
             result = self._agent.invoke({"messages": messages})
