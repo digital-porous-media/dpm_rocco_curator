@@ -177,3 +177,20 @@ def mock_graph_store():
     with patch.dict("os.environ", {"USE_NEO4J": "false"}):
         from src.assistant.graph_store import GraphStore
         yield GraphStore()
+
+
+# ---------------------------------------------------------------------------
+# Auto-mark live (real-network) tests
+# ---------------------------------------------------------------------------
+
+def pytest_collection_modifyitems(items):
+    """
+    Any test that requests the `chat_model` fixture makes a real LLM call
+    (and, transitively, real Neo4j/Semantic Scholar calls via tools.py) — see
+    test_search_integration.py's `chat_model` fixture. Auto-apply the `live`
+    marker so these are excluded by default (`addopts = -m "not live"` in
+    pytest.ini) without requiring every test author to remember to tag them.
+    """
+    for item in items:
+        if "chat_model" in item.fixturenames:
+            item.add_marker(pytest.mark.live)
