@@ -196,29 +196,36 @@ def audit_neo4j() -> dict[str, dict[str, float]]:
 
     neo4j_coverage: dict[str, dict[str, float]] = {}
 
-    # Map: (neo4j label, neo4j property) → display name
+    # (neo4j label, display key used by print_coverage_table, actual Neo4j property name)
+    # display key must match the raw JSON field name in *_FIELDS so the coverage
+    # table can look it up; actual Neo4j property name is what load_graph.py wrote.
     checks = [
-        ("Dataset", "title"), ("Dataset", "description"), ("Dataset", "doi"),
-        ("Dataset", "authors"), ("Dataset", "license"), ("Dataset", "publicationDate"),
-        ("Dataset", "descriptionEmbedding"),
-        ("Sample", "porousMediaType"), ("Sample", "porosity"), ("Sample", "source"),
-        ("Sample", "geographicOrigin"), ("Sample", "grainSizeAvg"),
-        ("DigitalDataset", "voxelDimensions"), ("DigitalDataset", "isSegmented"),
-        ("DigitalDataset", "imagingCenter"), ("DigitalDataset", "dimensionality"),
-        ("AnalysisDataset", "type"), ("AnalysisDataset", "isSegmented"),
-        ("RelatedPublication", "title"), ("RelatedPublication", "abstract"),
-        ("RelatedSoftware", "title"), ("RelatedDataset", "title"),
+        ("Dataset", "title", "title"), ("Dataset", "description", "description"),
+        ("Dataset", "doi", "doi"), ("Dataset", "authors", "authors"),
+        ("Dataset", "license", "license"), ("Dataset", "publicationDate", "publicationDate"),
+        ("Dataset", "descriptionEmbedding", "descriptionEmbedding"),
+        ("Sample", "porousMediaType", "porousMediaType"), ("Sample", "porosity", "porosity"),
+        ("Sample", "source", "source"),
+        ("Sample", "geographicOrigin", "geographicOrigin"), ("Sample", "grainSizeAvg", "grainSizeAvg"),
+        ("DigitalDataset", "voxelDimensions", "voxelDimensions"),
+        # load_graph.py stores JSON "isSegmented" under the Neo4j property "segmented"
+        ("DigitalDataset", "isSegmented", "segmented"),
+        ("DigitalDataset", "imagingCenter", "imagingCenter"), ("DigitalDataset", "dimensionality", "dimensionality"),
+        ("AnalysisDataset", "type", "type"),
+        ("AnalysisDataset", "isSegmented", "segmented"),
+        ("RelatedPublication", "title", "title"), ("RelatedPublication", "abstract", "abstract"),
+        ("RelatedSoftware", "title", "title"), ("RelatedDataset", "title", "title"),
     ]
 
     with driver.session() as session:
-        for label, prop in checks:
+        for label, display_key, neo4j_prop in checks:
             result = session.run(
                 f"MATCH (n:{label}) RETURN "
-                f"count(n.{prop}) * 100.0 / count(n) AS cov"
+                f"count(n.{neo4j_prop}) * 100.0 / count(n) AS cov"
             )
             row = result.single()
             cov = round(row["cov"], 1) if row else 0.0
-            neo4j_coverage.setdefault(label, {})[prop] = cov
+            neo4j_coverage.setdefault(label, {})[display_key] = cov
 
     driver.close()
     return neo4j_coverage
@@ -228,24 +235,42 @@ def audit_neo4j() -> dict[str, dict[str, float]]:
 # Neo4j verification (--verify)
 # ---------------------------------------------------------------------------
 
-# Expected counts from the JSON audit
-_EXPECTED_COUNTS = {
-    "Sample": 570,
-    "DigitalDataset": 1683,
-    "AnalysisDataset": 1020,
-    "RelatedPublication": 272,
-}
-_EXPECTED_REL_PART_OF = 570    # sub-nodes → Dataset
-_EXPECTED_REL_INPUT_FOR = 2666  # Sample→DD + DD→AD
+# PART_OF/INPUT_FOR-eligible node types, per scripts/load_graph.py:
+#   - Sample, DigitalDataset, AnalysisDataset, RelatedPublication, RelatedSoftware,
+#     RelatedDataset each get exactly one unconditional PART_OF → Dataset relationship
+#     (lines 378, 415, 444, 314, 331, 346), so expected PART_OF = sum of their totals.
+#   - INPUT_FOR relationships are created per JSON "links" entry (line 465), so the
+#     expected count is derived from the links-based rel_counts computed by audit_json().
+_PART_OF_NODE_TYPES = [
+    "Sample", "DigitalDataset", "AnalysisDataset",
+    "RelatedPublication", "RelatedSoftware", "RelatedDataset",
+]
 
 
-def verify_neo4j(folder: Path) -> dict:
+def verify_neo4j(folder: Path, stats: dict[str, NodeStats]) -> dict:
     """
     Cross-check graph completeness and property correctness against live Neo4j.
+
+    `stats` is the dict returned by audit_json(folder) — used to derive expected
+    sub-node and relationship counts from the *current* metadata instead of stale
+    hardcoded values.
 
     Returns a dict with keys: missing, unexpected, mismatches, count_diffs, rel_diffs.
     """
     from neo4j import GraphDatabase
+
+    expected_counts = {
+        "Sample": stats["Sample"].total,
+        "DigitalDataset": stats["DigitalDataset"].total,
+        "AnalysisDataset": stats["AnalysisDataset"].total,
+        "RelatedPublication": stats["RelatedPublication"].total,
+    }
+    rel_counts = stats.get("_rel_counts", {})
+    expected_rel_part_of = sum(stats[label].total for label in _PART_OF_NODE_TYPES)
+    expected_rel_input_for = (
+        rel_counts.get("INPUT_FOR: Sample → DigitalDataset", 0)
+        + rel_counts.get("INPUT_FOR: DigitalDataset → AnalysisDataset", 0)
+    )
 
     uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     user = os.getenv("NEO4J_USER", "neo4j")
@@ -256,8 +281,10 @@ def verify_neo4j(folder: Path) -> dict:
         "missing": [],       # dataset numbers in JSON but not in Neo4j
         "unexpected": [],    # dataset numbers in Neo4j but not in JSON folder
         "mismatches": [],    # (dataset_number, field, json_val, neo4j_val)
-        "count_diffs": {},   # label → (expected, actual)
-        "rel_diffs": {},     # rel_type → (expected, actual)
+        "count_diffs": {},   # label → (expected, actual), only entries that differ
+        "rel_diffs": {},     # rel_type → (expected, actual), only entries that differ
+        "sub_node_counts": {},  # label → (expected, actual), all labels
+        "rel_counts_verify": {},  # rel_type → (expected, actual), both rel types
         "total_neo4j": 0,
         "total_json": 0,
     }
@@ -330,8 +357,9 @@ def verify_neo4j(folder: Path) -> dict:
 
     # --- Step 3: sub-node count check ---
     with driver.session() as session:
-        for label, expected in _EXPECTED_COUNTS.items():
+        for label, expected in expected_counts.items():
             actual = session.run(f"MATCH (n:{label}) RETURN count(n) AS c").single()["c"]
+            results["sub_node_counts"][label] = (expected, actual)
             if actual != expected:
                 results["count_diffs"][label] = (expected, actual)
 
@@ -339,10 +367,12 @@ def verify_neo4j(folder: Path) -> dict:
     with driver.session() as session:
         part_of = session.run("MATCH ()-[r:PART_OF]->() RETURN count(r) AS c").single()["c"]
         input_for = session.run("MATCH ()-[r:INPUT_FOR]->() RETURN count(r) AS c").single()["c"]
-        if part_of != _EXPECTED_REL_PART_OF:
-            results["rel_diffs"]["PART_OF"] = (_EXPECTED_REL_PART_OF, part_of)
-        if input_for != _EXPECTED_REL_INPUT_FOR:
-            results["rel_diffs"]["INPUT_FOR"] = (_EXPECTED_REL_INPUT_FOR, input_for)
+        results["rel_counts_verify"]["PART_OF"] = (expected_rel_part_of, part_of)
+        results["rel_counts_verify"]["INPUT_FOR"] = (expected_rel_input_for, input_for)
+        if part_of != expected_rel_part_of:
+            results["rel_diffs"]["PART_OF"] = (expected_rel_part_of, part_of)
+        if input_for != expected_rel_input_for:
+            results["rel_diffs"]["INPUT_FOR"] = (expected_rel_input_for, input_for)
 
     driver.close()
     return results
@@ -373,20 +403,18 @@ def print_verify_results(v: dict):
         print("  ✓ No property mismatches (title, doi, description, authors, publicationDate)")
 
     print(f"\n  Sub-node counts:")
-    for label, expected in _EXPECTED_COUNTS.items():
+    for label, (expected, actual) in v["sub_node_counts"].items():
         if label in v["count_diffs"]:
-            exp, act = v["count_diffs"][label]
-            print(f"    ✗ {label:<20} expected {exp}, got {act}")
+            print(f"    ✗ {label:<20} expected {expected}, got {actual}")
         else:
-            print(f"    ✓ {label:<20} {expected}")
+            print(f"    ✓ {label:<20} {actual}")
 
     print(f"\n  Relationship counts:")
-    for rel, expected in [("PART_OF", _EXPECTED_REL_PART_OF), ("INPUT_FOR", _EXPECTED_REL_INPUT_FOR)]:
+    for rel, (expected, actual) in v["rel_counts_verify"].items():
         if rel in v["rel_diffs"]:
-            exp, act = v["rel_diffs"][rel]
-            print(f"    ✗ {rel:<12} expected {exp}, got {act}")
+            print(f"    ✗ {rel:<12} expected {expected}, got {actual}")
         else:
-            print(f"    ✓ {rel:<12} {expected}")
+            print(f"    ✓ {rel:<12} {actual}")
 
 
 # ---------------------------------------------------------------------------
@@ -815,7 +843,7 @@ def main():
     if args.verify:
         print("\nVerifying graph against JSON files...")
         try:
-            v = verify_neo4j(folder)
+            v = verify_neo4j(folder, stats)
             print_verify_results(v)
         except Exception as e:
             print(f"  WARN: Neo4j verification failed — {e}")
