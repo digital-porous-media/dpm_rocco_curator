@@ -161,22 +161,24 @@ def audit_json(folder: Path) -> dict[str, NodeStats]:
             elif dtype == "analysis_data":
                 stats["AnalysisDataset"].record(node["value"], ENUM_FIELDS["AnalysisDataset"])
 
-        # Relationship types
-        root_id_pattern = re.compile(r"NODE_ROOT")
+        # Relationship types. Mirrors scripts/load_graph.py's _establish_connection,
+        # which decides PART_OF vs INPUT_FOR purely on `source == root_id` — not on
+        # node-type pattern matching — so classify links the same way here or the
+        # sub-type buckets below undercount and "other" links get mis-bucketed.
         sample_pattern = re.compile(r"drp\.project\.sample")
         digital_pattern = re.compile(r"drp\.project\.digital_dataset")
         analysis_pattern = re.compile(r"drp\.project\.analysis_dataset")
 
         for link in links:
             src, tgt = link.get("source", ""), link.get("target", "")
-            if "NODE_ROOT" in src or src.startswith("NODE_ROOT+"):
+            if "NODE_ROOT" in src:
                 rel_counts["PART_OF: * → Dataset"] += 1
             elif sample_pattern.search(src) and digital_pattern.search(tgt):
                 rel_counts["INPUT_FOR: Sample → DigitalDataset"] += 1
             elif digital_pattern.search(src) and analysis_pattern.search(tgt):
                 rel_counts["INPUT_FOR: DigitalDataset → AnalysisDataset"] += 1
             else:
-                rel_counts["PART_OF (other)"] += 1
+                rel_counts["INPUT_FOR (other)"] += 1
 
     stats["_rel_counts"] = rel_counts  # type: ignore
     return stats
@@ -204,17 +206,47 @@ def audit_neo4j() -> dict[str, dict[str, float]]:
         ("Dataset", "doi", "doi"), ("Dataset", "authors", "authors"),
         ("Dataset", "license", "license"), ("Dataset", "publicationDate", "publicationDate"),
         ("Dataset", "descriptionEmbedding", "descriptionEmbedding"),
-        ("Sample", "porousMediaType", "porousMediaType"), ("Sample", "porosity", "porosity"),
-        ("Sample", "source", "source"),
+
+        ("Sample", "name", "title"), ("Sample", "porousMediaType", "porousMediaType"),
+        ("Sample", "porosity", "porosity"), ("Sample", "source", "source"),
+        ("Sample", "geographicalLocation", "location"),
         ("Sample", "geographicOrigin", "geographicOrigin"), ("Sample", "grainSizeAvg", "grainSizeAvg"),
-        ("DigitalDataset", "voxelDimensions", "voxelDimensions"),
+        ("Sample", "grainSizeMin", "grainSizeMin"), ("Sample", "grainSizeMax", "grainSizeMax"),
+        ("Sample", "grainSizeUnits", "grainSizeUnits"), ("Sample", "collectionMethod", "collectionMethod"),
+        ("Sample", "onshoreOffshore", "onshoreOffshore"), ("Sample", "depth", "depth"),
+        ("Sample", "waterDepth", "waterDepth"), ("Sample", "procedure", "procedure"),
+        ("Sample", "equipment", "equipment"), ("Sample", "algorithmDescription", "algorithmDescription"),
+
+        # voxelX/Y/Z/voxelUnits are combined into one dd.voxelDimensions string by
+        # load_graph.py's _voxel_dim() — all four raw fields share the same coverage
+        # number since there's no way to check them individually once merged.
+        ("DigitalDataset", "voxelX", "voxelDimensions"), ("DigitalDataset", "voxelY", "voxelDimensions"),
+        ("DigitalDataset", "voxelZ", "voxelDimensions"), ("DigitalDataset", "voxelUnits", "voxelDimensions"),
         # load_graph.py stores JSON "isSegmented" under the Neo4j property "segmented"
         ("DigitalDataset", "isSegmented", "segmented"),
-        ("DigitalDataset", "imagingCenter", "imagingCenter"), ("DigitalDataset", "dimensionality", "dimensionality"),
-        ("AnalysisDataset", "type", "type"),
+        ("DigitalDataset", "imagingCenter", "imagingCenter"),
+        ("DigitalDataset", "imagingEquipmentAndModel", "imagingEquipmentAndModel"),
+        ("DigitalDataset", "imageFormat", "imageFormat"), ("DigitalDataset", "imageDimensions", "imageDimensions"),
+        ("DigitalDataset", "imageByteOrder", "imageByteOrder"), ("DigitalDataset", "dimensionality", "dimensionality"),
+        ("DigitalDataset", "description", "description"),
+
+        ("AnalysisDataset", "datasetType", "type"),
         ("AnalysisDataset", "isSegmented", "segmented"),
-        ("RelatedPublication", "title", "title"), ("RelatedPublication", "abstract", "abstract"),
-        ("RelatedSoftware", "title", "title"), ("RelatedDataset", "title", "title"),
+        ("AnalysisDataset", "description", "description"),
+
+        ("RelatedPublication", "publicationTitle", "title"),
+        ("RelatedPublication", "publicationAuthor", "authors"),
+        ("RelatedPublication", "publicationDescription", "abstract"),
+        ("RelatedPublication", "publicationLink", "link"),
+        ("RelatedPublication", "publicationDateOfPublication", "publicationDate"),
+
+        ("RelatedSoftware", "softwareTitle", "title"),
+        ("RelatedSoftware", "softwareDescription", "description"),
+        ("RelatedSoftware", "softwareLink", "link"),
+
+        ("RelatedDataset", "datasetTitle", "title"),
+        ("RelatedDataset", "datasetDescription", "description"),
+        ("RelatedDataset", "datasetLink", "link"),
     ]
 
     with driver.session() as session:
@@ -270,6 +302,7 @@ def verify_neo4j(folder: Path, stats: dict[str, NodeStats]) -> dict:
     expected_rel_input_for = (
         rel_counts.get("INPUT_FOR: Sample → DigitalDataset", 0)
         + rel_counts.get("INPUT_FOR: DigitalDataset → AnalysisDataset", 0)
+        + rel_counts.get("INPUT_FOR (other)", 0)
     )
 
     uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
