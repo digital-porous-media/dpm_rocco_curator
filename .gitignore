@@ -42,3 +42,9 @@ docs/_build/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local settings
+.claude/
+
+# Demo materials (local scratch, not shipped docs)
+rocco_demo.pptx
