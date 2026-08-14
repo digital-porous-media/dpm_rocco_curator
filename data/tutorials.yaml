@@ -1,0 +1,139 @@
+# Portal tutorials mapped to user goals.
+# Tutorials are maintained in the dpm_teach repo (https://github.com/digital-porous-media/dpm_teach) and mirrored to JupyterHub Community Data.
+#
+# access_instructions describes the navigation path (shared by all entries).
+# notebook: path relative to the Community Data root (mirrors dpm_teach repo layout).
+# keywords: terms a user might type when looking for this tutorial.
+# The tutorials are organized to guide users through common tasks and workflows when working with data from the DPM portal.
+
+access_instructions:
+  method: jupyterhub
+  steps:
+    - "Go to the 'Applications' tab on your DPM Portal Dashboard"
+    - "Select the 'Data Processing' menu"
+    - "Launch a JupyterHub instance"
+    - "Navigate to Community Data"
+    - "Open the notebook at the path listed in each entry"
+
+tutorials:
+
+  # --- Chapter 0: Introduction to Images ---
+
+  - goal: "Load and explore a dataset from the DPM portal"
+    notebook: "0_introduction_to_images/0-0_getting_started_with_data.ipynb"
+    keywords: [download, load, access, get started, data, portal, read]
+
+  - goal: "Work with 2D images"
+    notebook: "0_introduction_to_images/0-1_introduction_2D_images.ipynb"
+    keywords: [2D, slice, image, grayscale, visualization, array, RGB]
+
+  - goal: "Work with 3D volumetric images"
+    notebook: "0_introduction_to_images/0-2_introduction_3D_images.ipynb"
+    keywords: [3D, volume, volumetric, stack, tomography, voxel]
+
+  # --- Chapter 1: Grayscale Filtering ---
+
+  - goal: "Filter or denoise an image"
+    notebook: "1_grayscale_filtering/1-1_grayscale_image_filtering.ipynb"
+    keywords: [filter, denoise, smooth, noise, gaussian, median, preprocessing]
+
+  # --- Chapter 2: Segmentation ---
+
+  - goal: "Segment an image to separate different phases (e.g. pore space vs solid)"
+    notebook: "2_segmentation/2-1_segmentation.ipynb"
+    keywords: [segmentation, binarization, threshold, binary, pore space, solid, Otsu, watershed]
+
+  # --- Chapter 3: Morphological Characterization ---
+
+  - goal: "Apply morphological operations to a binary image"
+    notebook: "3_morphological_characterization/3-1_morphological_operations.ipynb"
+    keywords: [morphological, erosion, dilation, opening, closing]
+
+  - goal: "Characterize pore morphology with Minkowski functionals"
+    notebook: "3_morphological_characterization/3-2_minkowski_functionals.ipynb"
+    keywords: [Minkowski, porosity, compute porosity, measure porosity, calculate porosity, surface area, euler, morphology, characterization, metrics, curvature, topology, voxel count]
+
+  - goal: "Determine a representative elementary volume (REV)"
+    notebook: "3_morphological_characterization/3-3_competent_subset.ipynb"
+    keywords: [REV, representative elementary volume, competent subset, statistical, porespy]
+
+  - goal: "Classify or quantify spatial heterogeneity in an image"
+    notebook: "3_morphological_characterization/3-4_heterogeneity_classifier.ipynb"
+    keywords: [heterogeneity, spatial variability, classify, texture, homogeneous, porespy]
+
+  - goal: "Extract the pore skeleton ormedial axis"
+    notebook: "3_morphological_characterization/3-5_medial_axis.ipynb"
+    keywords: [medial axis, skeleton, centerline, pore, thinning, topology, scikit-image]
+
+  - goal: "Identify connected pore space and measure connectivity"
+    notebook: "3_morphological_characterization/3-6_connected_components.ipynb"
+    keywords: [connected, connectivity, percolation, pore network, labeling, clusters, porosity, effective porosity, connected pore space]
+
+  - goal: "Measure fluid-fluid interfacial areas"
+    notebook: "3_morphological_characterization/3-7_interface_area.ipynb"
+    keywords: [interface, multiphase, surface area, fluid-fluid, specific surface, porespy]
+
+  # --- Chapter 4: Surfaces and 3D Visualization ---
+
+  - goal: "Visualize 3D surfaces"
+    notebook: "4_surfaces_and_3d_visualization/4-1_surface_visualization.ipynb"
+    keywords: [3D, surface, visualization, mesh, rendering]
+
+  - goal: "Visualize a vector field such as a flow velocity field"
+    notebook: "4_surfaces_and_3d_visualization/4-2_vector_field_visualization.ipynb"
+    keywords: [vector field, velocity, flow, streamlines, arrows, pyvista, visualization]
+
+  # --- Chapter 5: Simulation ---
+
+  - goal: "Simulate morphological drainage and check image resolution"
+    notebook: "5_simulation/5-1_morphological_drainage.ipynb"
+    keywords: [drainage, capillary, invasion, morphological, non-wetting, simulation]
+
+  - goal: "Simulate single-phase flow with Lattice Boltzmann"
+    notebook: "5_simulation/5-2-1_lbm_d2q9_bgk.ipynb"
+    keywords: [LBM, lattice Boltzmann, single-phase, flow, permeability, BGK, simulation]
+
+  - goal: "Simulate two-phase immiscible flow with Lattice Boltzmann (Shan-Chen)"
+    notebook: "5_simulation/5-2-2_lbm_d2q9_scmp.ipynb"
+    keywords: [LBM, lattice Boltzmann, two-phase, multiphase, Shan-Chen, SCMP, D2Q9, immiscible]
+
+  - goal: "Simulate multi-component multi-phase flow with Lattice Boltzmann"
+    notebook: "5_simulation/5-2-3_lbm_d2q9_mcmp.ipynb"
+    keywords: [LBM, lattice Boltzmann, multi-component, MCMP, multiphase, D2Q9]
+
+  - goal: "Simulate 2D invasion percolation"
+    notebook: "5_simulation/invasion_percolation_example2d.ipynb"
+    keywords: [invasion percolation, capillary, drainage, 2D, pore-scale, non-wetting]
+
+  - goal: "Get started with OpenPNM for pore network modeling"
+    notebook: "5_simulation/openpnm_basic.ipynb"
+    keywords: [OpenPNM, pore network, model, simulation, library, basics]
+
+  - goal: "Extract a pore network from a segmented image"
+    notebook: "5_simulation/5-3-1_pnm_creation.ipynb"
+    keywords: [pore network, extraction, PNM, porespy, OpenPNM, skeleton, graph]
+
+  - goal: "Simulate single-phase flow on a pore network model"
+    notebook: "5_simulation/5-3-2_pnm_single_phase_simulation.ipynb"
+    keywords: [pore network, single-phase, flow, permeability, Stokes, OpenPNM]
+
+  - goal: "Simulate drainage on a pore network and compute a capillary pressure curve"
+    notebook: "5_simulation/5-3-2_pnm_drainage_simulation.ipynb"
+    keywords: [pore network, drainage, capillary pressure, Pc curve, relative permeability, OpenPNM]
+
+  # --- Chapter 6: Machine Learning ---
+  - goal: "Learn machine learning concepts applied to digital rock physics"
+    notebook: "6_machine_learning/6-1_machine_learning_concepts.ipynb"
+    keywords: [machine learning, ML, intro, concepts, supervised, classification, regression]
+
+  - goal: "Segment images using a U-Net deep learning model"
+    notebook: "6_machine_learning/6-2_U_Net_segmentation.ipynb"
+    keywords: [U-Net, deep learning, neural network, segmentation, PyTorch, CNN]
+
+  - goal: "Predict permeability from images with a convolutional neural network"
+    notebook: "6_machine_learning/6-3_permeability_prediction.ipynb"
+    keywords: [permeability, prediction, machine learning, regression, PyTorch, CNN]
+
+  - goal: "Apply a Fourier Neural Operator to physics simulation"
+    notebook: "6_machine_learning/6-4_fno.ipynb"
+    keywords: [FNO, Fourier Neural Operator, physics, simulation, deep learning, surrogate, PyTorch]

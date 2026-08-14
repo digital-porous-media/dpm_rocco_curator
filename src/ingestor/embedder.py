@@ -24,29 +24,39 @@ class BaseEmbedder(ABC):
 
 
 class DocumentEmbedder(BaseEmbedder):
-    """HuggingFace embeddings implementation"""
-    
+    """Embeddings wrapper for the curator RAG pipeline.
+
+    Accepts a pre-built LangChain ``Embeddings`` object via the ``embeddings``
+    parameter (injected by ``src.llm.embeddings.get_embeddings``). When omitted,
+    falls back to local ``HuggingFaceEmbeddings`` for backward compatibility.
+    """
+
     def __init__(
         self,
         model_name: str = "BAAI/bge-large-en-v1.5",
         model_kwargs: Optional[Dict[str, Any]] = None,
-        encode_kwargs: Optional[Dict[str, Any]] = None
+        encode_kwargs: Optional[Dict[str, Any]] = None,
+        embeddings: Optional[Embeddings] = None,
     ):
         """
         Args:
-            model_name: HuggingFace model ID for embeddings. Defaults to ``"BAAI/bge-large-en-v1.5"``.
-            model_kwargs: Passed to ``HuggingFaceEmbeddings`` (e.g., ``{"device": "cuda"}``). Defaults to CPU.
-            encode_kwargs: Passed to the encode call (e.g., ``{"normalize_embeddings": True}``).
+            model_name: HuggingFace model ID. Ignored when ``embeddings`` is provided.
+            model_kwargs: Passed to ``HuggingFaceEmbeddings``. Ignored when ``embeddings`` is provided.
+            encode_kwargs: Passed to the encode call. Ignored when ``embeddings`` is provided.
+            embeddings: Pre-built LangChain Embeddings object. When set, the HuggingFace
+                parameters above are ignored.
         """
-        self.model_name = model_name
-        self.model_kwargs = model_kwargs or {'device': 'cpu'}
-        self.encode_kwargs = encode_kwargs or {'normalize_embeddings': True}
-        
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=self.model_name,
-            model_kwargs=self.model_kwargs,
-            encode_kwargs=self.encode_kwargs
-        )
+        if embeddings is not None:
+            self.embeddings = embeddings
+        else:
+            self.model_name = model_name
+            self.model_kwargs = model_kwargs or {'device': 'cpu'}
+            self.encode_kwargs = encode_kwargs or {'normalize_embeddings': True}
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=self.model_name,
+                model_kwargs=self.model_kwargs,
+                encode_kwargs=self.encode_kwargs,
+            )
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Embed a list of document strings and return their dense vectors."""

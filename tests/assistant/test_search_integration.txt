@@ -1,0 +1,131 @@
+# Search Integration Smoke Tests — 10 Canonical Domain Queries
+#
+# Format per query:
+#   QUERY:    the natural-language string to pass to the assistant
+#   TYPE:     intent category (semantic_search | metadata_filter | hybrid)
+#   EXPECTED: top-3 DRP IDs in ranked order (domain expert guess)
+#   NOTES:    what to check in the results
+#
+# These queries require a live Neo4j instance with the `datasetEmbedding`
+# and `componentEmbedding` indexes built. Run build_dataset_vector_index.py
+# first. Tests are pass/fail judged by Bernie; there is no automated oracle.
+#
+# After JRS runs these queries, Bernie reviews the returned ranked lists and
+# notes: (a) correct datasets appearing in top-3, (b) datasets that should
+# rank higher, (c) surprising inclusions or omissions.
+
+# ---------------------------------------------------------------------------
+# Q1 — Semantic, well-known sandstone reference
+# ---------------------------------------------------------------------------
+QUERY:    Bentheimer sandstone micro-CT
+TYPE:     semantic_search
+EXPECTED: DRP-11, DRP-175, DRP-372
+NOTES:    DRP-11 is THE Bentheimer Sandstone dataset; should rank #1.
+          DRP-175 has 3D velocity fields in a similar sandstone.
+          If DRP-372 appears it is a reasonable benchmark hit.
+
+# ---------------------------------------------------------------------------
+# Q2 — Semantic, carbonate heterogeneity
+# ---------------------------------------------------------------------------
+QUERY:    heterogeneous carbonate pore structure
+TYPE:     semantic_search
+EXPECTED: DRP-118, DRP-247, DRP-88
+NOTES:    DRP-118 (Tight Carbonate) should rank highly.
+          DRP-247 (Heterogeneous Mt. Simon Sandstone) is a borderline hit —
+          it is sandstone, but described as heterogeneous and multi-region.
+          Flag if a strongly homogeneous sandstone outranks DRP-118.
+
+# ---------------------------------------------------------------------------
+# Q3 — Semantic, CO2 sequestration / residual trapping
+# ---------------------------------------------------------------------------
+QUERY:    CO2 trapping in porous rock
+TYPE:     semantic_search
+EXPECTED: DRP-228, DRP-352, DRP-219
+NOTES:    DRP-228 (Residual CO2 trapping in oil-wet sandstone) should be
+          the top hit. DRP-352 (CO2-induced dissolution in bead pack) and
+          DRP-219 (4D acid leaching) are thematically adjacent.
+          Check that the system does NOT hallucinate a dataset ID for
+          "CO2 sequestration in basalt" — there is no such entry.
+
+# ---------------------------------------------------------------------------
+# Q4 — Metadata filter, porosity threshold
+# ---------------------------------------------------------------------------
+QUERY:    datasets with porosity greater than 0.25
+TYPE:     metadata_filter
+EXPECTED: DRP-1, DRP-11, DRP-175   (bead packs and high-phi sandstones)
+NOTES:    This requires a Cypher property filter on the `porosity` field.
+          Check that only datasets with a confirmed porosity value ≥ 0.25
+          are returned — NOT datasets with null porosity that the model
+          confabulates. If porosity is 0% non-null in the graph (confirmed
+          by audit_schema.py), the system should return an honest "no data"
+          response rather than ranked guesses.
+
+# ---------------------------------------------------------------------------
+# Q5 — Metadata filter, rock type enum
+# ---------------------------------------------------------------------------
+QUERY:    show me all sandstone datasets
+TYPE:     metadata_filter
+EXPECTED: DRP-1, DRP-11, DRP-175, DRP-372, DRP-247  (among others)
+NOTES:    Rock type is an enum field. Check that the filter uses exact match
+          on "sandstone" (or case-insensitive variant) and returns ≥ 5 hits.
+          Carbonates and granites should NOT appear in results.
+
+# ---------------------------------------------------------------------------
+# Q6 — Hybrid, simulation-ready image + rock type
+# ---------------------------------------------------------------------------
+QUERY:    carbonate images suitable for LBM permeability simulation
+TYPE:     hybrid
+EXPECTED: DRP-10, DRP-118, DRP-88
+NOTES:    DRP-10 (Estaillades Carbonate) is a primary LBM reference.
+          This query combines rock type (carbonate) + use-case (LBM-ready).
+          A pure semantic search may not surface DRP-10 if its description
+          doesn't mention "LBM" explicitly — check if hybrid beats semantic.
+
+# ---------------------------------------------------------------------------
+# Q7 — Hybrid, multiphase + wettability
+# ---------------------------------------------------------------------------
+QUERY:    in-situ wettability measurements in sandstone during drainage
+TYPE:     hybrid
+EXPECTED: DRP-305, DRP-159, DRP-125
+NOTES:    DRP-305 (Mt. Simon Sandstone — spatial wettability heterogeneity)
+          and DRP-159 (scCO2-brine contact angles in Berea and Mt. Simon)
+          are the primary wettability datasets. DRP-125 is a methodological
+          reference for in-situ contact angle in carbonates.
+          If DRP-228 (CO2 trapping) ranks above DRP-159, that indicates the
+          vector search is overweighting CO2 association vs. wettability.
+
+# ---------------------------------------------------------------------------
+# Q8 — Sparse / negative — expected few results
+# ---------------------------------------------------------------------------
+QUERY:    shale fracture under triaxial stress
+TYPE:     hybrid
+EXPECTED: DRP-205, DRP-473  (only 2 expected; thin coverage in DRP)
+NOTES:    DRP-205 (Mancos shale pre/post-triaxial fracture) is the primary
+          hit. DRP-473 (Fractured Eagle Ford Shale) is secondary.
+          The system should NOT fabricate additional hits. If >4 datasets
+          are returned, check whether they are genuinely fracture/shale
+          datasets or whether the semantic search is over-retrieving.
+
+# ---------------------------------------------------------------------------
+# Q9 — Semantic, diffusion / geochemistry
+# ---------------------------------------------------------------------------
+QUERY:    effective diffusivity in tight rock
+TYPE:     semantic_search
+EXPECTED: DRP-462, DRP-359, DRP-118
+NOTES:    DRP-462 and DRP-359 are the primary diffusion-related datasets
+          (referenced in the `diffusion` workflow). DRP-118 (Tight Carbonate)
+          is relevant because "tight" + diffusion-limited transport is the
+          use case. Rank is uncertain — flag if DRP-462 does not appear
+          in top 5.
+
+# ---------------------------------------------------------------------------
+# Q10 — Multi-property semantic, fracture + flow
+# ---------------------------------------------------------------------------
+QUERY:    Inada granite single fracture permeability
+TYPE:     semantic_search
+EXPECTED: DRP-273, DRP-198, DRP-205
+NOTES:    DRP-273 (Inada granite single tensile fracture) should be rank #1
+          — it is explicitly named. This is a precision test: a near-exact
+          match should surface the correct dataset. If DRP-273 is not in
+          top-3, the embedding quality or indexing for fracture datasets
+          is poor and needs investigation.

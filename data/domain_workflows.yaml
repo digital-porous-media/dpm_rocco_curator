@@ -1,0 +1,1563 @@
+# Digital Rock Physics (DRP) workflows.
+#
+# Canonical workflow definitions that the assistant uses to answer "how do I..."
+# style questions and to ground workflow_guidance / educational responses.
+#
+# Schema (per entry):
+#   id:               kebab-case identifier (used by tools as a stable key)
+#   name:             human-readable workflow title
+#   keywords:         intent-matching terms — what users will say to invoke this
+#   description:      1–3 sentences on the goal and where it fits in the DRP pipeline
+#   prerequisites:    workflow ids this depends on (run first), or "none"
+#   inputs:           list of required input data/parameters
+#   outputs:          list of produced artifacts
+#   steps:            ordered, ~5–8 method-level steps (not button clicks)
+#   software:         tools commonly used; portal-featured tools listed first
+#   example_datasets: 2–4 DRP-### IDs from the portal that exemplify this workflow
+#   best_practices:   non-obvious gotchas and quality checks
+#   references:       1–2 foundational papers with DOIs
+#   decision_points:  (optional) key branching choices — one per major fork in the workflow
+#     - question:     "Which path should I take?"
+#       branches:
+#         "Condition A": "Recommended approach, or cross-link to [[workflow-id]]"
+#         "Condition B": "Alternative approach"
+#
+# Design notes:
+#   - Workflows are **method-focused, not tool-specific**. Tools are named, but the steps
+#     describe the method so users can substitute equivalent software.
+#   - Portal-featured tools are listed before third-party commercial tools (Avizo, Dragonfly, GeoDict).
+#   - "example_datasets" must be real DRP-### IDs that have been verified
+#     against data/metadata/. If a workflow has no representative dataset
+#     on the portal, leave the list empty rather than fabricate one.
+#   - Keep the steps short — the LLM expands them with context.
+
+version: "1.0.0"
+
+# ---------------------------------------------------------------------------
+# General best practices that apply across all DRP workflows.
+# The assistant should surface relevant items when synthesizing guidance.
+# ---------------------------------------------------------------------------
+global_best_practices:
+  representativeness:
+    - "Choose a Representative Elementary Volume (REV) larger than ~10× the
+      mean grain or pore diameter before computing transport properties."
+    - "Verify REV convergence by computing the target property on
+      progressively larger sub-volumes; the curve should plateau."
+  resolution:
+    - "Voxel size should resolve the smallest flow-controlling feature with
+      ≥4–5 voxels across its narrowest dimension. Sub-resolution porosity
+      requires multi-scale or dual-porosity treatment."
+    - "Report voxel size, image dimensions, and physical sample size with
+      every derived property. Without these, results are not reproducible."
+  segmentation_uncertainty:
+    - "Segmentation choices can shift computed transport properties by an order of
+      magnitude. Report the segmentation method, threshold(s), and any
+      manual corrections."
+    - "When in doubt, compute properties under multiple reasonable segmentations
+      and report the range, not a single value."
+  boundary_conditions:
+    - "Pad simulation domains with buffer voxels (open or mirrored) to
+      avoid inlet/outlet artifacts. Apply pressure or velocity BCs only
+      to the buffer, never directly to the rock face."
+  reproducibility:
+    - "Publish: raw + filtered + segmented images, segmentation parameters,
+      simulation code/config, and derived properties. Segmented-only
+      deposits cannot be reanalyzed if the segmentation is later questioned."
+  connectivity:
+    - "Always verify pore-space percolation (end-to-end connectivity) before
+      running any transport simulation. A non-percolating domain returns zero
+      flux regardless of solver settings — that is a geometry issue, not a
+      solver failure. See [[connected-component-analysis]]."
+    - "Report effective porosity (connected pore volume) alongside total
+      porosity. For tight carbonates and shales the two can differ by
+      10–30%, and only the connected fraction drives transport."
+
+# ---------------------------------------------------------------------------
+workflows:
+
+  - id: microct-acquisition
+    name: "Micro-CT Acquisition and Reconstruction"
+    keywords: [micro-CT, microCT, X-ray tomography, scanning, reconstruction,
+               imaging, acquisition, projections, sinogram]
+    description: >
+      Produce a 3D grayscale volume of a rock sample from X-ray projections.
+      This is the entry point of nearly every DRP pipeline; downstream
+      property estimates inherit any acquisition artifacts.
+    prerequisites: none
+    inputs:
+      - "Cylindrical or cubic rock plug (typical: 2-25 mm diameter)"
+      - "Source/detector geometry and target voxel size"
+      - "Beam energy (kV) and filter material"
+    outputs:
+      - "Reconstructed 3D grayscale volume (16-bit TIFF stack or RAW)"
+      - "Scan metadata: voxel size, energy, projections, exposure"
+    steps:
+      - "Mount and align the sample; choose magnification so the sample
+        fills the detector field of view without truncation."
+      - "Tune beam energy and filtration to maximize contrast between phases
+        of interest while minimizing beam hardening."
+      - "Acquire 1000-3600 projections over 180° or 360° with appropriate
+        exposure for adequate signal-to-noise."
+      - "Apply flat-field and dark-field corrections to projections."
+      - "Reconstruct using filtered back-projection or iterative
+        methods (SIRT, SART) for sparse-view or low-dose scans."
+      - "Inspect for ring artifacts, motion blur, and beam hardening
+        before exporting."
+    software:
+      - "Beamline pipelines (TomoPy, ASTRA Toolbox)"
+      - "Vendor reconstruction software (Zeiss, Bruker, Nikon)"
+      - "Avizo, Dragonfly (commercial preprocessing)"
+    example_datasets:
+      - "DRP-10: Estaillades Carbonate — standard micro-CT plug scan"
+      - "DRP-134: Gildehauser Sandstone — fast synchrotron acquisition"
+      - "DRP-102: Dual-energy medical CT in carbonate rocks"
+    best_practices:
+      - "Record voxel size from the reconstruction header — do not infer
+        from nominal magnification, which ignores binning."
+      - "Synchrotron data should report ring location and detector pixel
+        size separately; binning is often applied post-reconstruction."
+      - "Save the raw projections, not just the reconstruction — different
+        reconstruction algorithms yield different segmentations downstream."
+    decision_points:
+      - question: "What angular range should be acquired?"
+        branches:
+          "Standard porous rock plug, no metallic components": "180° is sufficient and halves scan time"
+          "High-attenuation sample, metallic end-caps, or asymmetric ring artifacts": "360° reduces half-angle artifacts and improves ring symmetry"
+    references:
+      - "Wildenschild & Sheppard (2013), Advances in Water Resources,
+        10.1016/j.advwatres.2012.07.018"
+      - "Cnudde & Boone (2013), Earth-Science Reviews,
+        10.1016/j.earscirev.2013.04.003"
+
+  - id: image-filtering
+    name: "Image Filtering and Artifact Correction"
+    keywords: [denoising, filter, ring artifact, beam hardening, non-local
+               means, anisotropic diffusion, preprocessing, noise]
+    description: >
+      Suppress acquisition noise and correct systematic artifacts (rings,
+      beam hardening, streaks) before segmentation. Critical because most
+      segmentation algorithms amplify noise into spurious phase boundaries.
+    prerequisites: [microct-acquisition]
+    inputs:
+      - "Reconstructed grayscale volume"
+      - "Estimate of noise level (e.g., from air region)"
+      - "Scan metadata (voxel size, X-ray energy, exposure time) — affects noise characteristics"
+    outputs:
+      - "Filtered grayscale volume preserving phase boundaries"
+      - "Filter parameters and version logged for reproducibility"
+    steps:
+      - "Crop to the region of interest; remove the sample holder and air."
+      - "Identify dominant artifact type: ring (concentric circles),
+        beam-hardening (radial cupping), or streak (high-density inclusion)."
+      - "Apply targeted correction first (e.g., ring removal in sinogram or
+        post-reconstruction polar-coordinate filtering)."
+      - "Apply edge-preserving denoising — non-local means (NLM) or
+        anisotropic diffusion preserve phase boundaries better than Gaussian."
+      - "Compare line profiles across phase boundaries before and after
+        filtering; the boundary width should not change appreciably."
+      - "Quantify filtering effectiveness: measure SNR improvement and verify edge preservation via gradient analysis."
+      - "For multi-phase samples, consider phase-specific adaptive filtering to avoid blurring weak boundaries."
+    software:
+      - "scikit-image, OpenCV, scipy.ndimage, SimpleITK, ITK (open-source)"
+      - "ImageJ/Fiji, Paraview (open-source with GUI)"
+      - "Avizo, Dragonfly (commercial GUI workflows)"
+    example_datasets:
+      - "DRP-125: includes raw, filtered, and segmented variants — useful
+        for side-by-side filter comparison"
+      - "DRP-137: downscaling-based preprocessing for unresolved features"
+    best_practices:
+      - "Always save the filtered volume alongside the raw — do not
+        overwrite. Segmentation downstream needs both for QC."
+      - "Test filter parameters on a representative 2D slice or small 3D subvolume before
+        processing the full dataset."
+      - "Avoid Gaussian blur on micro-CT; it blurs phase boundaries and
+        biases porosity estimates upward. Median filters help preserve phase boundaries."
+      - "Document whether filtering was 2D (slice-wise) or 3D; the choice affects downstream isotropy of pore networks."
+      - "For ring artifacts, prefer sinogram-domain correction over
+        post-reconstruction polar filters — the latter can introduce
+        circular smearing into pore structure."
+    decision_points:
+      - question: "What is the dominant artifact or noise type?"
+        branches:
+          "Ring artifacts (concentric circles in the reconstructed volume)": "Correct in the sinogram domain before reconstruction; post-reconstruction polar-coordinate filters are a fallback but can smear pore structure"
+          "Beam hardening (radial cupping — dark center, bright edges)": "Apply polynomial beam hardening correction in the reconstruction software, or use dual-energy acquisition; this is structural, not solvable by denoising"
+          "Acquisition noise (random pixel noise with no structural pattern)": "Edge-preserving denoising: non-local means for heterogeneous texture, anisotropic diffusion for smoother mineral phases — avoid Gaussian, which blurs boundaries"
+          "Fresnel fringes (synchrotron bright/dark halos at phase boundaries)": "Apply phase retrieval (e.g., Paganin algorithm) before or during reconstruction; do not apply conventional denoising — fringes are structural, not noise"
+    references:
+      - "Sheppard et al. (2004), Water Resources Research,
+        10.1016/j.physa.2004.03.057"
+      - "Kaestner et al. (2008), Water Resources Research,
+        10.1016/j.advwatres.2008.01.022"
+
+  - id: image-segmentation
+    name: "Image Segmentation (Classical)"
+    keywords: [segmentation, threshold, binarize, Otsu, watershed,
+               indicator kriging, phase identification]
+    description: >
+      Convert a grayscale volume into a labeled (binary or multi-phase)
+      volume where each voxel is assigned to a phase (e.g., pore, grain, minerals, fluid phases).
+      Segmentation choices drive most downstream uncertainty.
+    prerequisites: [image-filtering]
+    inputs:
+      - "Filtered grayscale volume"
+      - "Number of phases to identify (binary: pore/solid; multi-phase: by
+        mineral)"
+    outputs:
+      - "Labeled volume (uint8 or uint16)"
+      - "Segmentation parameters and method documented"
+    steps:
+      - "Plot the grayscale histogram; identify modes corresponding to
+        each phase."
+      - "For bimodal histograms, apply Otsu or a manually chosen threshold;
+        for trimodal/multi-phase, use multi-Otsu or indicator kriging."
+      - "For poorly separated phases, use watershed seeded from histogram
+        peaks, or converging-active-contours."
+      - "Apply morphological cleanup (remove islands smaller than a few
+        voxels; fill small holes) — but log each operation as it can bias
+        connectivity."
+      - "Verify total porosity against an independent measurement (helium
+        porosimetry, MICP) where available."
+    software:
+      - "DPM Tools, scikit-image, SimpleITK"
+      - "Avizo, Dragonfly (commercial)"
+      - "Fiji/ImageJ plugins (Trainable Weka, MorphoLibJ)"
+    example_datasets:
+      - "DRP-1: Bead Pack Crystal — clean bimodal histogram, ideal teaching
+        example"
+      - "DRP-118: Tight Carbonate — challenging case with sub-resolution
+        porosity"
+      - "DRP-125: includes pre-segmented variants for benchmarking"
+    best_practices:
+      - "Downstream properties should be reported from
+        a sensitivity range across reasonable threshold choices."
+      - "If two phases share a histogram peak, classical thresholding will
+        fail."
+      - "Watershed over-segments — always merge basins by intensity
+        difference or seed manually for grain-by-grain analysis."
+    decision_points:
+      - question: "Is the grayscale histogram bimodal or multimodal?"
+        branches:
+          "Bimodal (two clear peaks)": "Otsu or manual threshold is sufficient"
+          "Multimodal / overlapping peaks": "Use multi-Otsu, indicator kriging, or [[ml-segmentation]]"
+          "Histogram peak that cannot be cleanly split into resolved micro-pores and solid (e.g., clay-filled sandstone, tight carbonate)": "Assign as 'microporous solid' label; estimate micro-porosity fraction via [[multiscale-registration]] or literature values for the mineral"
+    references:
+      - "Schlüter et al. (2014), Water Resources Research,
+        10.1002/2014WR015256"
+      - "Iassonov et al. (2009), Water Resources Research,
+        10.1029/2009WR008087"
+
+  - id: ml-segmentation
+    name: "ML / Deep-Learning Segmentation"
+    keywords: [machine learning, deep learning, U-Net, CNN, neural network,
+               trainable segmentation, semantic segmentation]
+    description: >
+      Use a trained classifier (random forest on hand-crafted features, or
+      a CNN/U-Net) to label voxels when classical thresholding fails —
+      heterogeneous lithology, weak contrast, or sub-resolution porosity.
+    prerequisites: [image-filtering]
+    inputs:
+      - "Filtered grayscale volume"
+      - "Labeled training patches (a few hand-segmented slices or a
+        pretrained model from a similar rock type)"
+    outputs:
+      - "Labeled volume with per-voxel class probabilities"
+      - "Trained model checkpoint (for reuse on similar rock types)"
+    steps:
+      - "Curate training data: hand-segment 3-10 representative 2D slices
+        covering the lithological variation in the volume."
+      - "For random-forest workflows, extract local features (gradients,
+        Laplacian, Gabor, multi-scale intensity) per voxel."
+      - "For CNN/U-Net, choose a 2D or 2.5D architecture appropriate to GPU
+        memory; train with augmentation (rotation, flip, intensity jitter)."
+      - "Apply the trained model in tiled fashion across the full volume
+        with overlap to avoid boundary artifacts."
+      - "Post-process with a connected-component filter and compare derived
+        porosity against an independent measurement."
+    software:
+      - "scikit-learn"
+      - "Fiji Trainable Weka Segmentation"
+      - "MONAI, PyTorch, TensorFlow"
+      - "Dragonfly Deep Learning module (commercial)"
+    example_datasets:
+      - "DRP-137: downscaling-based segmentation for highly heterogeneous
+        granular samples — ML reference case"
+      - "DRP-133: DRP Visualization Challenge — community ML benchmarks"
+    best_practices:
+      - "Always hold out a labeled slice for blind validation. Reporting
+        only training accuracy is meaningless."
+      - "Models trained on one rock type rarely transfer to a different
+        lithology without fine-tuning — do not assume a Berea-trained model
+        works on carbonates."
+      - "If only a small training set is available, prefer random forest
+        over deep learning."
+    decision_points:
+      - question: "How much labeled training data is available?"
+        branches:
+          "Few hand-segmented slices (< O(10k) labeled voxels per class)": "Prefer random forest on hand-crafted features — CNNs will overfit"
+          "Large labeled set": "CNN / U-Net with augmentation; 2D or 2.5D architecture"
+    references:
+      - "Karimpouli & Tahmasebi (2019), Computers & Geosciences,
+        10.1016/j.cageo.2019.02.003"
+      - "Wang et al. (2021), Applied Soft Computing,
+        10.1016/j.asoc.2021.107185"
+
+  - id: microstructure-characterization
+    name: "Porosity and Microstructural Characterization"
+    keywords: [porosity, specific surface area, grain size, pore size
+               distribution, chord length, tortuosity, two-point correlation]
+    description: >
+      Extract scalar and distributional descriptors from a segmented
+      volume: porosity, specific surface area, pore- and grain-size
+      distributions, tortuosity, and Minkowski functionals. These feed
+      both reduced-order models and downstream simulations.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented (labeled) volume"
+      - "Voxel size in physical units"
+    outputs:
+      - "Total and effective porosity"
+      - "Pore-size and grain-size distributions"
+      - "Specific surface area, tortuosity, two-point correlation function"
+    steps:
+      - "Compute total porosity = voxel count(pore) / voxel count(total)."
+      - "Identify connected pore space; effective porosity = connected
+        pore voxels / total."
+      - "Apply a distance transform; pore-size distribution from local
+        thickness or maximal inscribed spheres."
+      - "Estimate specific surface area via marching cubes or covariance
+        functions."
+      - "Compute geometric tortuosity from pore-space skeletonization; for
+        transport-relevant diffusive tortuosity see [[tracer-diffusion]]."
+    software:
+      - "DPM Tools (portal-featured), PoreSpy"
+      - "scikit-image"
+      - "FIJI/ImageJ"
+      - "Avizo, GeoDict, Dragonfly (commercial)"
+    example_datasets:
+      - "DRP-1: Bead Pack — analytical benchmark for sphere packings"
+      - "DRP-11: Bentheimer Sandstone — well-studied reference"
+      - "DRP-247: Heterogeneous Mt. Simon Sandstone — multi-region
+        characterization case"
+      - "DRP-372: Benchmark dataset with geometric characterizations"
+    best_practices:
+      - "Distinguish total porosity (all pore voxels) from effective
+        porosity (connected to inlet and outlet). Reservoir-relevant flow
+        depends on the latter."
+      - "Surface area from voxelized images is biased high due to staircase
+        artifacts. Apply Gauss smoothing of the interface or use marching
+        cubes for absolute values."
+      - "Always report whether the analysis used the full volume or a
+        sub-REV, and how the REV was determined. To determine the REV,
+        compute target properties on sub-volumes of increasing linear size
+        until the curve plateaus — see global representativeness best practices."
+    decision_points:
+      - question: "Is effective porosity (connected pore fraction) significantly
+          less than total porosity?"
+        branches:
+          "Yes (effective << total, large isolated-pore fraction)": "A
+            significant disconnected pore fraction is present. Run
+            [[connected-component-analysis]] to quantify isolated clusters
+            before any transport simulation — flow solvers on non-percolating
+            domains return zero flux."
+          "No (effective ≈ total)": "Pore space is well-connected; proceed
+            directly to transport property estimation
+            ([[lbm-single-phase]], [[dns-permeability]], etc.)."
+    references:
+      - "Gostick et al. (2019), Journal of Open Source Software (PoreSpy),
+        10.21105/joss.01296"
+      - "Torquato (2002), Random Heterogeneous Materials, Springer
+        (foundational reference)"
+
+  - id: pore-network-extraction
+    name: "Pore Network Extraction"
+    keywords: [pore network, PNM, network extraction, SNOW, maximal ball,
+               throats, pore bodies, skeleton]
+    description: >
+      Reduce a segmented voxel volume to a graph of pore bodies (nodes)
+      connected by throats (edges), each with a characteristic size and
+      shape. Enables fast quasi-static transport simulations at the cost
+      of geometric simplification.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume (pore vs. solid)"
+      - "Voxel size in physical units"
+    outputs:
+      - "Pore network: list of pores (radius, volume, location) and
+        throats (radius, length, conductance)"
+    steps:
+      - "Choose an extraction algorithm: maximal-ball (Dong & Blunt),
+        SNOW, or medial-axis."
+      - "Compute the Euclidean distance transform of the pore space."
+      - "Identify local maxima as pore-body centers; partition the pore
+        space (watershed) to assign each pore voxel to a body."
+      - "Identify throats at watershed basin interfaces; compute throat
+        radius from the constriction's inscribed sphere."
+      - "Compute conductances per throat (Hagen-Poiseuille with shape
+        factor for non-circular cross-sections)."
+      - "Validate by recovering the original porosity from network volumes
+        and comparing single-phase permeability to a direct simulation."
+    software:
+      - "PoreSpy SNOW + OpenPNM (portal-featured)"
+      - "PNflow (Imperial College extractor)"
+      - "pnextract"
+    example_datasets:
+      - "DRP-167: Ketton multi-phase tomograms — common PNM benchmark"
+      - "DRP-196: Paluxy Sandstone"
+      - "DRP-207: PNM extraction benchmark dataset"
+    best_practices:
+      - "Network properties (number of pores, mean coordination) depend
+        heavily on the extraction algorithm. Compare two extractors before
+        trusting absolute throat counts."
+      - "Maximal-ball extractors over-merge in vuggy carbonates; SNOW
+        handles complex pore shapes better but creates more small pores."
+      - "Always verify extracted permeability against a direct simulation
+        ([[lbm-single-phase]] or [[dns-permeability]]) on the same volume."
+    decision_points:
+      - question: "What is the pore geometry of the rock?"
+        branches:
+          "Complex / vuggy carbonates": "SNOW handles irregular pore shapes better; maximal-ball over-merges in vuggy pores"
+          "Granular / sandstone": "Either algorithm works; maximal-ball is faster on regular sphere-like pores"
+    references:
+      - "Dong & Blunt (2009), Physical Review E,
+        10.1103/PhysRevE.80.036307"
+      - "Gostick (2017), Physical Review E (SNOW),
+        10.1103/PhysRevE.96.023307"
+
+  - id: lbm-single-phase
+    name: "Single-Phase Permeability via Lattice Boltzmann (LBM)"
+    keywords: [LBM, lattice Boltzmann, permeability, absolute permeability,
+               single-phase, Darcy, MPLBM, palabos]
+    description: >
+      Compute absolute permeability by simulating Stokes flow on the
+      segmented voxel grid via LBM. Boundary-fitted to voxel geometry,
+      embarrassingly parallel, and the standard for digital
+      permeability in heterogeneous rocks.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume"
+      - "Fluid viscosity and applied pressure (or body force)"
+      - "Domain dimensions; buffer slabs at inlet and outlet"
+    outputs:
+      - "Absolute permeability tensor (kx, ky, kz)"
+      - "Steady-state velocity field"
+    steps:
+      - "Pad the segmented volume with buffer slabs at inlet and outlet."
+      - "Choose an LBM model (BGK, MRT, or TRT — TRT recommended for
+        viscosity-independent boundary placement)."
+      - "Apply a pressure gradient (Zou-He or Guo) or a body force across
+        the domain in the flow direction."
+      - "Run until the volumetric flow rate stabilizes (typically
+        20k-100k+ time steps)."
+      - "Compute permeability via Darcy's law: k = Q μ L / (A ΔP)."
+      - "Repeat for orthogonal directions to obtain the full tensor;
+        check off-diagonal terms for anisotropy."
+    software:
+      - "LBPM (portal-featured, GPU-accelerated)"
+      - "MPLBM-UT (portal-featured, CPU)"
+      - "Palabos, OpenLB"
+    example_datasets:
+      - "DRP-175: Experimental 3D velocity fields for validation"
+      - "DRP-372: Benchmark dataset with single phase LBM permeability"
+      - "DRP-11: Bentheimer Sandstone — LBM validation case to DNS"
+      - "DRP-273: Inada Granite fracture — single-fracture LBM"
+      - "DRP-352: Pore-scale CO2 dissolution — time-resolved geometry +
+        LBM flow fields"
+    best_practices:
+      - "Domain should be large enough to constitute an REV."
+      - "Boundary placement matters: half-way bounce-back is ~2nd-order
+        accurate; do not use simple bounce-back for quantitative results."
+      - "Report relaxation time (or viscosity in lattice units) — Reynolds
+        and Knudsen numbers must be in the Darcy regime for the result to
+        represent absolute permeability."
+    decision_points:
+      - question: "Does geometric fidelity at throat constrictions or non-Darcy effects matter critically?"
+        branches:
+          "Standard permeability estimate on voxel geometry": "LBM is simpler, parallelizes well, and is the community standard"
+          "High-fidelity with boundary layers or non-Darcy effects": "DNS on body-fitted mesh ([[dns-permeability]]) — more accurate but requires meshing"
+    references:
+      - "Mostaghimi et al. (2013), Transport in Porous Media,
+        10.1007/s11242-012-0085-y"
+      - "Saxena et al. (2017), Advances in Water Resources,
+        10.1016/j.advwatres.2017.05.020"
+
+  - id: dns-permeability
+    name: "Single-Phase Permeability via DNS (Stokes / Navier–Stokes)"
+    keywords: [DNS, direct numerical simulation, Stokes, finite volume,
+               Navier-Stokes, OpenFOAM, mesh, permeability]
+    description: >
+      Solve the Stokes (or low-Re Navier–Stokes) equations on a
+      body-fitted unstructured mesh derived from the segmented image.
+      Higher geometric fidelity than voxel-based LBM at the cost of
+      meshing effort; preferred when boundary layers or non-Darcy effects
+      matter.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume"
+      - "Surface mesh of the pore–solid interface"
+      - "Fluid properties; inlet/outlet boundary conditions"
+    outputs:
+      - "Absolute permeability"
+      - "Velocity and pressure fields on an unstructured mesh"
+    steps:
+      - "Extract the pore–solid interface as a triangulated surface
+        (marching cubes), then smooth to reduce voxel staircases."
+      - "Mesh the pore volume with tetrahedra or polyhedra, refining near
+        throat constrictions."
+      - "Set inlet (velocity or pressure) and outlet (zero gauge pressure)
+        boundary conditions; periodic or symmetry on side walls."
+      - "Solve Stokes flow with SIMPLE/PISO or analogous algorithm until
+        residuals plateau."
+      - "Integrate the velocity field across the outlet to obtain Q; apply
+        Darcy's law for k."
+    software:
+      - "GeoChemFoam (portal-featured, OpenFOAM-based)"
+      - "OpenFOAM (simpleFoam, porousFoam)"
+      - "GeoDict FlowDict (commercial)"
+      - "Ansys Fluent, COMSOL"
+    example_datasets:
+      - "DRP-10: Direct flow simulation in 3D Estaillades Carbonate"
+      - "DRP-11: Direct flow simulation in 3D Bentheimer Sandstone"
+      - "DRP-175: Experimental 3D velocity fields for validation"
+      - "DRP-372: Benchmark dataset with single phase LBM permeability"
+    best_practices:
+      - "Surface smoothing tradeoff: too little leaves voxel staircases
+        that over-predict viscous loss; too much shrinks pore throats and
+        under-predicts permeability. Validate against an analytical case."
+      - "Confirm Reynolds number < ~1 to stay in the Stokes regime, or
+        explicitly include inertial terms and report at multiple Re."
+      - "Convergence: check that doubling mesh resolution near throats
+        changes k by <5%."
+      - "For standard pore-scale permeability estimation, [[lbm-single-phase]]
+        is the simpler and faster approach; DNS is warranted when geometric
+        boundary-layer accuracy or non-Darcy effects are the specific focus."
+    decision_points:
+      - question: "Is geometric boundary-layer fidelity or non-Darcy flow
+          (Re > 1) the primary concern?"
+        branches:
+          "Yes (boundary-layer accuracy required or Re > 1)": "DNS on an
+            unstructured body-fitted mesh is warranted; report Reynolds number
+            and confirm the solver handles inertial terms."
+          "No (standard Darcy-regime permeability)": "Use [[lbm-single-phase]]
+            — it is faster and avoids the meshing step with comparable
+            accuracy for Stokes flow."
+    references:
+      - "Blunt et al. (2013), Advances in Water Resources,
+        10.1016/j.advwatres.2012.03.003"
+      - "Raeini et al. (2012), Journal of Computational Physics,
+        10.1016/j.jcp.2012.04.011"
+
+  - id: capillary-pressure-micp
+    name: "Capillary Pressure Simulation (MICP / Morphological)"
+    keywords: [MICP, mercury intrusion, capillary pressure, drainage curve,
+               morphological, pore-size distribution from Pc]
+    description: >
+      Simulate mercury intrusion capillary pressure (or primary drainage
+      Pc) directly on a segmented image using morphological operations —
+      no fluid dynamics required. Yields the entry-pressure distribution
+      and is widely used to validate segmentation quality.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume"
+      - "Interfacial tension and contact angle (for Pc → throat-radius
+        conversion via Washburn)"
+    outputs:
+      - "Capillary pressure vs. saturation curve"
+      - "Equivalent throat-radius distribution"
+    steps:
+      - "From the inlet face, sequentially apply morphological erosion
+        with structuring elements of decreasing radius."
+      - "At each radius, the connected non-eroded pore volume invadable
+        from the inlet represents the non-wetting phase saturation."
+      - "Map structuring-element radius to capillary pressure via
+        Pc = 2 σ cosθ / r."
+      - "Repeat for finer radii until full saturation is reached."
+      - "Compare simulated MICP to laboratory MICP on a sister plug; close
+        agreement is a strong segmentation QC."
+    software:
+      - "LBPM (portal-featured, GPU-accelerated lattice Boltzmann, morphological drainage simulation)"
+      - "PoreSpy (porosimetry module, portal-featured)"
+      - "OpenPNM (drainage algorithm on extracted network)"
+    example_datasets:
+      - "DRP-73: MICP benchmark sample"
+      - "DRP-88: MICP analysis study"
+    best_practices:
+      - "Morphological MICP assumes perfectly non-wetting invasion. For
+        partially wetting systems, use a pore-network drainage simulation
+        ([[relative-permeability-pnm]])."
+      - "Voxel-resolution limits the smallest accessible throat. Below
+        the resolution, Pc curves flatten — do not interpret the plateau
+        as a true sub-resolution feature."
+      - "MICP from segmented images systematically under-predicts entry
+        pressures for narrow throats due to discretization; expect a
+        constant offset, not a slope error."
+    decision_points:
+      - question: "Is the displacement purely non-wetting (strong drainage),
+          or does partial wettability or imbibition need to be modeled?"
+        branches:
+          "Purely non-wetting drainage": "Morphological MICP is appropriate
+            and computationally fast; no fluid dynamics required."
+          "Partial wettability or imbibition required": "Use a pore-network
+            drainage/imbibition simulation ([[relative-permeability-pnm]])
+            that supports contact-angle boundary conditions."
+    references:
+      - "Hilpert & Miller (2001), Advances in Water Resources,
+        10.1016/S0309-1708(01)00045-2"
+      - "Silin & Patzek (2006), Physica A,
+        10.1016/j.physa.2005.05.057"
+
+  - id: relative-permeability-pnm
+    name: "Relative Permeability via Pore Network Modeling"
+    keywords: [relative permeability, kr, pore network, PNM, quasi-static,
+               drainage, imbibition, capillary-dominated]
+    description: >
+      Compute drainage and imbibition relative permeability and capillary
+      pressure curves by simulating quasi-static displacement on an
+      extracted pore network. Orders of magnitude faster than direct
+      multiphase simulation but limited to capillary-dominated regimes.
+    prerequisites: [pore-network-extraction]
+    inputs:
+      - "Extracted pore network (pores, throats, conductances)"
+      - "Contact angle distribution per phase / pore"
+      - "Interfacial tension; fluid viscosity ratio"
+    outputs:
+      - "Drainage and imbibition Pc and kr curves vs. saturation"
+      - "Residual saturations"
+    steps:
+      - "Initialize the network fully saturated with the wetting phase."
+      - "For drainage: invade the non-wetting phase into the largest
+        accessible throats first (Young–Laplace entry pressure)."
+      - "Update phase occupancy of pores/throats and solve the phase-
+        specific pressure field; compute kr from per-phase flow rates."
+      - "For imbibition: reverse the process with snap-off, cooperative
+        pore-filling, and layer-flow mechanisms enabled."
+      - "Apply contact-angle distributions to model mixed-wet rocks."
+    software:
+      - "OpenPNM (portal-featured)"
+      - "PNflow (Imperial College)"
+    example_datasets:
+      - "DRP-167: Ketton three-phase — water-wet kr benchmark"
+      - "DRP-188: Spontaneous imbibition — SCAL-scale comparison"
+      - "DRP-189: Variable-wettability bead packs"
+    best_practices:
+      - "PNM kr assumes capillary-dominated displacement (low Ca). For
+        viscous-dominated flooding, use direct multiphase simulation
+        ([[multiphase-direct]])."
+      - "Layer flow in corners is essential for water-wet residuals;
+        omitting it overestimates residual oil by 5–15 saturation points."
+      - "Contact-angle assignment dominates results in mixed-wet systems —
+        distribute angles realistically (correlate with mineralogy or
+        pore-body size), not uniformly."
+    decision_points:
+      - question: "What capillary number regime does the displacement occur in?"
+        branches:
+          "Low Ca (capillary-dominated, Ca < ~1e-5)": "Quasi-static PNM is valid and orders of magnitude faster than direct simulation"
+          "High Ca or viscous-dominated": "Use direct multiphase simulation ([[multiphase-direct]]) — PNM cannot capture viscous fingering or dynamic interface effects"
+    references:
+      - "Valvatne & Blunt (2004), Water Resources Research,
+        10.1029/2003WR002627"
+      - "Bultreys et al. (2016), Earth-Science Reviews,
+        10.1016/j.earscirev.2016.02.001"
+
+  - id: multiphase-direct
+    name: "Multiphase Direct Simulation (Color-Gradient LBM / VOF)"
+    keywords: [multiphase, two-phase, color gradient, Shan-Chen, VOF,
+               level set, interface tracking, viscous fingering]
+    description: >
+      Directly simulate two- or three-phase flow on the voxel grid with
+      interface-tracking methods. Captures viscous, capillary, and
+      inertial effects on the same footing; required when capillary
+      number Ca exceeds ~1e-5 or when dynamic effects matter.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented volume"
+      - "Density and viscosity per phase; interfacial tension; contact
+        angle on each mineral surface"
+      - "Inlet flow rate or pressure; initial phase distribution"
+    outputs:
+      - "Time-resolved phase distribution and velocity field"
+      - "Steady-state kr (if reached); fractional flow at outlet"
+    steps:
+      - "Choose a multiphase model: color-gradient LBM (sharp interface,
+        wettability via contact-angle BC), Shan–Chen LBM (pseudo-potential,
+        emergent surface tension), or VOF/level-set for finite-volume."
+      - "Initialize the displacing phase at the inlet (or equilibrate to a
+        Pc-defined saturation)."
+      - "Apply pressure or rate boundary conditions; run until reaching
+        steady state or a target saturation."
+      - "For wettability: assign contact angle per mineral surface (if
+        multi-mineral) or uniform per the experimental measurement."
+      - "Extract phase saturations, kr, and capillary number for each
+        steady state on a kr curve."
+    software:
+      - "LBPM (portal-featured, GPU-accelerated, color-gradient model)"
+      - "GeoChemFoam (portal-featured, OpenFOAM-based, VOF)"
+      - "MPLBM-UT (built on Palabos; Shan-Chen LBM)"     
+      - "LSMPQS (portal-featured, level-set method)"
+
+    example_datasets:
+      - "DRP-135: Multiphase Flows in Sandstones — three-phase saturation"
+      - "DRP-228: Residual CO2 trapping in oil-wet sandstone"
+      - "DRP-167: Ketton three-phase tomograms"
+    best_practices:
+      - "Validate the model on an analytical case (e.g., Young–Laplace
+        droplet, capillary tube) before running on rock geometry."
+      - "Viscosity and density ratios in LBM are constrained; large ratios
+        (>~100) may require advanced models (Lee–Lin, conservative phase-
+        field) to avoid spurious currents."
+      - "Capillary number, viscosity ratio, and Bond number should be
+        reported with every kr — they define the flow regime."
+      - "For capillary-dominated displacement (Ca < ~1e-5), quasi-static pore
+        network modeling ([[relative-permeability-pnm]]) is orders of magnitude
+        faster with comparable accuracy; use direct simulation when viscous or
+        inertial effects are significant."
+    decision_points:
+      - question: "What is the capillary number (Ca = μv / σ) for the
+          displacement of interest?"
+        branches:
+          "Ca < ~1e-5 (capillary-dominated)": "Quasi-static pore network
+            modeling ([[relative-permeability-pnm]]) provides comparable
+            accuracy at a fraction of the computational cost; prefer it
+            unless dynamic effects are the specific focus."
+          "Ca ≥ ~1e-5 or viscous/inertial effects are significant": "Direct
+            multiphase simulation (color-gradient LBM, VOF, or level-set)
+            is required to capture viscous fingering, snap-off dynamics, and
+            inertial flow regimes."
+    references:
+      - "McClure et al. (2021), Computational Geosciences,
+        10.1007/s10596-020-10028-9"
+      - "Leclaire et al. (2017), Physical Review E,
+        10.1103/PhysRevE.95.033306"
+      - "Raeini et al. (2012), Journal of Computational Physics,
+        10.1016/j.jcp.2012.04.011"
+      - "Prodanović & Bryant (2006), Journal of Computational Physics,
+        10.1016/j.jcis.2006.08.048"
+
+  - id: wettability-contact-angle
+    name: "Wettability and In-Situ Contact Angle Analysis"
+    keywords: [wettability, contact angle, in-situ, three-phase contact
+               line, surface curvature, USBM, Amott]
+    description: >
+      Measure contact angles directly on segmented multi-phase images at
+      the three-phase contact line. Provides spatially distributed
+      wettability information that bulk USBM/Amott tests cannot.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Multi-phase segmented volume (rock + ≥2 fluids)"
+      - "Resolution sufficient to resolve the three-phase contact line
+        (typically <2 µm voxel for sandstones)"
+    outputs:
+      - "Contact-angle distribution"
+      - "Interfacial curvature distribution"
+    steps:
+      - "Identify the three-phase contact line as voxels adjacent to all
+        three phases."
+      - "Locally fit the fluid–fluid interface and the rock surface near
+        each contact-line voxel."
+      - "Compute the angle between the rock surface and the fluid–fluid
+        interface measured through the denser/wetting phase."
+      - "Aggregate over all contact-line points to obtain a histogram."
+      - "Optionally compute interfacial curvature via the Hessian of the
+        signed-distance function and invert Young–Laplace for local Pc."
+    software:
+      - "LBPM (portal-featured, TwoPhase Analysis module)"
+      - "Avizo, Dragonfly (commercial — fitting tools)"
+      - "3DMA-Rock (contact angle module)"
+      - "Fiji/ImageJ plugins (MorphoLibJ for curvature)"
+    example_datasets:
+      - "DRP-125: in-situ contact angle in carbonates — methodological
+        reference"
+      - "DRP-159: scCO2-brine contact angles in Berea and Mt. Simon"
+      - "DRP-189: variable-wettability bead packs"
+      - "DRP-198: synthetic fractures with varying wettability"
+      - "DRP-305: Mt. Simon Sandstone — spatial wettability heterogeneity"
+      - "DRP-345: Visualization of contact angle evolution"
+    best_practices:
+      - "Voxel-resolution limits angular accuracy. Reported angles below
+        the resolution-imposed uncertainty (~±15° at 2 µm) are not
+        meaningful."
+      - "Curvature-based Pc gives an independent wettability proxy when
+        contact-angle fitting is noisy."
+      - "Smoothing the rock surface before angle measurement is essential;
+        raw voxelized surfaces bias angles toward 45°/90°."
+    decision_points:
+      - question: "Does the contact-angle distribution show a single mode or
+          multiple modes?"
+        branches:
+          "Single mode (strongly water-wet θ < 60° or strongly oil-wet θ > 120°)":
+            "A single representative contact angle is sufficient for
+            downstream simulations; report the median and interquartile range."
+          "Bimodal or broad distribution (mixed-wet)": "Assign per-mineral
+            contact angles in downstream simulations ([[multiphase-direct]]);
+            a single average angle will misrepresent the displacement
+            behavior in mixed-wettability systems."
+    references:
+      - "AlRatrout et al. (2017), Advances in Water Resources,
+        10.1016/j.advwatres.2017.07.018"
+      - "Andrew et al. (2014), Advances in Water Resources,
+        10.1016/j.advwatres.2014.02.014"
+
+  - id: reactive-transport
+    name: "Reactive Transport Simulation"
+    keywords: [reactive transport, dissolution, precipitation, mineral
+               reaction, pore-scale chemistry, evolving geometry]
+    description: >
+      Couple pore-scale flow with mineral dissolution or precipitation
+      kinetics on a segmented image. Geometry evolves in time as solid
+      voxels convert to pore (or vice versa). Used for CO2-rock
+      interaction, acid stimulation, and biomineralization studies.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented multi-mineral volume with per-phase reaction rate
+        constants"
+      - "Inlet solute concentration; pH; temperature"
+      - "Equilibrium and kinetic rate parameters"
+    outputs:
+      - "Time-evolving geometry, porosity, and permeability"
+      - "Effluent chemistry"
+    steps:
+      - "Solve steady-state flow on the current geometry via
+        [[lbm-single-phase]] or [[dns-permeability]]."
+      - "Solve the advection-diffusion-reaction equation for each tracked
+        species on the same grid."
+      - "At each reactive solid voxel, compute the local reaction rate
+        from surface concentration and kinetics; convert solid→pore (or
+        pore→solid) when the cumulative reaction reaches a voxel-volume
+        threshold."
+      - "Re-solve flow on the updated geometry; advance time."
+      - "Track porosity, permeability, and reactive surface area over time."
+    software:
+      - "GeoChemFoam (portal-featured, OpenFOAM-based)"
+      - "OpenPNM (reactive transport module)"
+    example_datasets:
+      - "DRP-219: 4D acid leaching of carbonado diamond"
+      - "DRP-352: Pore-scale CO2-induced dissolution in bead pack"
+      - "DRP-158: Abiotic carbonate precipitation"
+      - "DRP-256: dissolution + precipitation in North Sea sandstone"
+    best_practices:
+      - "Damköhler number (Da = reaction rate / advection rate) determines
+        regime. At high Da, dissolution is uniform; at low Da, wormholes
+        form. Report Da with every result."
+      - "Updating geometry only when a voxel fully reacts introduces
+        time-step dependence — use a sub-voxel volume-of-solid approach
+        for smooth fronts."
+      - "Validate against an analytical or experimental dissolution case
+        (e.g., calcite-CO2 in a Hele-Shaw cell) before trusting full
+        4D predictions."
+    decision_points:
+      - question: "What is the Damköhler number (Da = reaction rate /
+          advection rate)?"
+        branches:
+          "High Da (>> 1, reaction fast relative to transport)": "Dissolution
+            is transport-limited and tends to be spatially uniform. Coarser
+            time steps are acceptable; focus on capturing surface-area
+            evolution."
+          "Low Da (<< 1, transport fast relative to reaction)": "Wormholing
+            regime; reaction fronts channel into preferential paths. Use
+            refined meshes near the inlet, smaller time steps, and longer
+            simulation times to capture wormhole competition."
+    references:
+      - "Molins et al. (2014), Environmental Science & Technology,
+        10.1021/es5013438"
+      - "Soulaine et al. (2017), Journal of Fluid Mechanics,
+        10.1017/jfm.2017.499"
+
+  - id: in-situ-4d-imaging
+    name: "In-Situ / 4D Time-Resolved Imaging Analysis"
+    keywords: [in-situ, in situ, 4D, time-resolved, synchrotron, dynamic,
+               displacement, fluid front tracking]
+    description: >
+      Process a time series of micro-CT volumes acquired during an
+      experiment (drainage, imbibition, dissolution) to extract fluid
+      front velocities, saturation histories, and event statistics
+      (Haines jumps, snap-offs).
+    prerequisites: [image-filtering, image-segmentation]
+    inputs:
+      - "Sequence of co-registered 3D volumes (1 per time step)"
+      - "Time stamps and applied boundary conditions during the experiment"
+    outputs:
+      - "Per-step segmented volumes and saturation curves"
+      - "Event-resolved displacement statistics"
+    steps:
+      - "Register all volumes to a common reference frame (rigid registration
+        on the rock skeleton, not on the fluids)."
+      - "Mask the unchanging solid phase; segment only the fluids per step."
+      - "Compute saturations and identify clusters per phase per time step."
+      - "Detect interface displacements between consecutive frames; classify
+        as Haines jumps, snap-offs, or smooth displacements based on volume
+        and timescale."
+      - "Aggregate event statistics and compare to capillary number theory."
+    software:
+      - "SimpleITK, elastix (registration)"
+      - "Avizo, Dragonfly (commercial registration)"
+    example_datasets:
+      - "DRP-134: Gildehauser Sandstone — fast synchrotron in-situ"
+      - "DRP-122: Xenon hydrate growth in sand"
+      - "DRP-135: Multiphase flows in sandstones — multi-saturation series"
+      - "DRP-219: 4D acid leaching"
+    best_practices:
+      - "Registration must use a rigid (or affine) transform tied to the
+        solid skeleton. Registering on fluids couples the registration to
+        the displacement you are trying to measure."
+      - "Time resolution must be smaller than the characteristic event
+        timescale. Otherwise a single 'jump' is several merged events."
+      - "Synchrotron datasets often have systematic dose-induced drift in
+        intensity — re-threshold per frame or normalize against a stable
+        air/solid reference."
+    decision_points:
+      - question: "Are consecutive volumes adequately co-registered (solid
+          skeleton misalignment ≤ 1 voxel)?"
+        branches:
+          "Yes": "Proceed to per-frame fluid segmentation and event
+            (Haines jump / snap-off) detection."
+          "No (residual > 1 voxel)": "Revisit registration parameters or
+            apply a deformable registration stage for samples under mechanical
+            load. Do not proceed to event detection until alignment is
+            confirmed — a single mis-registered frame propagates false
+            displacement events through the entire time series."
+    references:
+      - "Berg et al. (2013), PNAS,
+        10.1073/pnas.1221373110"
+      - "Wang et al. (2022), Water Resources Research,
+        10.1029/2021WR030870"
+
+  - id: fracture-characterization
+    name: "Fracture Characterization and Single-Fracture Flow"
+    keywords: [fracture, aperture, roughness, cubic law, single fracture,
+               fracture flow, geomechanics]
+    description: >
+      Characterize a fracture's aperture field, roughness, and contact
+      area from a micro-CT scan of a fractured plug, then compute flow
+      through the fracture under prescribed normal stress. Bridges
+      pore-scale and fracture-network scales.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented volume of a fractured sample with the fracture as a labeled phase"
+      - "Optional pre/post-stress scans for aperture-stress relationship"
+    outputs:
+      - "Aperture map (2D field)"
+      - "Mean aperture, contact area fraction, RMS roughness"
+      - "Fracture transmissivity"
+    steps:
+      - "Identify the fracture plane (PCA on the fracture voxels)."
+      - "Project the fracture onto a 2D plane; the aperture at each (x,y)
+        is the distance between the two facing surfaces."
+      - "Compute statistics: mean and standard deviation of aperture,
+        contact-area fraction (zero-aperture pixels), and roughness
+        spectrum via 2D FFT."
+      - "For flow, solve the Reynolds (local cubic-law) equation on the
+        aperture field for a fast estimate, or run LBM/DNS for accuracy
+        when contact area exceeds ~30%."
+      - "Compare transmissivity to the parallel-plate cubic-law prediction;
+        the ratio is the hydraulic-aperture correction factor."
+    software:
+      - "LBM (single-phase flow)"
+      - "OpenFOAM custom solvers"
+      - "Avizo Fracture module (commercial)"
+    example_datasets:
+      - "DRP-273: Inada granite single tensile fracture"
+      - "DRP-198: Synthetic fractures with varying roughness"
+      - "DRP-205: Mancos shale pre/post-triaxial fracture patterns"
+      - "DRP-473: Fractured Eagle Ford Shale aperture characterization"
+      - "DRP-372: Benchmark dataset with single-fracture flow simulations"
+    best_practices:
+      - "Cubic-law accuracy breaks down when contact area exceeds ~30% or
+        when aperture variability exceeds the mean. Validate against LBM."
+      - "Aperture from segmentation depends strongly on threshold —
+        sub-voxel apertures (≤2 voxels) cannot be quantified reliably."
+      - "Report the fracture orientation relative to the bedding/loading
+        axis; flow anisotropy can be 10× depending on direction."
+    decision_points:
+      - question: "Does contact area fraction exceed ~30% of the fracture plane?"
+        branches:
+          "Yes (≥ 30% contact area)": "The cubic-law estimate is unreliable;
+            solve flow directly via [[lbm-single-phase]] on the 3D fracture
+            volume for accurate transmissivity."
+          "No (< 30% contact area)": "The Reynolds (local cubic law) equation
+            on the aperture field is a fast and sufficiently accurate first
+            estimate; validate against LBM if transmissivity is the primary
+            deliverable."
+    references:
+      - "Brown (1987), Journal of Geophysical Research,
+        10.1029/JB092iB02p01337"
+      - "Karpyn & Piri (2007), Physical Review E,
+        10.1103/PhysRevE.76.016315"
+
+  - id: formation-factor
+    name: "Formation Factor and Electrical Conductivity"
+    keywords: [formation factor, electrical conductivity, resistivity, Archie,
+               tortuosity factor, cementation exponent, diffusion, saturation exponent]
+    description: >
+      Compute the formation factor F = R0/Rw (ratio of saturated-rock to brine resistivity)
+      by solving Laplace's equation for electrical potential — or equivalently, simulating
+      diffusion of a passive tracer — on the segmented pore space. No flow solver is required.
+      F directly enters Archie's law for saturation estimation in well-log interpretation.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume (pore = 1, solid = 0)"
+      - "Voxel size in physical units"
+    outputs:
+      - "Formation factor F (dimensionless) in x, y, z directions"
+      - "Effective diffusivity Deff / D0 (= 1/F for simple brine)"
+      - "Tortuosity factor τ = φ · F (if porosity φ is known)"
+    steps:
+      - "Confirm the pore space is connected end-to-end in the flow direction;
+        compute effective (connected) porosity."
+      - "Set a unit concentration (or potential) gradient across the domain;
+        apply Dirichlet BCs on inlet and outlet faces, no-flux on solid walls."
+      - "Solve the Laplace / steady-state diffusion equation on the pore voxels
+        (finite difference, random-walk Monte Carlo, or passive-scalar LBM)."
+      - "Integrate the flux across the outlet face; F = D0/Deff = (J_free / J_eff) × L."
+      - "Repeat for all three principal directions to obtain the full formation
+        factor tensor; report off-diagonal anisotropy."
+      - "Compare to Archie's law (F = φ^-m) to back-calculate the cementation
+        exponent m for the sample."
+    software:
+      - "Digital Rock Suite (portal-featured)"
+      - "DC3D (open-source finite-difference solver)"
+      - "GeoDict (ElectroDict, commercial)"
+    example_datasets:
+      - "DRP-372: Benchmark dataset with electrical simulations"
+    best_practices:
+      - "Formation factor is highly sensitive to whether isolated pores are
+        included. Always use connected (effective) porosity, not total porosity."
+      - "Random-walk Monte Carlo is memory-efficient for large volumes;
+        finite-difference solvers converge faster on GPU for moderate volumes."
+      - "Report all three directional F values and the anisotropy ratio — a
+        single scalar F hides bedding- or fracture-induced anisotropy."
+      - "Formation factor F is the electrical analog of diffusive resistance:
+        Deff/D0 = 1/F = φ/τ. Results from this workflow and [[tracer-diffusion]]
+        on the same segmented volume should be mutually consistent."
+    decision_points:
+      - question: "Is the pore space fully connected across the domain?"
+        branches:
+          "Fully connected (sandstone, bead pack)": "Standard formation factor F is well-defined; proceed with Laplace solve"
+          "Partially disconnected (vugs, tight carbonates)": "Report effective formation factor for connected pore space only; note isolated porosity fraction separately"
+    references:
+      - "Archie (1942), Transactions of the AIME,
+        10.2118/942054-G"
+      - "Andrä (2013), Computers & Geosciences,
+        10.1016/j.cageo.2012.09.008"
+
+  - id: effective-elastic-moduli
+    name: "Effective Elastic Moduli (Digital Rock Geomechanics)"
+    keywords: [elastic moduli, Young's modulus, bulk modulus, shear modulus,
+               Poisson's ratio, geomechanics, finite element, FFT homogenization,
+               rock physics, Gassmann]
+    description: >
+      Compute the effective elastic stiffness tensor of a multi-mineral rock by
+      assigning single-crystal or poly-crystal stiffness tensors to each phase in
+      the segmented volume and solving the boundary value problem via finite elements
+      (FEM) or spectral FFT-based homogenization. Results feed rock-physics models
+      for 4D seismic, compaction, and wellbore stability analysis.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Multi-phase segmented volume with mineral labels"
+      - "Single-crystal elastic constants (Cij) per mineral phase"
+      - "Grain shape and crystallographic orientation (if anisotropy is needed)"
+    outputs:
+      - "Effective stiffness tensor C* (or compliance S*)"
+      - "Derived moduli: bulk K*, shear G*, Young's E*, Poisson's ν*"
+      - "Gassmann fluid substitution results (if fluid is replaced)"
+    steps:
+      - "Assign elastic constants to each mineral phase from the literature
+        or laboratory measurements; assign near-zero stiffness to pore space."
+      - "Apply periodic or kinematic uniform boundary conditions (KUBCs) to
+        the simulation domain — periodic BCs give the tightest Voigt/Reuss bounds."
+      - "Solve the linear elasticity BVP for three independent strain states
+        (plus three shear) to populate all independent Cij entries."
+      - "For FEM: mesh with trilinear hexahedral elements aligned to the voxel
+        grid; use a multigrid or CG solver."
+      - "For FFT homogenization: apply Moulinec–Suquet or augmented Lagrangian
+        iterations in Fourier space — no meshing required, same voxel grid."
+      - "Verify against Hashin–Shtrikman bounds and, if available, laboratory
+        ultrasonic measurements on the same plug."
+    software:
+      - "GeoDict (ElastoDict, commercial)"
+      - "FEniCS, MOOSE, ELAS3D (open-source FEM)"
+      - "Abaqus, COMSOL (commercial FEM)"
+      - DAMASK (FFT homogenization, open-source)"
+      - LIGGGHTS  (DEM)
+    example_datasets:
+      - "DRP-472: 15 Fractures of Granite"
+      - "DRP-223: Bentheimer network is deformed to using elastic simulations"
+    best_practices:
+      - "The contrast between mineral stiffnesses and pore-space near-zero
+        stiffness can cause slow convergence in FFT methods. Use augmented
+        Lagrangian or Eyre–Milton formulations for high-contrast composites."
+      - "Voigt (iso-strain) and Reuss (iso-stress) averages bound the effective
+        moduli. If your result falls outside these bounds, check mineral assignment
+        or boundary conditions."
+      - "Perform Gassmann fluid substitution to compare with ultrasonic
+        lab data measured under brine saturation, not dry conditions."
+    decision_points:
+      - question: "Is the mineral composition isotropic or does crystallographic orientation matter?"
+        branches:
+          "Isotropic minerals (e.g., glass beads, amorphous silica)": "Assign isotropic Cij per phase; FFT or FEM both converge quickly"
+          "Anisotropic minerals (e.g., clay, calcite, quartz with preferred orientation)": "Assign full 3×3×3×3 stiffness tensor; require crystallographic orientation data (EBSD or assumed texture)"
+      - question: "Should the simulation represent dry or fluid-saturated rock?"
+        branches:
+          "Dry rock (for subsequent Gassmann fluid substitution)": "Assign near-zero stiffness to pore space; apply Gassmann afterward to compare with saturated ultrasonic lab data"
+          "Fluid-saturated rock (direct comparison to brine-saturated measurements)": "Assign fluid bulk modulus and zero shear modulus to pore space; no Gassmann step needed"
+    references:
+      - "Arns et al. (2017), Linear elastic properties of granular rocks derived from Xray-CT images,
+        10.1190/1.2792823"
+      - "Andrä et al. (2013), Computers & Geosciences Part II,
+        10.1016/j.cageo.2012.09.008"
+
+  - id: multiscale-registration
+    name: "Multi-Scale Image Registration (micro-CT + nano-CT / FIB-SEM Fusion)"
+    keywords: [multi-scale, registration, nano-CT, FIB-SEM, dual-porosity, sub-resolution,
+               co-registration, image fusion, upscaling, dual-scale]
+    description: >
+      Align a high-resolution sub-volume (nano-CT or FIB-SEM) to its corresponding
+      region within a lower-resolution micro-CT scan of the same sample. The fused
+      dataset resolves both the macroscopic pore network and sub-resolution micro-pores
+      (e.g., in clay-filled sandstones or tight carbonates), enabling dual-porosity
+      modeling without running a single full-sample high-resolution scan.
+    prerequisites: [image-filtering]
+    inputs:
+      - "Micro-CT volume (low resolution, large field of view)"
+      - "Nano-CT or FIB-SEM sub-volume (high resolution, small field of view)"
+      - "Approximate location of the sub-volume within the micro-CT (from sample geometry)"
+    outputs:
+      - "Co-registered multi-scale dataset with spatial correspondence established"
+      - "Dual-porosity property map: micro-CT pores + nano-CT/FIB-SEM micro-pores"
+    steps:
+      - "Identify the region of interest in the micro-CT corresponding to the
+        location where the sub-sample for nano-CT/FIB-SEM was extracted."
+      - "Extract a coarsened version of the nano-CT sub-volume at the micro-CT
+        voxel scale to create a matching pair for registration."
+      - "Perform rigid registration (translation + rotation) of the coarsened
+        sub-volume into the micro-CT, using cross-correlation or mutual information."
+      - "Refine with affine registration to correct for any sample drift or
+        slight deformation during sub-sample preparation."
+      - "Map micro-CT voxels that are 'solid' at micro-scale but contain nano-CT
+        porosity; assign a dual-porosity label with the measured micro-porosity fraction."
+      - "Validate registration by overlaying phase boundaries at the common
+        voxel size and checking alignment of large pore features visible in both scans."
+    software:
+      - "SimpleITK, elastix (open-source registration)"
+      - "scikit-image (rigid registration, phase correlation)"
+      - "Dragonfly (commercial — multi-scale fusion module)"
+      - "Avizo (commercial)"
+    example_datasets:
+      - "DRP-503: multi-resolution micro-CT images of Brazilian pre-salt carbonates"
+      - "DRP-523: Multimineral mapping using QEMSCAN registered to micro-CT"
+    best_practices:
+      - "Registration must be driven by solid-skeleton features visible in both
+        scans, not by fluid phases or pore edges — fluids change between scan sessions."
+      - "FIB-SEM sub-volumes are typically non-cubic and small (<5 µm³). Ensure
+        the extracted region is at least 5× the correlation length of the
+        micro-CT to avoid edge effects."
+      - "Record the physical coordinates of the FIB cross-section or nano-CT
+        stage position before sectioning — this dramatically reduces the search
+        space for the registration and prevents false-minimum convergence."
+    decision_points:
+      - question: "What is the resolution ratio between the two scans?"
+        branches:
+          "Small ratio (< 5×, e.g., micro-CT to nano-CT)": "Affine registration on downsampled sub-volume is sufficient; mutual information or phase correlation"
+          "Large ratio (> 10×, e.g., micro-CT to FIB-SEM)": "Requires intermediate sub-sample extraction + resin embedding; registration is primarily landmark-based, not intensity-based"
+    references:
+      - "Bultreys et al. (2016), Earth-Science Reviews,
+        10.1016/j.earscirev.2016.02.001"
+      - "Chung et al. (2025), arXiv preprint,
+         https://doi.org/10.48550/arXiv.2504.06604"
+
+  - id: diffusion
+    name: "Effective Diffusivity"
+    keywords: [diffusion, tracer, effective diffusivity, tortuosity, passive scalar,
+               random walk, NMR, diffusion NMR, pore-scale diffusion, PNM, LBM]
+    description: >
+      Compute the effective diffusivity Deff of a passive scalar (solute, gas, NMR spin)
+      through the connected pore space via passive-scalar LBM, random-walk Monte Carlo, pore network modeling,
+      or steady-state Laplace solve. Yields diffusive tortuosity τ = D0/Deff (or equivalently,
+      the formation factor for uncharged species). Complements permeability by quantifying
+      species transport independently of viscous flow.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume (pore = 1, solid = 0)"
+      - "Voxel size in physical units"
+      - "Bulk diffusivity D0 of the species in free fluid (optional; needed for absolute Deff)"
+    outputs:
+      - "Effective diffusivity tensor Deff (x, y, z)"
+      - "Diffusive tortuosity τ = D0/Deff per direction"
+      - "Geometric tortuosity (if computed via skeletonization for comparison)"
+    steps:
+      - "Confirm connected pore space; isolated pores do not contribute to diffusion."
+      - "Choose a solver: passive-scalar LBM (same codebase as single-phase flow),
+        random-walk Monte Carlo (memory-efficient, easily parallelizable on CPU),
+        or finite-difference Laplace solve."
+      - "For passive-scalar LBM: initialize a uniform concentration on one face,
+        zero on the opposite; advance until steady state; extract flux."
+      - "For random-walk: release N tracers from random pore voxels; track
+        mean-squared displacement over time; Deff = MSD / (2d·t) at long times."
+      - "Compute τ = φ · F = φ · D0/Deff (where φ is connected porosity)."
+      - "Optionally compare to geometric tortuosity from pore-space skeletonization
+        to separate pore-shape from connectivity contributions."
+    software:
+      - "GeoChemFoam (portal-featured, OpenFOAM-based)"
+      - "COMSOL Multiphysics (FEM-based, commercial)"
+      - "PoreSpy (random-walk diffusion)"
+      - "GeoDict (DiffuDict, commercial)"
+    example_datasets:
+      - "DRP-462: X-ray tomography dataset of gas diffusion layers"
+      - "DRP-359: Dissolution of trapped nitrogen gas with and without dissolution fingering"
+    best_practices:
+      - "Geometric tortuosity (shortest path) consistently underestimates diffusive
+        tortuosity because it ignores dead-end pores and non-shortest paths. Report
+        which definition you use."
+      - "Random-walk convergence requires sufficient walkers and time steps — check
+        that MSD is in the linear (Fickian) regime before extracting Deff."
+      - "If comparing to NMR diffusion measurements, account for surface relaxivity
+        and restricted diffusion at short observation times — the pore-scale Deff
+        corresponds to the long-time limit only."
+      - "Diffusive tortuosity τ = D0/Deff is the transport framing of the same
+        geometric quantity as formation factor F; Deff/D0 = 1/F = φ/τ. For the
+        electrical framing of this quantity, see [[formation-factor]]."
+    decision_points:
+      - question: "Is the goal geometric path length or transport-averaged diffusivity?"
+        branches:
+          "Geometric path length (structural descriptor)": "Compute geometric tortuosity via skeletonization (PoreSpy) — fast but does not represent actual mass transport"
+          "True diffusive tortuosity for transport modeling": "Passive-scalar LBM or random-walk Monte Carlo gives the physically correct Deff"
+    references:
+      - "Ghanbarian et al. (2013), Soil Science Society of America Journal,
+        10.2136/sssaj2012.0435"
+      - "Tjaden et al. (2016), Current Opinion in Chemical Engineering,
+        10.1016/j.coche.2016.02.006"
+
+  - id: super-resolution
+    name: "Super-Resolution Reconstruction (ML Upscaling)"
+    keywords: [super resolution, SR, upscaling, deep learning, CNN, RCAN, SRCNN,
+               resolution enhancement, low-dose CT, resolution improvement]
+    description: >
+      Use a trained network to map a low-resolution micro-CT
+      volume to a high-resolution reconstruction, recovering sub-voxel detail without
+      re-scanning. Enables resolution enhancement for archival datasets or low-dose /
+      fast scans and reduces acquisition time while preserving downstream property
+      accuracy.
+    prerequisites: [image-filtering]
+    inputs:
+      - "Low-resolution grayscale volume (the volume to be enhanced)"
+      - "Paired high-resolution training volumes (for supervised SR), or a pretrained
+        SR model from a similar rock type"
+    outputs:
+      - "Super-resolved grayscale volume at target resolution"
+      - "Trained model checkpoint (for reuse on similar datasets)"
+    steps:
+      - "Curate training pairs: acquire the same samples at two resolutions, or
+        synthetically downsample high-resolution volumes to create low/high pairs."
+      - "Choose architecture: SRCNN (shallow, fast), RCAN (residual channel attention,
+        higher quality), or physics-informed SR with permeability or porosity as a
+        loss term."
+      - "Train with L1 or perceptual loss (VGG feature space); augment with
+        rotation, flip, and intensity jitter to improve generalization."
+      - "Apply the trained model in overlapping tiles across the full volume to
+        avoid boundary artifacts."
+      - "Validate: compare segmented porosity, pore-size distribution, and
+        permeability between SR output and the true high-resolution scan on
+        held-out test volumes."
+    software:
+      - "PyTorch (open-source SR frameworks)"
+      - "Dragonfly ML module (commercial)"
+      - "DeepRock-SR (domain-specific pretrained models)"
+    example_datasets:
+      - "DRP-362: Multi-Resolution Complex Carbonates — paired LR/HR scans"
+      - "DRP-215: Super Resolution Dataset — LR/HR pairs for multiple rock types"
+    best_practices:
+      - "SR models do not generalize across rock types. A model trained on
+        Berea sandstone will hallucinate pore structure when applied to carbonates.
+        Always validate on a held-out scan of the target lithology."
+      - "Perceptual sharpness is not the same as physical accuracy. Verify that
+        SR-derived transport properties (porosity, permeability) match the true
+        high-res scan, not just that the image looks sharp."
+      - "Report the upscaling factor and the training data source. SR results
+        are only reproducible if the model checkpoint and training data are shared."
+    decision_points:
+      - question: "Are paired low-resolution / high-resolution training volumes available?"
+        branches:
+          "Paired data available": "Supervised SR (SRCNN, RCAN) with MSE or perceptual loss — the standard and highest-quality approach"
+          "No paired data": "Unsupervised SR (CycleGAN, blind SR) or physics-informed SR with pore-property constraints — less accurate but feasible"
+    references:
+      - "Wang et al. (2019), Water Resources Research,
+        10.1029/2019WR026052"
+      - "Alqahtani et al. (2020), Transport in Porous Media,
+        10.1007/s11242-022-01781-9"
+
+  - id: image-synthesis
+    name: "Synthetic Rock Microstructure Generation (GANs / Diffusion Models)"
+    keywords: [synthetic, generative, GAN, diffusion model, VAE, image generation,
+               stochastic reconstruction, rock synthesis, data augmentation, digital twin]
+    description: >
+      Train a generative model on real micro-CT volumes to produce statistically
+      consistent synthetic rock microstructures. Synthetic volumes augment small
+      experimental datasets for ML segmentation training, enable uncertainty
+      quantification via ensemble simulation, and generate geometries at untested
+      conditions (e.g., higher porosity, different mineral ratios).
+    prerequisites: [image-filtering]
+    inputs:
+      - "Collection of real micro-CT volumes of the target rock type (as training data)"
+      - "Target statistical descriptors: porosity, two-point correlation, pore-size
+        distribution (for conditioning or validation)"
+    outputs:
+      - "Synthetic 3D grayscale or segmented volumes statistically consistent with
+        the training set"
+      - "Trained generator checkpoint"
+      - "Statistical validation metrics: porosity distribution, two-point correlation,
+        pore-size distribution compared to real data"
+    steps:
+      - "Curate training data: assemble N real volumes; crop to consistent patch size."
+      - "Choose model class: GAN (StyleGAN3 / WGAN-GP for sharp pore boundaries),
+        denoising diffusion probabilistic model (DDPM, higher quality but slower),
+        or variational autoencoder (VAE, fast but blurry at high frequency)."
+      - "For small training sets (< 10 volumes): prefer process-based stochastic
+        reconstruction (truncated Gaussian, multi-point statistics MPS) over deep
+        learning — neural generators overfit with few samples."
+      - "Train with patch-based approach (randomly cropped sub-volumes); apply
+        3D convolutions or 2D slice-by-slice if GPU memory is limited."
+      - "Validate statistically: compare porosity distribution, two-point correlation
+        function S2(r), and lineal-path function L(r) between synthetic and real volumes."
+      - "Validate physically: run permeability and formation factor simulations on
+        synthetic volumes; compare to the range from real-volume simulations."
+    software:
+      - "PyTorch (StyleGAN3, DDPM, VAE — all require custom 3D adaptation)"
+      - "DeepRock-SR (pretrained models for sandstone / carbonate)"
+      - "SNESIM, IMPALA (multi-point statistics, process-based fallback)"
+    example_datasets:
+      - "DRP-133: DRP Visualization Challenge — useful as a validation target for
+        sandstone generators"
+      - "DRP-1: Bead Pack Crystal — analytical reference to benchmark generator quality"
+    best_practices:
+      - "Statistical consistency (matching S2, L) is necessary but not sufficient.
+        Always verify that synthetic volumes produce transport properties within
+        the range of the real training set."
+      - "3D GAN training is memory-intensive. Patch-based training on 643–1283
+        sub-volumes is the norm; verify that patch size exceeds the REV before
+        claiming physical validity."
+      - "Report the training set size, model architecture, and validation metrics
+        in any publication using synthetic volumes — synthetic data provenance
+        is as important as real data provenance."
+    decision_points:
+      - question: "How large is the training corpus of real volumes?"
+        branches:
+          "Large (≥ 50 volumes of the same rock type)": "GAN or diffusion model — sufficient data for deep generative models to capture pore-topology statistics"
+          "Small (< 10 volumes)": "Process-based stochastic reconstruction (truncated Gaussian, MPS) — deep models overfit and generate mode-collapsed or blurry volumes"
+    references:
+      - "Mosser et al. (2017), Physical Review E,
+        10.1103/PhysRevE.96.043309"
+      - "Bostanabad et al. (2018), Progress in Materials Science,
+        10.1016/j.pmatsci.2018.01.005"
+
+  - id: connected-component-analysis
+    name: "Connected Component Analysis and Percolation Check"
+    keywords: [connected components, percolation, connectivity, isolated pores,
+               spanning cluster, effective porosity, percolation threshold,
+               pore connectivity]
+    description: >
+      Label connected regions in the segmented pore space and determine
+      whether a percolating (end-to-end spanning) cluster exists. A required
+      pre-simulation check: flow and diffusion solvers on a non-percolating
+      domain return zero flux — this is a geometry issue, not a solver
+      failure. Also quantifies the isolated-pore fraction that does not
+      contribute to transport.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume (pore = 1, solid = 0)"
+      - "Target flow direction(s) (x, y, z)"
+    outputs:
+      - "Labeled connected-component volume"
+      - "Effective porosity (spanning-cluster voxel fraction)"
+      - "Isolated pore fraction and size distribution of disconnected clusters"
+      - "Percolation flag: does a spanning cluster exist in each flow direction?"
+    steps:
+      - "Apply 3D connected-component labeling to the pore voxels. Use
+        6-connectivity (face-sharing only) for conservative percolation
+        assessment; 26-connectivity includes edges and corners."
+      - "Identify whether the largest cluster spans the domain from inlet
+        to outlet in the target flow direction."
+      - "Compute effective porosity = spanning-cluster voxels / total domain
+        voxels. Compare to total porosity to quantify the isolated fraction."
+      - "If no spanning cluster exists, check whether the domain is sub-REV
+        (try a larger sub-volume) or whether the segmentation threshold is
+        over-aggressive (closing narrow pore bridges)."
+      - "Compute the isolated-cluster size distribution to distinguish
+        single-voxel noise from macroscopic disconnected vugs."
+    software:
+      - "PoreSpy (porosity_profiles, find_peaks)"
+      - "cc3d (Python wrapper for connected-component labeling)"
+      - "scikit-image (label, regionprops)"
+      - "Fiji/ImageJ (Region labelling)"
+
+    example_datasets:
+      - "DRP-1: Bead Pack Crystal — fully percolating reference case"
+      - "DRP-118: Tight Carbonate — disconnected micro-pore example"
+    best_practices:
+      - "Run immediately after segmentation and before any transport
+        simulation. Catches non-percolating geometries before expensive
+        solver runs."
+      - "6-connectivity is more conservative than 26-connectivity. Fluid
+        flow through narrow constrictions typically requires face-sharing
+        voxels, so 6-connectivity is the physically appropriate default."
+      - "If changing the threshold by ±5 gray levels toggles the domain
+        between percolating and non-percolating, the threshold sits in a
+        critical transition region — report this sensitivity."
+    decision_points:
+      - question: "Does a percolating (end-to-end spanning) cluster exist in
+          the target flow direction?"
+        branches:
+          "Yes": "Proceed to transport simulation using the spanning cluster;
+            effective porosity is the spanning-cluster voxel fraction."
+          "No": "Do not proceed to flow simulation — solvers return zero flux
+            on a non-percolating domain. Check: (1) is the imaged volume
+            sub-REV? Try a larger sub-volume. (2) Is the threshold
+            over-aggressive? Try lowering it by a few gray levels and re-run
+            [[connected-component-analysis]]."
+    references:
+      - "Hoshen & Kopelman (1976), Physical Review B,
+        10.1103/PhysRevB.14.3438"
+      - "Gostick et al. (2019), Journal of Open Source Software (PoreSpy),
+        10.21105/joss.01296"
+
+
+  - id: resolution-check
+    name: "Image Resolution Check for Simulation Readiness"
+    keywords: [resolution check, throat radius, minimum resolution, simulation
+               readiness, morphological drainage, LBPM, capillary pressure,
+               resolution threshold, voxel adequacy, sub-resolution]
+    description: >
+      Quantitatively assess whether an image is resolved finely enough for
+      reliable transport simulation. Morphological drainage (capillary
+      pressure simulation) tracks the mean invaded throat radius as a
+      function of non-wetting saturation. When that radius falls below
+      ~2–3 voxels the simulation operates at the discretization limit and
+      results are untrustworthy. This gives a physics-based, per-sample
+      saturation cutoff rather than a generic voxel-count rule of thumb.
+    prerequisites: [image-segmentation]
+    inputs:
+      - "Segmented binary volume"
+      - "Voxel size in physical units"
+      - "Minimum resolvable throat radius threshold (typically 2–3 voxels,
+        or an absolute physical cutoff from the sample's known pore structure)"
+    outputs:
+      - "Morphological capillary pressure curve (Pc vs. Sw)"
+      - "Mean invaded throat radius vs. saturation curve"
+      - "Saturation cutoff Snw* below which simulation results are unreliable"
+      - "Resolution adequacy flag for the intended simulation target"
+    steps:
+      - "Run morphological drainage via LBPM or PoreSpy porosimetry: the
+        pore space is eroded from the inlet with structuring elements of
+        decreasing radius r, and the accessible volume at each r is
+        recorded as the non-wetting saturation Snw."
+      - "At each drainage step record r (equivalent throat radius) and Snw."
+      - "Convert r to physical units using the voxel size; identify Snw*
+        as the saturation at which r drops below the minimum threshold
+        (2–3 voxels)."
+      - "Inspect the pore-size distribution: if a large fraction of pores
+        fall below the threshold, consider multi-scale imaging
+        ([[multiscale-registration]]) rather than pushing a single-scale
+        simulation."
+      - "Report the simulation-reliable saturation range [0, Snw*] alongside
+        any transport property computed within that regime."
+    software:
+      - "LBPM (portal-featured, GPU-accelerated morphological drainage)"
+      - "DPM Tools (portal-featured, morphological drainage module)"
+      - "PoreSpy (porosimetry module)"
+    example_datasets:
+      - "DRP-118: Tight Carbonate — significant sub-resolution porosity"
+      - "DRP-125: raw + filtered + segmented variants useful for resolution QC"
+    best_practices:
+      - "A 2-voxel minimum throat radius is the hard lower bound for
+        morphological operations; 3–4 voxels is recommended for quantitative
+        transport properties."
+      - "This check complements the global resolution best practice
+        (≥4–5 voxels across the narrowest feature). The drainage curve
+        reveals the actual throat-size distribution rather than relying on
+        visual inspection alone."
+      - "If the check fails, options are: (1) re-scan at higher resolution,
+        (2) fuse nano-CT or FIB-SEM data for the unresolved fraction
+        ([[multiscale-registration]]), or (3) constrain simulations to
+        Snw < Snw* and report the saturation cutoff explicitly."
+      - "Sub-resolution porosity segmented as solid will cause permeability
+        to be underestimated. Always state what fraction of total porosity
+        is sub-resolution."
+    decision_points:
+      - question: "What fraction of pore volume is sub-resolution?"
+        branches:
+          "Minor fraction (< 10% of pore volume)": "Proceed with simulation; note sub-resolution fraction in metadata"
+          "Significant fraction (> 10–20%)": "Use [[multiscale-registration]] to assign micro-porosity fractions, or constrain results to the resolved saturation range; do not extrapolate single-scale simulations"
+    references:
+      - "Blunt et al. (2013), Advances in Water Resources,
+        10.1016/j.advwatres.2012.03.003"
+      - "Wildenschild & Sheppard (2013), Advances in Water Resources,
+        10.1016/j.advwatres.2012.07.018"
+      - "Saxena et al. (2017), Marine and Petroleum Geology,
+        10.1016/j.marpetgeo.2017.07.004"
+
+  - id: heterogeneity-classification
+    name: "Pore-Scale Heterogeneity Classification"
+    keywords: [heterogeneity, classification, rock type, heterogeneous,
+               homogeneous, REV, disorder, pore structure, microstructure
+               classification, porosity variance, Minkowski, two-point
+               correlation, coefficient of variation]
+    description: >
+      Classify a rock image's pore-structure heterogeneity level to guide
+      downstream workflow choices: REV size, appropriate simulation method,
+      and upscaling strategy. Highly heterogeneous samples require larger
+      REVs, may need ensemble simulation, and should not be described by a
+      single effective property. Classification can use sub-volume porosity
+      variance, pore-size disorder metrics, or a dedicated structural
+      classifier framework.
+    prerequisites: [microstructure-characterization]
+    inputs:
+      - "Segmented volume"
+      - "Voxel size in physical units"
+      - "Porosity and pore-size distribution from [[microstructure-characterization]]"
+    outputs:
+      - "Heterogeneity class label (homogeneous / weakly heterogeneous /
+        strongly heterogeneous)"
+      - "Classification metrics: sub-volume porosity variance, pore-size
+        coefficient of variation (CoV), spatial correlation length"
+      - "Recommended REV size and simulation strategy"
+    steps:
+      - "Divide the volume into a grid of sub-volumes at multiple scales;
+        compute porosity in each sub-volume."
+      - "Plot variance of sub-volume porosity vs. sub-volume edge length.
+        The scale at which variance plateaus defines the REV and the
+        dominant heterogeneity length scale."
+      - "Compute pore-size disorder: coefficient of variation
+        CoV = σ(r_pore) / μ(r_pore). High CoV (> ~1) indicates strongly
+        heterogeneous pore space."
+      - "Optionally apply a quantitative classifier (e.g., Gostick et al.
+        2023 framework based on Minkowski functionals and two-point
+        correlation descriptors) to assign a standardized heterogeneity class."
+      - "Use the class to select a simulation strategy: single run
+        (homogeneous), ensemble of sub-volume runs (weakly heterogeneous),
+        or multi-scale modeling for strongly heterogeneous samples."
+    software:
+      - "DPM Tools (portal-featured, heterogeneity classification module)"
+      - "PoreSpy (two-point correlation, chord length, Minkowski functionals)"
+      - "scikit-image (regionprops, sub-volume analysis)"
+    example_datasets:
+      - "DRP-247: Heterogeneous Mt. Simon Sandstone — multi-region pore
+        structure ideal for demonstrating sub-volume porosity variance analysis"
+      - "DRP-118: Tight Carbonate — strongly heterogeneous pore system with
+        disconnected micro-pores and sub-resolution porosity; CoV typically > 1"
+    best_practices:
+      - "Heterogeneity classification should precede REV determination: a
+        homogeneous sample converges to an REV quickly; a strongly
+        heterogeneous sample may not have a meaningful single REV at the
+        imaged scale."
+      - "Sub-volume porosity variance is a fast proxy but does not capture
+        connectivity heterogeneity. Pair it with the two-point correlation
+        length as a complementary descriptor."
+      - "Always report the heterogeneity class alongside derived transport
+        properties. A single permeability value from a strongly heterogeneous
+        sample without sub-volume variance is not meaningful."
+    decision_points:
+      - question: "What is the measured heterogeneity level?"
+        branches:
+          "Homogeneous (sub-volume porosity CoV < 0.3)": "Standard single-domain simulation; REV is small relative to the image"
+          "Weakly heterogeneous (CoV 0.3–1)": "Simulate multiple sub-volumes and report the distribution; select a larger REV"
+          "Strongly heterogeneous (CoV > 1, no variance plateau)": "Multi-scale or stochastic upscaling required; a single effective property is not meaningful — see [[multiscale-registration]] and [[image-synthesis]]"
+    references:
+      - "Mohamed and Prodanović (2023), Transport in Porous Media,
+        10.1007/s11242-023-02008-1"
