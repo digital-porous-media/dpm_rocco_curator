@@ -50,14 +50,27 @@ def _find_root(nodes: list[dict]) -> int:
 
 def _get_dataset_number(nodes: list[dict], root_key: int) -> int:
     project_id = nodes[root_key]["value"]["projectId"]
-    nums = re.findall(r"\d{1,3}", project_id)
-    return int(nums[0])
+    # projectId looks like "drp.project.published.DRP-1112" or, for a specific
+    # published version, "drp.project.published.DRP-1112v5". Match digits
+    # immediately after "DRP-" only (not \d{1,3}, which truncates project
+    # numbers >= 1000, e.g. DRP-1112 -> 111) and stop before any "vN" suffix.
+    match = re.search(r"DRP-(\d+)", project_id)
+    if not match:
+        raise ValueError(f"Could not parse dataset number from projectId: {project_id!r}")
+    return int(match.group(1))
 
 
 def _specify_root(metadata: dict, root_key: int) -> str:
-    """Append projectId to NODE_ROOT identifier to make it globally unique."""
+    """Append a version-independent projectId to NODE_ROOT to make it globally unique.
+
+    projectId strings include a version suffix for versioned releases
+    (e.g. "drp.project.published.DRP-1112v5"). That suffix is stripped here so
+    that re-loading a newer version of the same project (--mode upsert) merges
+    onto the existing Dataset node instead of creating a duplicate one per version.
+    """
     project_id = metadata["nodes"][root_key]["value"]["projectId"]
-    new_id = f"NODE_ROOT+{project_id}"
+    base_project_id = re.sub(r"(DRP-\d+)v\d+$", r"\1", project_id)
+    new_id = f"NODE_ROOT+{base_project_id}"
     for link in metadata["links"]:
         if link["source"] == "NODE_ROOT":
             link["source"] = new_id
