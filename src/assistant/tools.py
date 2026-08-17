@@ -25,6 +25,7 @@ _graph_store = None
 _workflows_data = None
 _tutorials_data = None
 _lit_search = None
+_portal_docs_store = None
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,29 @@ def _get_lit_search():
         from src.assistant.literature_search import LiteratureSearch
         _lit_search = LiteratureSearch()
     return _lit_search
+
+
+def _get_portal_docs_store():
+    """Lazily load the FAISS index built by scripts/build_portal_docs_index.py.
+
+    Returns None (rather than raising) if the index hasn't been built yet, so
+    search_portal_docs can produce an honest gap message instead of crashing.
+    """
+    global _portal_docs_store
+    if _portal_docs_store is None:
+        index_dir = Path(__file__).parents[2] / "data" / "portal_docs_index"
+        if not index_dir.exists():
+            return None
+        from src.assistant.llm import get_embeddings_model
+        from src.ingestor.embedder import DocumentEmbedder
+        from src.retriever.retriever import VectorStoreManager
+
+        # Resolve the real Embeddings instance (not the lazy proxy) — FAISS
+        # does an isinstance(..., Embeddings) check that the proxy fails.
+        manager = VectorStoreManager(DocumentEmbedder(embeddings=get_embeddings_model()))
+        manager.load(index_dir)
+        _portal_docs_store = manager
+    return _portal_docs_store
 
 
 def _load_workflows() -> dict:
@@ -598,25 +622,63 @@ def get_educational_context(question: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Portal documentation search (stub — full pipeline pending)
+# Portal documentation search
 # ---------------------------------------------------------------------------
+
+# FAISS.similarity_search always returns the top-k nearest chunks regardless of
+# relevance — there's no free "no match" signal. similarity_search_with_score
+# returns L2 distance (lower = closer); empirically, on-topic queries against
+# the current index score ~0.4-0.6 while clearly unrelated queries score
+# ~0.9-1.3 (tested against the built dpm_docs+thesis index during development).
+# 0.9 sits in the gap between those clusters. This is index/embedding-model
+# specific — recalibrate if the embedding model or corpus changes materially.
+_NO_MATCH_SCORE_THRESHOLD = 0.9
+
 
 @tool
 def search_portal_docs(question: str) -> str:
     """Search the DPM Portal user documentation for how-to guides and metadata schema reference.
 
     Covers: dataset submission guidelines, portal navigation, metadata field definitions,
-    and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs.
-
-    NOTE: Full implementation pending — the portal docs ingestion pipeline (fetch → chunk →
-    vector index) has not been built yet. When implemented, this tool will query a FAISS or
-    Neo4j vector index built from the dpm_docs markdown pages.
+    and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs,
+    plus deeper data-model background from Turhan (2024), the master's thesis the portal's
+    data model is based on. Source labels: [portal docs] / [thesis].
     """
-    return (
-        "Portal documentation search is not yet available. "
-        "For step-by-step workflow guidance, try get_workflow_guidance(). "
-        "For structured dataset property queries, try get_dataset_details()."
-    )
+    store = _get_portal_docs_store()
+    if store is None:
+        return (
+            "Portal documentation search is not yet available (index not built). "
+            "Run scripts/build_portal_docs_index.py to enable it. "
+            "For step-by-step workflow guidance, try get_workflow_guidance(). "
+            "For structured dataset property queries, try get_dataset_details()."
+        )
+
+    scored = store.similarity_search_with_score(question, k=4)
+    results = [doc for doc, score in scored if score <= _NO_MATCH_SCORE_THRESHOLD]
+    if not results:
+        return (
+            "No portal documentation found matching that question. "
+            "Try get_workflow_guidance() or get_educational_context()."
+        )
+
+    lines = []
+    for doc in results:
+        meta = doc.metadata
+        doc_url = meta.get("doc_url", "")
+        if meta.get("doc_type") == "thesis":
+            page = meta.get("page", "?")
+            lines.append(
+                f"[thesis] {meta.get('page_title', 'Unknown')} (p.{page})\n"
+                f"{doc.page_content}\nSource: {doc_url}"
+            )
+        else:
+            section = meta.get("section", "")
+            heading = f" — {section}" if section else ""
+            lines.append(
+                f"[portal docs] {meta.get('page_title', 'Unknown')}{heading}\n"
+                f"{doc.page_content}\nSource: {doc_url}"
+            )
+    return "\n\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

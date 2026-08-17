@@ -17,6 +17,8 @@ env/
 *.pkl
 faiss_index/
 data/metadata/
+data/portal_docs/
+data/portal_docs_index/
 
 # Streamlit session files
 .streamlit/

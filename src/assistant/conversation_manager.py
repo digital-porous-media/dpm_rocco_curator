@@ -20,7 +20,9 @@ The agent performs routing implicitly. The mapping is:
                                                   property, numeric threshold/range, or
                                                   multiple values/fields — even combined
                                                   with a rock type or imaging method)
-  Portal how-to / schema  search_portal_docs     (portal markdown docs — stub until pipeline built)
+  Portal how-to / schema  search_portal_docs     (dpm_docs markdown + Turhan (2024) thesis,
+                                                  FAISS index built by
+                                                  scripts/build_portal_docs_index.py)
   Domain Q&A              get_educational_context (workflows + global best practices)
   Workflow guidance       get_workflow_guidance   (step-by-step DRP workflows + tutorial links)
   Literature              search_literature       (Semantic Scholar API)
@@ -49,7 +51,7 @@ from src.assistant.tools import build_langchain_tools
 # the failure mode prompt instructions can't reliably prevent — dropped or
 # hallucinated DOIs/descriptions — because the model is reproducing structured data
 # from memory of what it just read rather than being handed it verbatim.
-_VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
+_VERBATIM_TOOLS = {"search_datasets", "get_dataset_details", "search_portal_docs"}
 
 # Tools that already return a complete, final, user-ready answer authored by their own
 # grounded LLM/chain call (GraphCypherQAChain's QA step, educational.yaml's synthesis,
