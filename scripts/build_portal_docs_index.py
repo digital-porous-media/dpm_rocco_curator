@@ -2,16 +2,18 @@
 Build the FAISS vector index over DPM Portal documentation.
 
 Fetches markdown pages from the public `dpm_docs` GitHub repo
-(https://github.com/digital-porous-media/dpm_docs) plus the Turhan (2024)
-master's thesis on the underlying data model (public, UT Austin repository),
-chunks both, embeds them with the shared assistant embeddings model, and
-saves a FAISS index that `src.assistant.tools.search_portal_docs` queries at
-runtime.
+(https://github.com/digital-porous-media/dpm_docs), chunks them, embeds them
+with the shared assistant embeddings model, and saves a FAISS index that
+`src.assistant.tools.search_portal_docs` queries at runtime.
 
-Two knowledge sources are combined into one index, distinguished by a
-`doc_type` chunk-metadata field:
-    - "markdown_page" — dpm_docs how-to/reference pages
-    - "thesis"        — Turhan (2024), DOI 10.26153/tsw/59410
+All chunks are tagged `doc_type="markdown_page"` (dpm_docs how-to/reference
+pages). An earlier version of this index also included the Turhan (2024)
+master's thesis as a second source ("doc_type": "thesis"), but it was
+dropped: only a ~14-page section of the 120-page thesis was on-topic, that
+section's content is functionally redundant with dpm_docs' own "Curate Your
+Dataset" reference section, and the other ~90% of the thesis (background
+chapters, an unrelated case-study section) was pure noise competing for
+top-k retrieval slots against real portal-doc chunks.
 
 Figures: dpm_docs uses standard `![alt](path)` markdown image syntax. Image
 content itself cannot be embedded (no vision-captioning/OCR pipeline exists
@@ -33,8 +35,7 @@ Usage:
 
 Prerequisites:
     - LLM_API_KEY + embedding provider configured in .env (see src/llm/embeddings.py)
-    - Network access to api.github.com, raw.githubusercontent.com, and
-      repositories.lib.utexas.edu (thesis PDF)
+    - Network access to api.github.com and raw.githubusercontent.com
 """
 
 from __future__ import annotations
@@ -64,21 +65,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 DPM_DOCS_REPO = "digital-porous-media/dpm_docs"
 DPM_DOCS_BRANCH = "main"
 DPM_DOCS_PAGES_BASE = "https://digital-porous-media.github.io/dpm_docs"
-
-# UT Austin Texas ScholarWorks (DSpace 7) — public, no auth required. Resolved
-# via the item's REST API (bundles → bitstreams → content link); hardcoded
-# here since the record is permanent. If UT ever migrates repositories this
-# URL would need updating — the DOI (used as the citable doc_url) will not.
-THESIS_BITSTREAM_URL = (
-    "https://repositories.lib.utexas.edu/server/api/core/bitstreams/"
-    "34d5bbf8-be4d-40df-af66-3afa747a06e9/content"
-)
-THESIS_DOI_URL = "https://doi.org/10.26153/tsw/59410"
-THESIS_TITLE = (
-    "Turhan (2024) — Towards Scalable Data Model for Curation and Reusable "
-    "Workflows for Porous Media Image Analysis"
-)
-THESIS_FILENAME = "thesis_turhan_2024.pdf"
 
 DATA_DIR = Path("data/portal_docs")
 INDEX_DIR = Path("data/portal_docs_index")
@@ -138,17 +124,6 @@ def fetch_dpm_docs(dest_dir: Path) -> list[Path]:
     return written
 
 
-def fetch_thesis(dest_dir: Path) -> Path:
-    """Download the Turhan (2024) thesis PDF from UT's DSpace bitstream API."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    out_path = dest_dir / THESIS_FILENAME
-    resp = requests.get(THESIS_BITSTREAM_URL, timeout=60)
-    resp.raise_for_status()
-    out_path.write_bytes(resp.content)
-    print(f"Fetched thesis PDF ({len(resp.content) / 1e6:.1f} MB) to {out_path}")
-    return out_path
-
-
 # ---------------------------------------------------------------------------
 # Chunking — markdown pages
 # ---------------------------------------------------------------------------
@@ -181,7 +156,17 @@ _MD_SPLITTER = RecursiveCharacterTextSplitter(
 
 def chunk_markdown_file(path: Path, rel_path: str) -> list[Document]:
     """Chunk one dpm_docs markdown file into Documents tagged with source,
-    page_title, section, doc_url, and doc_type="markdown_page"."""
+    page_title, section, doc_url, and doc_type="markdown_page".
+
+    Each chunk's embedded text is prefixed with a "{page_title} — {section}" context
+    header (same pattern as the componentEmbedding index's parent-context header, see
+    CLAUDE.md "Vector Indexes"). Without it, a short procedural chunk pulled out of its
+    page — e.g. "3. From the dropdown list, select `Dataset`. 4. Fill in..." — carries
+    no textual signal that it's part of an upload walkthrough, and loses out in
+    similarity search to unrelated prose that happens to repeat the query's literal
+    words more densely. The header is embedded, not just stored as metadata, precisely
+    so it contributes to the similarity score.
+    """
     raw = path.read_text(encoding="utf-8")
     # Strip image syntax to a plain-text placeholder — see module docstring
     # "Figures" section for rationale.
@@ -196,10 +181,11 @@ def chunk_markdown_file(path: Path, rel_path: str) -> list[Document]:
         body = body.strip()
         if not body:
             continue
+        header = f"{page_title} — {heading}" if heading else page_title
         for chunk_text in _MD_SPLITTER.split_text(body):
             docs.append(
                 Document(
-                    page_content=chunk_text,
+                    page_content=f"{header}\n\n{chunk_text}",
                     metadata={
                         "source": rel_path,
                         "page_title": page_title,
@@ -210,25 +196,6 @@ def chunk_markdown_file(path: Path, rel_path: str) -> list[Document]:
                 )
             )
     return docs
-
-
-# ---------------------------------------------------------------------------
-# Chunking — thesis PDF
-# ---------------------------------------------------------------------------
-
-def chunk_thesis(path: Path) -> list[Document]:
-    """Chunk the thesis PDF using the existing curator DocumentIngestor (same
-    500/100 chunking as the Description Curator's PDF/DOCX RAG pipeline)."""
-    from src.ingestor.document_ingestor import DocumentIngestor
-
-    ingestor = DocumentIngestor(chunk_size=500, chunk_overlap=100)
-    chunks = ingestor.ingest(str(path))
-    for chunk in chunks:
-        chunk.metadata["doc_type"] = "thesis"
-        chunk.metadata["page_title"] = THESIS_TITLE
-        chunk.metadata["doc_url"] = THESIS_DOI_URL
-        # PyPDFLoader already sets metadata["page"] (0-indexed) — left as-is.
-    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +255,6 @@ class PortalDocsIndexBuilder:
     def run(self, skip_fetch: bool = False, skip_verify: bool = False) -> None:
         if not skip_fetch:
             fetch_dpm_docs(DATA_DIR)
-            fetch_thesis(DATA_DIR)
         else:
             print(f"Skipping fetch — reusing existing files in {DATA_DIR}")
 
@@ -303,17 +269,7 @@ class PortalDocsIndexBuilder:
             rel_path = str(f.relative_to(DATA_DIR))
             chunks.extend(chunk_markdown_file(f, rel_path))
 
-        thesis_path = DATA_DIR / THESIS_FILENAME
-        thesis_included = thesis_path.exists()
-        if thesis_included:
-            chunks.extend(chunk_thesis(thesis_path))
-        else:
-            print(f"Warning: thesis PDF not found at {thesis_path}; skipping thesis ingestion")
-
-        print(
-            f"Built {len(chunks)} chunks from {len(md_files)} markdown pages"
-            + (" + thesis" if thesis_included else "")
-        )
+        print(f"Built {len(chunks)} chunks from {len(md_files)} markdown pages")
 
         self._manager.create_from_documents(chunks)
         self._manager.save(INDEX_DIR)
@@ -354,7 +310,7 @@ class PortalDocsIndexBuilder:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fetch, chunk, and index DPM Portal documentation + Turhan (2024) thesis.",
+        description="Fetch, chunk, and index DPM Portal documentation.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

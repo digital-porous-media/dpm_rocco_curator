@@ -629,10 +629,173 @@ def get_educational_context(question: str) -> str:
 # relevance — there's no free "no match" signal. similarity_search_with_score
 # returns L2 distance (lower = closer); empirically, on-topic queries against
 # the current index score ~0.4-0.6 while clearly unrelated queries score
-# ~0.9-1.3 (tested against the built dpm_docs+thesis index during development).
+# ~0.9-1.3 (tested against the built dpm_docs index during development).
 # 0.9 sits in the gap between those clusters. This is index/embedding-model
 # specific — recalibrate if the embedding model or corpus changes materially.
 _NO_MATCH_SCORE_THRESHOLD = 0.9
+
+# A long section (e.g. "1. Dataset") gets split into multiple overlapping chunks by
+# the 500-char/100-overlap splitter (build_portal_docs_index._MD_SPLITTER). Because
+# they're near-duplicates of the same passage, plain top-k similarity search often
+# ranks two or three of them consecutively — wasting several of the final slots on
+# redundant text instead of covering different sections (e.g. both halves of
+# "1. Dataset" ranking above "2. Sample"/"3. Digital Dataset" entirely, even though
+# all four sections are on the same page and equally relevant to a "what's the
+# difference" question). _PORTAL_DOCS_CANDIDATE_K casts a wider net; _dedupe_by_section
+# then keeps only the best-scoring chunk per (page_title, section) before truncating
+# to _PORTAL_DOCS_FINAL_K, trading duplicate coverage of one section for breadth
+# across sections.
+_PORTAL_DOCS_CANDIDATE_K = 12
+_PORTAL_DOCS_FINAL_K = 5
+
+# Named schema entities (the same node labels documented in graph_store.py's
+# MANUAL_SCHEMA: Dataset, Sample, DigitalDataset, AnalysisDataset) each have a
+# definitional chunk on upload_data.md's numbered "Curate Your Dataset" reference
+# section. Raw similarity ranking systematically under-ranks the more specific
+# entities (DigitalDataset, AnalysisDataset) because "1. Dataset"'s long, generic
+# section mentions the word "Dataset" densely and wins top-k for almost any query
+# containing it, regardless of how far _PORTAL_DOCS_CANDIDATE_K is raised (verified
+# up to k=25 — still crowded out by other, less-relevant sections). Widening k alone
+# doesn't fix this without also flooding results with noise, so instead: if a query
+# names one of these entities, deterministically guarantee its definitional chunk is
+# included rather than leaving it purely to embedding rank.
+_PORTAL_DOCS_PAGE = "How to Upload Data: A Step-by-Step Guide"
+_SCHEMA_ENTITY_ANCHORS = [
+    (re.compile(r"\bdigital\s*dataset\b", re.IGNORECASE), (_PORTAL_DOCS_PAGE, "3. Digital Dataset")),
+    (re.compile(r"\banalysis\s*dataset\b", re.IGNORECASE), (_PORTAL_DOCS_PAGE, "4. Analysis Dataset")),
+    (re.compile(r"\bsample\b", re.IGNORECASE), (_PORTAL_DOCS_PAGE, "2. Sample")),
+    (re.compile(r"\bdataset\b", re.IGNORECASE), (_PORTAL_DOCS_PAGE, "1. Dataset")),
+]
+
+# Fetch wide enough to cover the whole portal_docs corpus (247 chunks as of the last
+# rebuild) so the metadata filter below can find the target section regardless of its
+# raw similarity rank.
+_ANCHOR_FETCH_K = 300
+
+
+def _anchor_chunks_for_query(store, question: str) -> list:
+    """Return definitional chunks for any schema entity named in `question`, fetched
+    directly by (page_title, section) via FAISS's metadata `filter` — a targeted
+    lookup, not a ranked search, so it's immune to the vocabulary-dominance ranking
+    bias described above. Returns [] if the store doesn't support this or nothing
+    matches; never raises."""
+    vector_store = getattr(store, "vector_store", None)
+    if vector_store is None:
+        return []
+
+    matched_sections = []
+    seen = set()
+    for pattern, section_key in _SCHEMA_ENTITY_ANCHORS:
+        if section_key in seen or not pattern.search(question):
+            continue
+        seen.add(section_key)
+        matched_sections.append(section_key)
+
+    anchors = []
+    for page_title, section in matched_sections:
+        try:
+            hits = vector_store.similarity_search_with_score(
+                question, k=1, filter={"page_title": page_title, "section": section}, fetch_k=_ANCHOR_FETCH_K
+            )
+        except Exception as e:
+            logger.warning("Anchor lookup failed for section %r (%s)", section, e)
+            continue
+        anchors.extend(doc for doc, _score in hits)
+    return anchors
+
+
+def _dedupe_by_section(scored: list[tuple]) -> list:
+    """Keep only the best-scoring chunk per (page_title, section), preserving score
+    order. `scored` is already score-ascending (best first), so the first chunk seen
+    for a given section is its best-scoring one; later chunks from the same section
+    are near-duplicate overlap splits and are dropped rather than the reverse."""
+    seen: set[tuple] = set()
+    deduped = []
+    for doc, score in scored:
+        key = (doc.metadata.get("page_title"), doc.metadata.get("section"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((doc, score))
+    return deduped
+
+
+def _expand_portal_query(question: str) -> str:
+    """Restate a possibly truncated/keyword-style tool argument as a full natural-
+    language question before embedding it (src/prompts/portal_query_expander.yaml).
+
+    The routing prompt instructs the agent to forward the user's question verbatim,
+    but tool-calling LLMs routinely compress a question into a short keyword phrase
+    anyway (e.g. "How do I upload a dataset?" -> "upload a dataset") — this loses
+    context that materially changes which chunks rank highest. Falls back to the
+    original question on any failure; this is a best-effort enrichment step, not a
+    hard dependency of search_portal_docs."""
+    from src.prompts.loader import load_prompt, render
+    from src.assistant.llm import get_chat_model
+
+    try:
+        prompt = load_prompt("portal_query_expander")
+        user = render(prompt["user"], query=question)
+        expanded = get_chat_model().send_prompt(
+            user, context=prompt["system"], params={"temperature": 0.0, "max_tokens": 150}
+        ).strip()
+        return expanded or question
+    except Exception as e:
+        logger.warning("Portal query expansion failed (%s); using original question", e)
+        return question
+
+
+def _strip_fabricated_figure_reference(response: str, has_figure: bool) -> str:
+    """Deterministic guard against figure-mention hallucination.
+
+    portal_docs.yaml instructs the model to mention that a screenshot exists ONLY when
+    an excerpt it actually used contains a "[Figure: ...]" placeholder. Observed
+    (Llama-4-Maverick via SambaNova/TACC) over-generalizing this to "mention a
+    screenshot whenever discussing a UI step," fabricating the mention even when none
+    of the retrieved excerpts contained a placeholder at all. Prompt wording alone
+    wasn't reliable for the analogous tutorial-path hallucination (see
+    _strip_fabricated_tutorial_reference) — same fix here: strip any sentence
+    mentioning a screenshot rather than trusting the prompt to gate it."""
+    if has_figure or "screenshot" not in response.lower():
+        return response
+
+    kept_paragraphs = []
+    for para in response.split("\n"):
+        if not para.strip():
+            kept_paragraphs.append(para)
+            continue
+        sentences = re.split(r'(?<=[.!?])\s+', para)
+        kept_sentences = [s for s in sentences if "screenshot" not in s.lower()]
+        if kept_sentences:
+            kept_paragraphs.append(" ".join(kept_sentences))
+    cleaned = "\n".join(kept_paragraphs)
+    return re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+
+_FIGURE_APPEND_NOTE = "See the screenshot on the linked page for this step."
+
+
+def _ensure_figure_reference(response: str, has_figure: bool) -> str:
+    """Complement to _strip_fabricated_figure_reference: when a used excerpt genuinely
+    contains a "[Figure: ...]" placeholder, the disclosure that a screenshot exists is
+    useful enough (and easy enough to get right deterministically) that it shouldn't
+    depend on the model choosing to mention it — observed inconsistently omitting it
+    even with an explicit prompt instruction to include it. If has_figure is True and
+    the response doesn't already mention a screenshot, append a fixed honest note."""
+    if not has_figure or "screenshot" in response.lower():
+        return response
+    return response.rstrip() + "\n\n" + _FIGURE_APPEND_NOTE
+
+
+def _format_portal_doc_chunk(doc) -> str:
+    """Render one retrieved dpm_docs chunk as labeled context text for the
+    synthesis LLM — same [portal docs] labeling shown to users.
+
+    doc.page_content already starts with a "{page_title} — {section}" header baked in
+    at embed time (see build_portal_docs_index.chunk_markdown_file) — only the
+    "[portal docs]" source-type tag is added here, not a second copy of the title."""
+    doc_url = doc.metadata.get("doc_url", "")
+    return f"[portal docs] {doc.page_content}\nSource: {doc_url}"
 
 
 @tool
@@ -640,9 +803,8 @@ def search_portal_docs(question: str) -> str:
     """Search the DPM Portal user documentation for how-to guides and metadata schema reference.
 
     Covers: dataset submission guidelines, portal navigation, metadata field definitions,
-    and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs,
-    plus deeper data-model background from Turhan (2024), the master's thesis the portal's
-    data model is based on. Source labels: [portal docs] / [thesis].
+    and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs.
+    Source label: [portal docs].
     """
     store = _get_portal_docs_store()
     if store is None:
@@ -653,32 +815,45 @@ def search_portal_docs(question: str) -> str:
             "For structured dataset property queries, try get_dataset_details()."
         )
 
-    scored = store.similarity_search_with_score(question, k=4)
-    results = [doc for doc, score in scored if score <= _NO_MATCH_SCORE_THRESHOLD]
+    expanded_question = _expand_portal_query(question)
+    scored = store.similarity_search_with_score(expanded_question, k=_PORTAL_DOCS_CANDIDATE_K)
+    scored = [(doc, score) for doc, score in scored if score <= _NO_MATCH_SCORE_THRESHOLD]
+    deduped = _dedupe_by_section(scored)[:_PORTAL_DOCS_FINAL_K]
+    results = [doc for doc, score in deduped]
+
+    # Guarantee any named schema entity's definitional chunk is present — never
+    # displaces a genuinely good top-k match, only fills gaps the ranking misses.
+    existing_keys = {(d.metadata.get("page_title"), d.metadata.get("section")) for d in results}
+    for anchor_doc in _anchor_chunks_for_query(store, expanded_question):
+        key = (anchor_doc.metadata.get("page_title"), anchor_doc.metadata.get("section"))
+        if key not in existing_keys:
+            results.append(anchor_doc)
+            existing_keys.add(key)
+
     if not results:
         return (
             "No portal documentation found matching that question. "
             "Try get_workflow_guidance() or get_educational_context()."
         )
 
-    lines = []
-    for doc in results:
-        meta = doc.metadata
-        doc_url = meta.get("doc_url", "")
-        if meta.get("doc_type") == "thesis":
-            page = meta.get("page", "?")
-            lines.append(
-                f"[thesis] {meta.get('page_title', 'Unknown')} (p.{page})\n"
-                f"{doc.page_content}\nSource: {doc_url}"
-            )
-        else:
-            section = meta.get("section", "")
-            heading = f" — {section}" if section else ""
-            lines.append(
-                f"[portal docs] {meta.get('page_title', 'Unknown')}{heading}\n"
-                f"{doc.page_content}\nSource: {doc_url}"
-            )
-    return "\n\n".join(lines)
+    # Raw retrieved chunks are independent nearest-neighbor hits, not a coherent
+    # answer — some are routinely off-topic even after the score filter above (e.g.
+    # an image-caption fragment surfacing for an unrelated question). Hand them to an
+    # LLM to synthesize an actual answer and cite only the chunks it actually used,
+    # rather than returning the raw chunk dump directly (see search_portal_docs'
+    # entry in conversation_manager._SELF_CONTAINED_TOOLS for why this must be a
+    # self-contained answer rather than a verbatim tool).
+    from src.prompts.loader import load_prompt, render
+    from src.assistant.llm import get_chat_model
+
+    has_figure = any("[Figure:" in doc.page_content for doc in results)
+    context = "\n\n".join(_format_portal_doc_chunk(doc) for doc in results)
+    prompt = load_prompt("portal_docs")
+    system = render(prompt["system"], context=context)
+    user = render(prompt["user"], question=question)
+    response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.2, "max_tokens": 800})
+    response = _strip_fabricated_figure_reference(response, has_figure)
+    return _ensure_figure_reference(response, has_figure)
 
 
 # ---------------------------------------------------------------------------

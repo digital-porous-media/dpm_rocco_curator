@@ -20,8 +20,7 @@ The agent performs routing implicitly. The mapping is:
                                                   property, numeric threshold/range, or
                                                   multiple values/fields — even combined
                                                   with a rock type or imaging method)
-  Portal how-to / schema  search_portal_docs     (dpm_docs markdown + Turhan (2024) thesis,
-                                                  FAISS index built by
+  Portal how-to / schema  search_portal_docs     (dpm_docs markdown, FAISS index built by
                                                   scripts/build_portal_docs_index.py)
   Domain Q&A              get_educational_context (workflows + global best practices)
   Workflow guidance       get_workflow_guidance   (step-by-step DRP workflows + tutorial links)
@@ -51,7 +50,7 @@ from src.assistant.tools import build_langchain_tools
 # the failure mode prompt instructions can't reliably prevent — dropped or
 # hallucinated DOIs/descriptions — because the model is reproducing structured data
 # from memory of what it just read rather than being handed it verbatim.
-_VERBATIM_TOOLS = {"search_datasets", "get_dataset_details", "search_portal_docs"}
+_VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
 
 # Tools that already return a complete, final, user-ready answer authored by their own
 # grounded LLM/chain call (GraphCypherQAChain's QA step, educational.yaml's synthesis,
@@ -60,7 +59,14 @@ _VERBATIM_TOOLS = {"search_datasets", "get_dataset_details", "search_portal_docs
 # (e.g. get_dataset_details' answer has no DOI to draw from unless its own Cypher
 # fetched one, but the outer SYSTEM_PROMPT's "always include a DOI" instruction still
 # pressures it to guess one if allowed to retype the answer).
-_SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context"}
+# search_portal_docs belongs here rather than in _VERBATIM_TOOLS: unlike
+# search_datasets/get_dataset_details, its raw retrieval is prose chunks (dpm_docs
+# excerpts) that answer the question only if something actually reads them and
+# synthesizes — pasting them verbatim produced disconnected, sometimes off-topic
+# chunk dumps instead of an answer. Its own LLM call (portal_docs.yaml) does that
+# synthesis and cites [portal docs] sources, so it's self-contained like
+# get_educational_context/get_workflow_guidance.
+_SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context", "search_portal_docs"}
 
 # Tags search_datasets prepends for the narrator's benefit only — never meant to
 # reach the user as literal bracketed text (see tools.py: rationale/weak-match tags).
@@ -418,8 +424,9 @@ tool per Tiers 1-3 below rather than answering from memory. If the request has n
 to porous media, dataset/DRP research, or the kind of data/analysis work researchers do around \
 Rocco's datasets (e.g. general programming help or personal topics unrelated to the domain), \
 respond warmly but gently steer the conversation back — mention what you can help with (finding \
-datasets, DRP workflows, literature, domain science, or domain-related coding/analysis help) \
-rather than refusing outright or acting as a general-purpose assistant.
+datasets, DRP workflows, literature, domain science, portal how-to guidance/documentation, or \
+domain-related coding/analysis help) rather than refusing outright or acting as a general-purpose \
+assistant.
 
 **Tier 1 — Dataset and portal facts (e.g. "How many sandstone datasets have φ > 0.2?")**
 Use tools only. Never assert a dataset property, count, or statistic that was not returned \
@@ -441,7 +448,13 @@ The rules below apply only to Tiers 1-3. Tier 0 conversation/brainstorming/code-
 input does not require any tool from this list, though a tool may still be called mid-turn \
 if the conversation surfaces a genuine dataset/workflow/literature need.
 
-- "How to X", "How do I X", "what are the steps to X", any workflow or method question → get_workflow_guidance (always first; call search_datasets afterward only if the user also wants datasets)
+- "How to X", "How do I X", "what are the steps to X" for a **scientific/analysis \
+method** (compute relative permeability, segment an image, run a simulation, extract a \
+pore network) → get_workflow_guidance (always first; call search_datasets afterward \
+only if the user also wants datasets). Do NOT use get_workflow_guidance for a **portal \
+action** (upload, download, copy, cite, manage collaborators, request publication) — \
+those route to search_portal_docs below, never to get_workflow_guidance, even though \
+they're also phrased as "how do I X".
 - **Any query that names a concrete, checkable dataset/sample property — a numeric \
 threshold or range (porosity above/below/between X, grain size less than X), a specific \
 metadata value or set of values (rock type, segmented status, voxel resolution), a named \
@@ -462,7 +475,12 @@ property named (e.g. "datasets suitable for LBM simulation", "something good for
 teaching demo") → search_datasets. (search_datasets also attempts a structured lookup \
 internally first as a safety net for property-shaped queries that reach it anyway, but \
 routing there directly is still preferred.)
-- Portal how-to guides and metadata schema reference → search_portal_docs
+- Portal *actions* and navigation ("how do I upload/download/copy/cite a dataset", \
+"how do I add collaborators", "how do I request publication") and metadata schema \
+reference ("what fields does a Sample need", "difference between Dataset and Sample") \
+→ search_portal_docs. Pass the user's question to it verbatim/in full — do not shorten \
+it to a keyword phrase; the tool does semantic retrieval and full sentence context \
+retrieves better results than a compressed keyword query.
 - Porous media science Q&A and best practices → get_educational_context
 - Finding papers or publications → search_literature
 
@@ -477,7 +495,8 @@ those are leftover patterns from math-solving output and do not fit conversation
 Just answer the question directly, using headers/bullets only where they genuinely aid \
 readability.
 - Relay source labels from tool output exactly as returned: [graph match], [semantic match], \
-[semantic scholar], [cypher match], [component match], [hybrid match]. Do not strip or rename them.
+[semantic scholar], [cypher match], [component match], [hybrid match], [portal docs]. Do not \
+strip or rename them.
 - When presenting dataset search results, always include the DOI for each entry. \
 The tool output includes it as "DOI: xxx" — preserve it verbatim in your response.
 - Always use LaTeX delimiters for mathematical expressions: inline `$...$`, block `$$...$$` \
@@ -547,6 +566,7 @@ Examples:
 - "How many sandstone datasets have porosity > 0.2?" -> tool
 - "Find datasets suitable for LBM simulation" -> tool
 - "How do I compute relative permeability?" -> tool
+- "How is permeability computed from a lattice Boltzmann simulation?" -> tool
 - "Find papers on relative permeability" -> tool
 - "How do I upload a dataset to the portal?" -> tool
 - "Hi, I'm Bernie, can you help me find sandstone datasets?" -> tool
@@ -586,16 +606,42 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
         return True
 
 
+_NO_TOOL_ACCESS_NOTICE = (
+    "[This specific response has NO tool access — Tier 1/2's \"call the tool first\" "
+    "instructions above do not apply to this turn; _classify_needs_tool has already "
+    "decided no lookup is needed. Never write as if you called a tool, and never "
+    "invent or narrate tool output (e.g. \"the get_workflow_guidance tool "
+    "provides...\", \"### Results\", \"searching datasets...\", \"let's call X\"). "
+    "Never state a dataset title, DOI, or portal-specific property as if it was "
+    "retrieved — anything like that in this response is always fabricated. If the "
+    "question actually needs portal-specific or dataset-specific data, say plainly "
+    "that you don't have it available in this response rather than inventing one; "
+    "only answer directly for genuine Tier 0/3 conversation or foundational-concept "
+    "content.]"
+)
+
+
 def _answer_direct(user_input: str, prior: list[dict]) -> str:
     """Answer without ever exposing the model to tool schemas this turn — used when
-    _classify_needs_tool says no lookup is needed."""
+    _classify_needs_tool says no lookup is needed.
+
+    _classify_needs_tool is not perfectly reliable (observed misrouting Tier 2
+    questions here despite matching the gate's own "-> tool" examples) — when that
+    happens, the model still sees SYSTEM_PROMPT's Tier 1/2 "call the tool first"
+    instructions and, having no actual tool access in this call, was observed
+    fabricating an entire fake tool-use transcript (including fabricated dataset
+    DOIs) rather than recognizing it couldn't comply. _NO_TOOL_ACCESS_NOTICE is a
+    defensive addendum for exactly that misrouted case."""
     from src.assistant.llm import get_chat_model
 
     try:
         llm = get_chat_model()
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + prior + [
-            {"role": "user", "content": user_input}
-        ]
+        messages = (
+            [{"role": "system", "content": SYSTEM_PROMPT},
+             {"role": "system", "content": _NO_TOOL_ACCESS_NOTICE}]
+            + prior
+            + [{"role": "user", "content": user_input}]
+        )
         return _clean_response(llm.invoke(messages).content)
     except Exception as e:
         logger.error("Direct-answer call failed: %s", e)
@@ -722,7 +768,17 @@ class ConversationManager:
                 try:
                     from src.assistant.llm import get_chat_model
                     llm = get_chat_model()
-                    synth_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+                    # Same structural mismatch _answer_direct guards against: this call
+                    # has no tools bound, but SYSTEM_PROMPT's Tier 1/2 still say "call
+                    # the tool first" — without the notice, the model fabricates a fake
+                    # tool-use transcript (observed: invented get_workflow_guidance
+                    # output, invented dataset search, fabricated DOIs) instead of
+                    # admitting it has nothing to ground an answer in.
+                    synth_messages = (
+                        [{"role": "system", "content": SYSTEM_PROMPT},
+                         {"role": "system", "content": _NO_TOOL_ACCESS_NOTICE}]
+                        + messages
+                    )
                     return _clean_response(llm.invoke(synth_messages).content)
                 except Exception as e2:
                     logger.error("Synthesis fallback failed: %s", e2)
