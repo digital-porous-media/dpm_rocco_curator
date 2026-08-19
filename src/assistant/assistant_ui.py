@@ -13,8 +13,10 @@ from src.assistant.conversation_manager import ConversationManager
 
 _DOI_RE = re.compile(r'DOI:\s*(10\.[^\s)]+)')
 
+_BARE_URL_RE = re.compile(r'(?<!\]\()(https?://\S+?)(?=[\s)]|$)')
+
 _SOURCE_LABEL_RE = re.compile(
-    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match)\]',
+    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match|portal docs)\]',
     re.IGNORECASE,
 )
 
@@ -26,6 +28,7 @@ _LABEL_COLORS = {
     "paper match":      "#9467bd",
     "semantic scholar": "#9467bd",
     "cypher match":     "#ff7f0e",
+    "portal docs":      "#d62728",
 }
 
 
@@ -49,6 +52,14 @@ def _linkify_dois(text: str) -> str:
     return _DOI_RE.sub(lambda m: f'[DOI: {m.group(1)}](https://doi.org/{m.group(1)})', text)
 
 
+def _linkify_urls(text: str) -> str:
+    """Convert bare URLs (e.g. dpm_docs 'Source: https://...' lines from
+    search_portal_docs) into clickable markdown links. Skips URLs already inside a
+    markdown link (preceded by '](') so it doesn't double-wrap the DOI links
+    _linkify_dois just produced."""
+    return _BARE_URL_RE.sub(lambda m: f'[{m.group(1)}]({m.group(1)})', text)
+
+
 def _normalize_latex_delimiters(text: str) -> str:
     """Convert \\(...\\) / \\[...\\] delimiters to $...$ / $$...$$ so KaTeX renders them.
 
@@ -61,14 +72,15 @@ def _normalize_latex_delimiters(text: str) -> str:
 
 
 def _render_response(text: str) -> str:
-    """Apply all response formatting: source badges first, then DOI links, then LaTeX normalization."""
-    return _normalize_latex_delimiters(_linkify_dois(_labelify_sources(text)))
+    """Apply all response formatting: source badges first, then DOI links, then bare
+    URLs (e.g. portal-docs source links), then LaTeX normalization."""
+    return _normalize_latex_delimiters(_linkify_urls(_linkify_dois(_labelify_sources(text))))
 
 
 _WELCOME = (
     "Hi, I'm Rocco! I can help you find porous media datasets, "
     "answer questions about digital rock physics, and guide you "
-    "through portal workflows. How can I help?"
+    "through portal workflows and documentation. How can I help?"
 )
 
 

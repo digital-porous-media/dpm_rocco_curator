@@ -17,6 +17,7 @@ env/
 *.pkl
 faiss_index/
 data/metadata/
+data/portal_docs/
 
 # Streamlit session files
 .streamlit/
@@ -45,6 +46,7 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+HANDOFF.md
 
 # Demo materials (local scratch, not shipped docs)
 rocco_demo.pptx

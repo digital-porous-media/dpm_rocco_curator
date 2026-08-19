@@ -10,7 +10,6 @@ Bernie owns:              get_educational_context, get_workflow_guidance,
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 
@@ -555,6 +554,32 @@ def _strip_fabricated_tutorial_reference(response: str, tutorials: list[dict]) -
     return cleaned
 
 
+def _ensure_all_tutorials_mentioned(response: str, tutorials: list[dict]) -> str:
+    """Complement to _strip_fabricated_tutorial_reference: educational.yaml already
+    instructs the model to "list every matched tutorial explicitly... do not
+    paraphrase or omit," but when more than one tutorial matches, this "always
+    mention all of X" instruction was observed dropping one anyway (live, 2/4 runs
+    for a query matching both the Minkowski Functionals and Connected Components
+    tutorials — same query, same context, same prompt, only the model's own content
+    selection varied). Per this project's own repeatedly-validated lesson, a prompt-
+    only "always do X" instruction isn't reliable for this model — deterministically
+    append any matched tutorial whose notebook path isn't already verbatim in the
+    response, in the same Goal/Notebook format the prompt itself specifies."""
+    missing = [t for t in tutorials if t["notebook"] not in response]
+    if not missing:
+        return response
+
+    lines = []
+    for t in missing:
+        nb_path = t["notebook"]
+        nb_filename = nb_path.split("/")[-1]
+        name_part = nb_filename.replace(".ipynb", "")
+        name_clean = re.sub(r"^\d[\d\-]*_", "", name_part).replace("_", " ")
+        lines.append(f'  - **{name_clean}** — {t["goal"]}')
+        lines.append(f'    Path in Community Data: `{nb_path}`')
+    return response.rstrip() + "\n\n" + "\n".join(lines)
+
+
 @tool
 def get_workflow_guidance(goal: str) -> str:
     """Return step-by-step DRP workflow guidance for a user goal, with tutorial links."""
@@ -571,7 +596,8 @@ def get_workflow_guidance(goal: str) -> str:
     user = render(prompt["user"], question=goal)
 
     response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.3, "max_tokens": 1000})
-    return _strip_fabricated_tutorial_reference(response, tutorials)
+    response = _strip_fabricated_tutorial_reference(response, tutorials)
+    return _ensure_all_tutorials_mentioned(response, tutorials)
 
 
 @tool
@@ -598,7 +624,7 @@ def get_educational_context(question: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Portal documentation search (stub — full pipeline pending)
+# Portal documentation search
 # ---------------------------------------------------------------------------
 
 @tool
@@ -607,16 +633,10 @@ def search_portal_docs(question: str) -> str:
 
     Covers: dataset submission guidelines, portal navigation, metadata field definitions,
     and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs.
-
-    NOTE: Full implementation pending — the portal docs ingestion pipeline (fetch → chunk →
-    vector index) has not been built yet. When implemented, this tool will query a FAISS or
-    Neo4j vector index built from the dpm_docs markdown pages.
+    Source label: [portal docs].
     """
-    return (
-        "Portal documentation search is not yet available. "
-        "For step-by-step workflow guidance, try get_workflow_guidance(). "
-        "For structured dataset property queries, try get_dataset_details()."
-    )
+    from src.assistant.portal_docs_retrieval import search_portal_docs_v2
+    return search_portal_docs_v2(question)
 
 
 # ---------------------------------------------------------------------------
