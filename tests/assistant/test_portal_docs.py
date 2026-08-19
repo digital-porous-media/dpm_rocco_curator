@@ -169,26 +169,12 @@ class TestFigureReferenceGuards:
         response = "A Sample is the physical specimen being studied."
         assert _strip_fabricated_figure_reference(response, has_figure=False) == response
 
-    def test_ensure_appends_note_when_figure_present_but_unmentioned(self):
-        from src.assistant.tools import _ensure_figure_reference, _FIGURE_APPEND_NOTE
-
-        response = "To add collaborators, select Manage Authors."
-        result = _ensure_figure_reference(response, has_figure=True)
-
-        assert result.startswith(response)
-        assert _FIGURE_APPEND_NOTE in result
-
-    def test_ensure_is_a_noop_when_no_figure_present(self):
-        from src.assistant.tools import _ensure_figure_reference
-
-        response = "To add collaborators, select Manage Authors."
-        assert _ensure_figure_reference(response, has_figure=False) == response
-
-    def test_ensure_is_a_noop_when_already_mentioned(self):
-        from src.assistant.tools import _ensure_figure_reference
-
-        response = "Step 2 text.\n\nSee the screenshot on the linked page for this step."
-        assert _ensure_figure_reference(response, has_figure=True) == response
+    # _ensure_figure_reference (which proactively appended "See the screenshot on the
+    # linked page for this step." when a figure was present but unmentioned) was
+    # removed — judged too vague to be worth manufacturing on the model's behalf.
+    # _strip_fabricated_figure_reference (tested above) is the only guard that
+    # remains: it still prevents the model from fabricating a screenshot mention when
+    # no figure is actually present, but no longer force-adds one when a figure is.
 
 
 class TestSearchPortalDocs:
@@ -246,6 +232,11 @@ class TestSearchPortalDocs:
             result = search_portal_docs.func("zzz obscure unrelated nonsense query")
 
         assert "No portal documentation found" in result
+        # Implementation-detail leak guard: the no-match message must never expose
+        # literal tool-call syntax to the user (previously "Try get_workflow_guidance()
+        # or get_educational_context().").
+        assert "get_workflow_guidance(" not in result
+        assert "get_educational_context(" not in result
         mock_get_chat.assert_not_called()
 
     def test_weak_matches_above_score_threshold_treated_as_miss(self):
@@ -265,6 +256,11 @@ class TestSearchPortalDocs:
             result = search_portal_docs.func("zzz obscure unrelated nonsense query")
 
         assert "No portal documentation found" in result
+        # Implementation-detail leak guard: the no-match message must never expose
+        # literal tool-call syntax to the user (previously "Try get_workflow_guidance()
+        # or get_educational_context().").
+        assert "get_workflow_guidance(" not in result
+        assert "get_educational_context(" not in result
         mock_get_chat.assert_not_called()
 
     def test_index_not_built_returns_graceful_message_without_calling_llm(self):

@@ -579,6 +579,32 @@ def _strip_fabricated_tutorial_reference(response: str, tutorials: list[dict]) -
     return cleaned
 
 
+def _ensure_all_tutorials_mentioned(response: str, tutorials: list[dict]) -> str:
+    """Complement to _strip_fabricated_tutorial_reference: educational.yaml already
+    instructs the model to "list every matched tutorial explicitly... do not
+    paraphrase or omit," but when more than one tutorial matches, this "always
+    mention all of X" instruction was observed dropping one anyway (live, 2/4 runs
+    for a query matching both the Minkowski Functionals and Connected Components
+    tutorials — same query, same context, same prompt, only the model's own content
+    selection varied). Per this project's own repeatedly-validated lesson, a prompt-
+    only "always do X" instruction isn't reliable for this model — deterministically
+    append any matched tutorial whose notebook path isn't already verbatim in the
+    response, in the same Goal/Notebook format the prompt itself specifies."""
+    missing = [t for t in tutorials if t["notebook"] not in response]
+    if not missing:
+        return response
+
+    lines = []
+    for t in missing:
+        nb_path = t["notebook"]
+        nb_filename = nb_path.split("/")[-1]
+        name_part = nb_filename.replace(".ipynb", "")
+        name_clean = re.sub(r"^\d[\d\-]*_", "", name_part).replace("_", " ")
+        lines.append(f'  - **{name_clean}** — {t["goal"]}')
+        lines.append(f'    Path in Community Data: `{nb_path}`')
+    return response.rstrip() + "\n\n" + "\n".join(lines)
+
+
 @tool
 def get_workflow_guidance(goal: str) -> str:
     """Return step-by-step DRP workflow guidance for a user goal, with tutorial links."""
@@ -595,7 +621,8 @@ def get_workflow_guidance(goal: str) -> str:
     user = render(prompt["user"], question=goal)
 
     response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.3, "max_tokens": 1000})
-    return _strip_fabricated_tutorial_reference(response, tutorials)
+    response = _strip_fabricated_tutorial_reference(response, tutorials)
+    return _ensure_all_tutorials_mentioned(response, tutorials)
 
 
 @tool
@@ -772,21 +799,6 @@ def _strip_fabricated_figure_reference(response: str, has_figure: bool) -> str:
     return re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
 
-_FIGURE_APPEND_NOTE = "See the screenshot on the linked page for this step."
-
-
-def _ensure_figure_reference(response: str, has_figure: bool) -> str:
-    """Complement to _strip_fabricated_figure_reference: when a used excerpt genuinely
-    contains a "[Figure: ...]" placeholder, the disclosure that a screenshot exists is
-    useful enough (and easy enough to get right deterministically) that it shouldn't
-    depend on the model choosing to mention it — observed inconsistently omitting it
-    even with an explicit prompt instruction to include it. If has_figure is True and
-    the response doesn't already mention a screenshot, append a fixed honest note."""
-    if not has_figure or "screenshot" in response.lower():
-        return response
-    return response.rstrip() + "\n\n" + _FIGURE_APPEND_NOTE
-
-
 def _format_portal_doc_chunk(doc) -> str:
     """Render one retrieved dpm_docs chunk as labeled context text for the
     synthesis LLM — same [portal docs] labeling shown to users.
@@ -798,6 +810,16 @@ def _format_portal_doc_chunk(doc) -> str:
     return f"[portal docs] {doc.page_content}\nSource: {doc_url}"
 
 
+def _pageindex_prototype_enabled() -> bool:
+    """PORTAL_DOCS_PAGEINDEX=true swaps search_portal_docs' retrieval step from the
+    FAISS/chunk pipeline below to the hand-rolled heading-tree + LLM-node-selection
+    prototype in portal_docs_retrieval.py (branch: experiment/pageindex-prototype;
+    see that module and HANDOFF.md's PageIndex prototype section for background).
+    Read from the environment on every call, not cached at import time, so tests and
+    live comparisons can flip it without reimporting this module."""
+    return os.environ.get("PORTAL_DOCS_PAGEINDEX", "false").lower() == "true"
+
+
 @tool
 def search_portal_docs(question: str) -> str:
     """Search the DPM Portal user documentation for how-to guides and metadata schema reference.
@@ -806,6 +828,10 @@ def search_portal_docs(question: str) -> str:
     and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs.
     Source label: [portal docs].
     """
+    if _pageindex_prototype_enabled():
+        from src.assistant.portal_docs_retrieval import search_portal_docs_v2
+        return search_portal_docs_v2(question)
+
     store = _get_portal_docs_store()
     if store is None:
         return (
@@ -833,7 +859,8 @@ def search_portal_docs(question: str) -> str:
     if not results:
         return (
             "No portal documentation found matching that question. "
-            "Try get_workflow_guidance() or get_educational_context()."
+            "Try asking about a specific workflow or general topic instead, "
+            "or rephrase your question."
         )
 
     # Raw retrieved chunks are independent nearest-neighbor hits, not a coherent
@@ -852,8 +879,11 @@ def search_portal_docs(question: str) -> str:
     system = render(prompt["system"], context=context)
     user = render(prompt["user"], question=question)
     response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.2, "max_tokens": 800})
-    response = _strip_fabricated_figure_reference(response, has_figure)
-    return _ensure_figure_reference(response, has_figure)
+    # Only strip a fabricated screenshot mention — no longer proactively appends one
+    # when a figure genuinely exists (see _strip_fabricated_figure_reference's
+    # docstring history / HANDOFF.md: the append-on-behalf-of-the-model note was
+    # judged vague/low-value on its own and removed rather than reworded).
+    return _strip_fabricated_figure_reference(response, has_figure)
 
 
 # ---------------------------------------------------------------------------
