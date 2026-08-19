@@ -1,15 +1,14 @@
 """
 LLM-reasoning-based retrieval over the portal-docs heading tree — the "retrieval"
-half of a hand-rolled, PageIndex-style alternative to FAISS/chunk-based
-search_portal_docs (src/assistant/tools.py). See portal_docs_tree.py's module
-docstring for the "index" half and background/rationale, and HANDOFF.md's
-PageIndex prototype section for the full write-up.
+half of a hand-rolled, PageIndex-style approach to search_portal_docs
+(src/assistant/tools.py). See portal_docs_tree.py's module docstring for the
+"index" half and background/rationale, and HANDOFF.md's PageIndex prototype
+section for the full write-up, including the FAISS/chunk-based retrieval path
+this replaced.
 
-Prototype status: dispatched from src.assistant.tools.search_portal_docs behind the
-PORTAL_DOCS_PAGEINDEX env flag (see that function) — this module is not registered
-as its own LangChain tool, so no other file needs to change to compare the two
-implementations against the same live conversation_manager.py routing/self-contained-
-tool contract.
+`search_portal_docs_v2` is `tools.search_portal_docs`'s entire implementation —
+this module is not registered as its own LangChain tool; `tools.py` just
+delegates to it directly.
 """
 
 from __future__ import annotations
@@ -206,13 +205,12 @@ def _split_overview_and_details(text: str) -> tuple[str, str]:
 
 def _format_portal_doc_node(node) -> str:
     """Render one selected tree node as labeled context text for the synthesis LLM —
-    same [portal docs] labeling shown to users, same shape as
-    tools._format_portal_doc_chunk. Uses node.full_text (own text + every
+    same [portal docs] labeling shown to users. Uses node.full_text (own text + every
     descendant's text, concatenated) rather than a single chunk's truncated slice —
     this is what solves the truncated-procedure bugs (HANDOFF.md Update 7 issues #2/
     #3): a "### Step 2: Download the Dataset" node's full_text always contains the
-    complete step, with no 500-char/100-overlap chunk boundary to cut it off mid-
-    instruction.
+    complete step, with no 500-char/100-overlap chunk boundary (the old FAISS path's
+    chunk size — see HANDOFF.md) to cut it off mid-instruction.
 
     A section's leading conceptual overview (e.g. "A digital dataset is always
     linked to a specific Sample...") is typically a small fraction of full_text —
@@ -339,14 +337,39 @@ def _ensure_source_urls_present(response: str, results) -> str:
     return response.rstrip() + "\n" + "\n".join(missing)
 
 
+def _strip_fabricated_figure_reference(response: str, has_figure: bool) -> str:
+    """Deterministic guard against figure-mention hallucination.
+
+    portal_docs.yaml instructs the model to mention that a screenshot exists ONLY when
+    an excerpt it actually used contains a "[Figure: ...]" placeholder. Observed
+    (Llama-4-Maverick via SambaNova/TACC) over-generalizing this to "mention a
+    screenshot whenever discussing a UI step," fabricating the mention even when none
+    of the retrieved excerpts contained a placeholder at all. Prompt wording alone
+    wasn't reliable for the analogous tutorial-path hallucination (see
+    tools._strip_fabricated_tutorial_reference) — same fix here: strip any sentence
+    mentioning a screenshot rather than trusting the prompt to gate it."""
+    if has_figure or "screenshot" not in response.lower():
+        return response
+
+    kept_paragraphs = []
+    for para in response.split("\n"):
+        if not para.strip():
+            kept_paragraphs.append(para)
+            continue
+        sentences = re.split(r'(?<=[.!?])\s+', para)
+        kept_sentences = [s for s in sentences if "screenshot" not in s.lower()]
+        if kept_sentences:
+            kept_paragraphs.append(" ".join(kept_sentences))
+    cleaned = "\n".join(kept_paragraphs)
+    return re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+
 def search_portal_docs_v2(question: str) -> str:
-    """Prototype replacement for the retrieval step inside
-    tools.search_portal_docs — same self-contained-answer contract (see
-    conversation_manager._SELF_CONTAINED_TOOLS), same portal_docs.yaml synthesis
-    prompt and figure-reference guards, but selects whole documentation *sections*
-    via LLM reasoning over the heading tree (select_nodes_for_query) instead of
-    FAISS embedding similarity over 500-char chunks. See module docstring for
-    background."""
+    """`tools.search_portal_docs`'s entire implementation — see that function's
+    docstring for the user-facing contract (conversation_manager._SELF_CONTAINED_TOOLS
+    relies on this being a self-contained answer, not a verbatim tool). Selects
+    whole documentation *sections* via LLM reasoning over the heading tree
+    (select_nodes_for_query). See module docstring for background."""
     from src.assistant.portal_docs_tree import flatten, get_portal_docs_tree
     from src.prompts.loader import load_prompt, render
     from src.assistant.llm import get_chat_model
@@ -372,11 +395,6 @@ def search_portal_docs_v2(question: str) -> str:
             "or rephrase your question."
         )
 
-    # Local import to avoid a module-level circular import — tools.py's dispatcher
-    # imports this module at call time, so by the time this function runs tools.py
-    # is already fully loaded.
-    from src.assistant.tools import _strip_fabricated_figure_reference
-
     has_figure = any(_FIGURE_MARK in n.full_text for n in results)
     context_blocks = [_format_portal_doc_node(n) for n in results]
     container_block = _dataset_container_context(results, id_to_node)
@@ -390,7 +408,7 @@ def search_portal_docs_v2(question: str) -> str:
         user, context=system, params={"temperature": 0.2, "max_tokens": 800}
     )
     # Only strip a fabricated screenshot mention — no longer proactively appends one
-    # when a figure genuinely exists (see tools._strip_fabricated_figure_reference's
+    # when a figure genuinely exists (see _strip_fabricated_figure_reference's
     # call site comment for the rationale).
     response = _strip_fabricated_figure_reference(response, has_figure)
     return _ensure_source_urls_present(response, results)

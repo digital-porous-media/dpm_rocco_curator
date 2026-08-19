@@ -20,8 +20,9 @@ The agent performs routing implicitly. The mapping is:
                                                   property, numeric threshold/range, or
                                                   multiple values/fields — even combined
                                                   with a rock type or imaging method)
-  Portal how-to / schema  search_portal_docs     (dpm_docs markdown, FAISS index built by
-                                                  scripts/build_portal_docs_index.py)
+  Portal how-to / schema  search_portal_docs     (dpm_docs markdown parsed into a heading
+                                                  tree at runtime, LLM-selected sections —
+                                                  see src/assistant/portal_docs_tree.py)
   Domain Q&A              get_educational_context (workflows + global best practices)
   Workflow guidance       get_workflow_guidance   (step-by-step DRP workflows + tutorial links)
   Literature              search_literature       (Semantic Scholar API)
@@ -60,10 +61,10 @@ _VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
 # fetched one, but the outer SYSTEM_PROMPT's "always include a DOI" instruction still
 # pressures it to guess one if allowed to retype the answer).
 # search_portal_docs belongs here rather than in _VERBATIM_TOOLS: unlike
-# search_datasets/get_dataset_details, its raw retrieval is prose chunks (dpm_docs
+# search_datasets/get_dataset_details, its raw retrieval is prose sections (dpm_docs
 # excerpts) that answer the question only if something actually reads them and
 # synthesizes — pasting them verbatim produced disconnected, sometimes off-topic
-# chunk dumps instead of an answer. Its own LLM call (portal_docs.yaml) does that
+# dumps instead of an answer. Its own LLM call (portal_docs.yaml) does that
 # synthesis and cites [portal docs] sources, so it's self-contained like
 # get_educational_context/get_workflow_guidance.
 _SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context", "search_portal_docs"}

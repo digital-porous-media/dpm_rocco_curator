@@ -1,6 +1,6 @@
 """
 Quick standalone health check for the embedding endpoint used by
-build_portal_docs_index.py and build_dataset_vector_index.py.
+build_dataset_vector_index.py.
 
 Sends a single trivial embed_query() call — no batching, no index writes — so it
 fails/succeeds in seconds. Useful for confirming the embedding provider is back

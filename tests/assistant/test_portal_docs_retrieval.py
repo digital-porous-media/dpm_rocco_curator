@@ -1,7 +1,10 @@
 """
-Unit tests for the PageIndex-style prototype (branch: experiment/pageindex-prototype):
+Unit tests for search_portal_docs' PageIndex-style implementation:
 src.assistant.portal_docs_tree (heading-tree builder) and
-src.assistant.portal_docs_retrieval (LLM-reasoning node selection + synthesis).
+src.assistant.portal_docs_retrieval (LLM-reasoning node selection + synthesis) —
+this is search_portal_docs' entire implementation (see tools.search_portal_docs,
+a thin delegating wrapper). Replaced an earlier FAISS/chunk-based retrieval path;
+see HANDOFF.md for that history.
 
 All LLM calls are mocked via src.assistant.llm.get_chat_model — no real network/
 embeddings/index required. Tree-building tests use small synthetic markdown files
@@ -603,27 +606,56 @@ class TestSearchPortalDocsV2:
         assert result == mocked_response
 
 
-class TestSearchPortalDocsDispatcher:
-    """tools.search_portal_docs's env-flag dispatch to the prototype — see
-    tools._pageindex_prototype_enabled."""
+class TestSearchPortalDocsDelegation:
+    """tools.search_portal_docs is a thin wrapper — confirm it delegates straight
+    to search_portal_docs_v2 with the question passed through unchanged."""
 
-    def test_flag_off_uses_faiss_path(self, monkeypatch):
-        monkeypatch.delenv("PORTAL_DOCS_PAGEINDEX", raising=False)
-        with patch("src.assistant.tools._get_portal_docs_store", return_value=None) as mock_store, \
-             patch("src.assistant.portal_docs_retrieval.search_portal_docs_v2") as mock_v2:
-            from src.assistant.tools import search_portal_docs
-            search_portal_docs.func("How do I upload a dataset?")
-
-        mock_store.assert_called_once()
-        mock_v2.assert_not_called()
-
-    def test_flag_on_uses_prototype_path(self, monkeypatch):
-        monkeypatch.setenv("PORTAL_DOCS_PAGEINDEX", "true")
-        with patch("src.assistant.tools._get_portal_docs_store") as mock_store, \
-             patch("src.assistant.portal_docs_retrieval.search_portal_docs_v2", return_value="v2 answer") as mock_v2:
+    def test_delegates_to_v2(self):
+        with patch(
+            "src.assistant.portal_docs_retrieval.search_portal_docs_v2", return_value="v2 answer"
+        ) as mock_v2:
             from src.assistant.tools import search_portal_docs
             result = search_portal_docs.func("How do I upload a dataset?")
 
         mock_v2.assert_called_once_with("How do I upload a dataset?")
-        mock_store.assert_not_called()
         assert result == "v2 answer"
+
+
+class TestFigureReferenceGuards:
+    """_strip_fabricated_figure_reference — relocated here (from the deleted FAISS-
+    path test_portal_docs.py) since the function itself moved into
+    portal_docs_retrieval.py once the FAISS path (its only other caller) was
+    removed; this logic was never FAISS-specific."""
+
+    def test_strip_removes_fabricated_screenshot_mention(self):
+        from src.assistant.portal_docs_retrieval import _strip_fabricated_figure_reference
+
+        response = (
+            "To create a dataset, fill out the required fields.\n\n"
+            "See the screenshot on the linked page for this step.\n\n"
+            "Sources: https://example.com/upload_data/"
+        )
+        cleaned = _strip_fabricated_figure_reference(response, has_figure=False)
+
+        assert "screenshot" not in cleaned.lower()
+        assert "To create a dataset, fill out the required fields." in cleaned
+        assert "Sources: https://example.com/upload_data/" in cleaned
+
+    def test_strip_leaves_response_untouched_when_figure_present(self):
+        from src.assistant.portal_docs_retrieval import _strip_fabricated_figure_reference
+
+        response = "Step 2 text.\n\nSee the screenshot on the linked page for this step."
+        assert _strip_fabricated_figure_reference(response, has_figure=True) == response
+
+    def test_strip_is_a_noop_when_no_screenshot_mention_exists(self):
+        from src.assistant.portal_docs_retrieval import _strip_fabricated_figure_reference
+
+        response = "A Sample is the physical specimen being studied."
+        assert _strip_fabricated_figure_reference(response, has_figure=False) == response
+
+    # _ensure_figure_reference (which proactively appended "See the screenshot on the
+    # linked page for this step." when a figure was present but unmentioned) was
+    # removed — judged too vague to be worth manufacturing on the model's behalf.
+    # _strip_fabricated_figure_reference (tested above) is the only guard that
+    # remains: it still prevents the model from fabricating a screenshot mention when
+    # no figure is actually present, but no longer force-adds one when a figure is.

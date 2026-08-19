@@ -1,24 +1,24 @@
 """
 Heading-tree builder for the dpm_docs portal documentation corpus.
 
-Prototype (branch: experiment/pageindex-prototype). Builds a hierarchical tree
-directly from each markdown page's `#`/`##`/.../`######` heading structure — no
-chunking, no embeddings. This is the "index" half of a hand-rolled, PageIndex-style
-retrieval approach (https://github.com/VectifyAI/PageIndex): PageIndex itself spends
-an LLM call detecting table-of-contents structure in unstructured PDFs; the dpm_docs
-markdown pages already have that structure explicit in their heading markup, so no
-detection step is needed — the tree falls directly out of parsing.
+Builds a hierarchical tree directly from each markdown page's
+`#`/`##`/.../`######` heading structure — no chunking, no embeddings. This is
+the "index" half of a hand-rolled, PageIndex-style retrieval approach
+(https://github.com/VectifyAI/PageIndex): PageIndex itself spends an LLM call
+detecting table-of-contents structure in unstructured PDFs; the dpm_docs
+markdown pages already have that structure explicit in their heading markup, so
+no detection step is needed — the tree falls directly out of parsing.
 
 See src/assistant/portal_docs_retrieval.py for the "retrieval" half (LLM-reasoning
 node selection over this tree) and HANDOFF.md's PageIndex prototype section for the
-full background/rationale.
+full background/rationale. (This replaced an earlier FAISS/embedding-chunk
+retrieval path entirely — see HANDOFF.md for that history.)
 
-Built at query/import time (not persisted as an artifact like the FAISS index) —
-parsing ~13 files/~90 headings of already-downloaded markdown is negligible compared
-to the embedding-based index's actual expensive step (per-chunk embedding API calls).
-Revisit persistence only if profiling shows this assumption wrong, or once/if this
-graduates out of prototype status and something wants a stable node-id contract
-across process restarts.
+Built at query/import time, not persisted as an artifact — parsing ~13 files/~90
+headings of already-downloaded markdown is fast enough that there's no rebuild-
+script/staleness problem to manage. Revisit persistence only if profiling shows
+this assumption wrong, or once something wants a stable node-id contract across
+process restarts.
 """
 
 from __future__ import annotations
@@ -31,23 +31,23 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Reuse the existing, already-tuned heading/image/title-extraction logic from the
-# FAISS index builder rather than reimplementing it — see that module's docstrings
-# for the rationale behind each of these (figure-placeholder substitution, H1-as-
-# page-title convention, "copy"-file exclusion).
-from scripts.build_portal_docs_index import (  # noqa: E402
+# dpm_docs sync script rather than reimplementing it — see that module's
+# docstrings for the rationale behind each of these (figure-placeholder
+# substitution, H1-as-page-title convention, "copy"-file exclusion).
+from scripts.sync_dpm_docs import (  # noqa: E402
     DPM_DOCS_PAGES_BASE,
     _extract_page_title,
     _IMAGE_RE,
 )
 
-# Absolute path, not build_portal_docs_index.DATA_DIR's relative "data/portal_docs" —
-# matches tools._get_portal_docs_store's convention so this doesn't break if the
-# process's cwd isn't the project root.
+# Absolute path, not sync_dpm_docs.DATA_DIR's relative "data/portal_docs" — robust
+# to the process's cwd not being the project root.
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "portal_docs"
 
-# Unlike build_portal_docs_index._HEADING_SPLIT_RE (##/### only, flattened
-# sections), the tree needs every heading level so it can nest them — dpm_docs pages
-# go as deep as H5 (see upload_data.md's "Curate Your Dataset" reference section).
+# Unlike the old FAISS chunker's heading-split regex (##/### only, flattened
+# sections — see HANDOFF.md), the tree needs every heading level so it can nest
+# them — dpm_docs pages go as deep as H5 (see upload_data.md's "Curate Your
+# Dataset" reference section).
 _ANY_HEADING_RE = re.compile(r"(?m)^(#{1,6})\s+(.*)$")
 _MARKDOWN_EMPHASIS_RE = re.compile(r"[*_`]+")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -121,7 +121,7 @@ def parse_markdown_tree(path: Path, rel_path: str) -> list[DocNode]:
     more than one H1 (see cite.md: "How to Cite the ... Portal" and "How to Cite a
     Dataset from the Portal" are two genuinely distinct topics mistakenly both marked
     H1 — the tree splits them into two page nodes rather than silently merging their
-    content the way the flat FAISS chunker's H2/H3-only split does today)."""
+    content, unlike the old flat FAISS chunker's H2/H3-only split — see HANDOFF.md)."""
     raw = path.read_text(encoding="utf-8")
     raw = _IMAGE_RE.sub(r"[Figure: \1]", raw)
 
@@ -189,8 +189,7 @@ def parse_markdown_tree(path: Path, rel_path: str) -> list[DocNode]:
         node_paths[i] = slug_path
 
     # Leading content before the very first heading (rare — dpm_docs pages start
-    # with their H1 — but handle it rather than silently dropping it, mirroring
-    # build_portal_docs_index._split_into_sections' equivalent "" section).
+    # with their H1 — but handle it rather than silently dropping it).
     preamble = raw[: headings[0][3]].strip()
     if preamble:
         preamble_node = DocNode(
@@ -227,8 +226,8 @@ def parse_markdown_tree(path: Path, rel_path: str) -> list[DocNode]:
 
 def build_forest(md_dir: Path = DATA_DIR) -> list[DocNode]:
     """Parse every markdown page under md_dir into page-root DocNodes. Same file
-    discovery/exclusion convention as PortalDocsIndexBuilder.run (sorted, "copy"
-    files excluded — see build_portal_docs_index.fetch_dpm_docs's docstring)."""
+    discovery/exclusion convention as sync_dpm_docs.fetch_dpm_docs (sorted, "copy"
+    files excluded — see that function's docstring)."""
     md_files = sorted(
         p for p in Path(md_dir).rglob("*.md") if "copy" not in p.stem.lower()
     )
@@ -262,7 +261,7 @@ _portal_docs_tree: list[DocNode] | None = None
 
 def get_portal_docs_tree() -> list[DocNode]:
     """Lazy singleton — build the forest once per process, cache in a module
-    global (mirrors tools._get_portal_docs_store's lazy-singleton pattern)."""
+    global."""
     global _portal_docs_tree
     if _portal_docs_tree is None:
         _portal_docs_tree = build_forest(DATA_DIR)
