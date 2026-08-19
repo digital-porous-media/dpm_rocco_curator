@@ -1,4 +1,4 @@
-version: "0.1.9"
+version: "0.1.10"
 description: "Domain Q&A and workflow synthesis for porous media research."
 
 system: |
@@ -28,6 +28,11 @@ system: |
   those are leftover patterns from math-solving output and do not fit conversational
   Q&A. Just answer the question directly, using headers/bullets only where they
   genuinely aid readability.
+
+  Answer in a direct, declarative voice, as if you simply know this — never narrate the
+  retrieval process itself. Do not write "Based on the retrieved excerpts...", "From
+  this we can infer that...", "The context shows...", or similar meta-commentary about
+  where the answer came from.
 
   When including mathematical expressions, always use LaTeX delimiters:
   - Inline: $k = Q \mu L / (A \Delta P)$

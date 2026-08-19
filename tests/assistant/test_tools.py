@@ -178,6 +178,63 @@ class TestStripFabricatedTutorialReference:
         assert result == response.strip()
 
 
+class TestEnsureAllTutorialsMentioned:
+    """Complement to _strip_fabricated_tutorial_reference: when more than one
+    tutorial matches (e.g. both Minkowski Functionals and Connected Components for
+    "compute porosity from an image"), educational.yaml's "list every matched
+    tutorial explicitly" instruction was observed dropping one anyway (live, 2/4 runs,
+    same query/context/prompt — pure model content-selection variance). Deterministic
+    append closes the gap the same way the strip guard closes hallucination."""
+
+    def test_appends_missing_tutorial_not_mentioned_by_the_model(self):
+        from src.assistant.tools import _ensure_all_tutorials_mentioned
+        tutorials = [
+            {"goal": "Characterize pore morphology with Minkowski functionals",
+             "notebook": "3_morphological_characterization/3-2_minkowski_functionals.ipynb"},
+            {"goal": "Identify connected pore space and measure connectivity",
+             "notebook": "3_morphological_characterization/3-6_connected_components.ipynb"},
+        ]
+        response = (
+            "**Goal:** Identify connected pore space and measure connectivity\n"
+            "**Notebook:** `3_morphological_characterization/3-6_connected_components.ipynb`\n"
+        )
+        result = _ensure_all_tutorials_mentioned(response, tutorials)
+        assert "3-6_connected_components.ipynb" in result
+        assert "3-2_minkowski_functionals.ipynb" in result
+
+    def test_noop_when_all_tutorials_already_mentioned(self):
+        from src.assistant.tools import _ensure_all_tutorials_mentioned
+        tutorials = [{"goal": "g", "notebook": "5_simulation/5-2-1_lbm_d2q9_bgk.ipynb"}]
+        response = "**Goal:** g\n**Notebook:** `5_simulation/5-2-1_lbm_d2q9_bgk.ipynb`\n"
+        assert _ensure_all_tutorials_mentioned(response, tutorials) == response
+
+    def test_noop_when_no_tutorials_matched(self):
+        from src.assistant.tools import _ensure_all_tutorials_mentioned
+        response = "We don't currently have a dedicated tutorial for this topic."
+        assert _ensure_all_tutorials_mentioned(response, []) == response
+
+    def test_get_workflow_guidance_wires_in_the_guard(self):
+        """End-to-end: get_workflow_guidance must apply the completeness guard on top
+        of whatever the synthesis LLM returns."""
+        from src.assistant.tools import get_workflow_guidance
+        tutorials = [
+            {"goal": "Characterize pore morphology with Minkowski functionals",
+             "notebook": "3_morphological_characterization/3-2_minkowski_functionals.ipynb"},
+            {"goal": "Identify connected pore space and measure connectivity",
+             "notebook": "3_morphological_characterization/3-6_connected_components.ipynb"},
+        ]
+        incomplete_response = (
+            "**Goal:** Identify connected pore space and measure connectivity\n"
+            "**Notebook:** `3_morphological_characterization/3-6_connected_components.ipynb`\n"
+        )
+        with patch("src.assistant.tools._match_tutorials", return_value=tutorials), \
+             patch("src.assistant.llm.get_chat_model", return_value=_mock_chat_model(incomplete_response)):
+            result = get_workflow_guidance.func("compute porosity from an image")
+
+        assert "3-6_connected_components.ipynb" in result
+        assert "3-2_minkowski_functionals.ipynb" in result
+
+
 # ---------------------------------------------------------------------------
 # get_educational_context
 # ---------------------------------------------------------------------------

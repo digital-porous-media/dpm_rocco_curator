@@ -20,8 +20,7 @@ The agent performs routing implicitly. The mapping is:
                                                   property, numeric threshold/range, or
                                                   multiple values/fields — even combined
                                                   with a rock type or imaging method)
-  Portal how-to / schema  search_portal_docs     (dpm_docs markdown + Turhan (2024) thesis,
-                                                  FAISS index built by
+  Portal how-to / schema  search_portal_docs     (dpm_docs markdown, FAISS index built by
                                                   scripts/build_portal_docs_index.py)
   Domain Q&A              get_educational_context (workflows + global best practices)
   Workflow guidance       get_workflow_guidance   (step-by-step DRP workflows + tutorial links)
@@ -51,7 +50,7 @@ from src.assistant.tools import build_langchain_tools
 # the failure mode prompt instructions can't reliably prevent — dropped or
 # hallucinated DOIs/descriptions — because the model is reproducing structured data
 # from memory of what it just read rather than being handed it verbatim.
-_VERBATIM_TOOLS = {"search_datasets", "get_dataset_details", "search_portal_docs"}
+_VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
 
 # Tools that already return a complete, final, user-ready answer authored by their own
 # grounded LLM/chain call (GraphCypherQAChain's QA step, educational.yaml's synthesis,
@@ -60,7 +59,14 @@ _VERBATIM_TOOLS = {"search_datasets", "get_dataset_details", "search_portal_docs
 # (e.g. get_dataset_details' answer has no DOI to draw from unless its own Cypher
 # fetched one, but the outer SYSTEM_PROMPT's "always include a DOI" instruction still
 # pressures it to guess one if allowed to retype the answer).
-_SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context"}
+# search_portal_docs belongs here rather than in _VERBATIM_TOOLS: unlike
+# search_datasets/get_dataset_details, its raw retrieval is prose chunks (dpm_docs
+# excerpts) that answer the question only if something actually reads them and
+# synthesizes — pasting them verbatim produced disconnected, sometimes off-topic
+# chunk dumps instead of an answer. Its own LLM call (portal_docs.yaml) does that
+# synthesis and cites [portal docs] sources, so it's self-contained like
+# get_educational_context/get_workflow_guidance.
+_SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context", "search_portal_docs"}
 
 # Tags search_datasets prepends for the narrator's benefit only — never meant to
 # reach the user as literal bracketed text (see tools.py: rationale/weak-match tags).
@@ -418,8 +424,13 @@ tool per Tiers 1-3 below rather than answering from memory. If the request has n
 to porous media, dataset/DRP research, or the kind of data/analysis work researchers do around \
 Rocco's datasets (e.g. general programming help or personal topics unrelated to the domain), \
 respond warmly but gently steer the conversation back — mention what you can help with (finding \
-datasets, DRP workflows, literature, domain science, or domain-related coding/analysis help) \
-rather than refusing outright or acting as a general-purpose assistant.
+datasets, DRP workflows, literature, domain science, portal how-to guidance/documentation, or \
+domain-related coding/analysis help) rather than refusing outright or acting as a general-purpose \
+assistant. Acknowledge the mismatch in one short sentence, then stop — do not go on to answer \
+the off-topic question(s), even partially, even to be helpful. This applies even if you know \
+the answer. (A dedicated gate ahead of this prompt already catches most off-domain requests \
+before they reach you — if you're seeing this instruction, treat it as the backstop, not the \
+primary defense.)
 
 **Tier 1 — Dataset and portal facts (e.g. "How many sandstone datasets have φ > 0.2?")**
 Use tools only. Never assert a dataset property, count, or statistic that was not returned \
@@ -441,7 +452,15 @@ The rules below apply only to Tiers 1-3. Tier 0 conversation/brainstorming/code-
 input does not require any tool from this list, though a tool may still be called mid-turn \
 if the conversation surfaces a genuine dataset/workflow/literature need.
 
-- "How to X", "How do I X", "what are the steps to X", any workflow or method question → get_workflow_guidance (always first; call search_datasets afterward only if the user also wants datasets)
+- "How to X", "How do I X", "what are the steps to X" for a **scientific/analysis \
+method** (compute relative permeability, segment an image, run a simulation \
+conceptually/computationally, extract a pore network) → get_workflow_guidance (always \
+first; call search_datasets afterward only if the user also wants datasets). Do NOT \
+use get_workflow_guidance for a **portal action** (upload, download, copy, cite, \
+manage collaborators, request publication) or for **operating a specific tool the \
+portal documents** (e.g. running an LBPM simulation through the portal's LBPM \
+interface, using the portal's Jupyter tools) — those route to search_portal_docs \
+below, never to get_workflow_guidance, even when phrased as "how do I run/use X".
 - **Any query that names a concrete, checkable dataset/sample property — a numeric \
 threshold or range (porosity above/below/between X, grain size less than X), a specific \
 metadata value or set of values (rock type, segmented status, voxel resolution), a named \
@@ -462,7 +481,21 @@ property named (e.g. "datasets suitable for LBM simulation", "something good for
 teaching demo") → search_datasets. (search_datasets also attempts a structured lookup \
 internally first as a safety net for property-shaped queries that reach it anyway, but \
 routing there directly is still preferred.)
-- Portal how-to guides and metadata schema reference → search_portal_docs
+- Portal *actions* and navigation ("how do I upload/download/copy/cite a dataset", \
+"how do I add collaborators", "how do I request publication") and metadata schema \
+reference — ANY question about the definition, purpose, or difference between the \
+DPM Portal's own entity types (Dataset, Sample, Digital Dataset, Analysis Dataset — \
+e.g. "what fields does a Sample need", "difference between Dataset and Sample", \
+"difference between a Digital Dataset and an Analysis Dataset", "what is a Digital \
+Dataset") → search_portal_docs, NEVER get_educational_context or get_workflow_guidance. \
+These are portal-specific schema terms with real documented definitions, not general \
+science concepts — answering them without search_portal_docs produces wrong, made-up \
+definitions, and falling back to "I don't have portal-specific data on this, but \
+generally…" is the WRONG response here since search_portal_docs reliably has this data; \
+only use that fallback phrasing when search_portal_docs was actually called and its \
+result was genuinely sparse. Pass the user's question to it verbatim/in full — do not \
+shorten it to a keyword phrase; the tool does semantic retrieval and full sentence \
+context retrieves better results than a compressed keyword query.
 - Porous media science Q&A and best practices → get_educational_context
 - Finding papers or publications → search_literature
 
@@ -477,7 +510,8 @@ those are leftover patterns from math-solving output and do not fit conversation
 Just answer the question directly, using headers/bullets only where they genuinely aid \
 readability.
 - Relay source labels from tool output exactly as returned: [graph match], [semantic match], \
-[semantic scholar], [cypher match], [component match], [hybrid match]. Do not strip or rename them.
+[semantic scholar], [cypher match], [component match], [hybrid match], [portal docs]. Do not \
+strip or rename them.
 - When presenting dataset search results, always include the DOI for each entry. \
 The tool output includes it as "DOI: xxx" — preserve it verbatim in your response.
 - Always use LaTeX delimiters for mathematical expressions: inline `$...$`, block `$$...$$` \
@@ -520,6 +554,94 @@ Never skip presenting the results. Never ask for clarification before showing re
 """
 
 
+_OFF_DOMAIN_GATE_SYSTEM_PROMPT = """\
+You are a scope gate in front of Rocco, a research assistant for the Digital Porous \
+Media (DPM) Portal. Rocco's in-scope domain is broad: dataset discovery, portal \
+how-to/documentation, porous-media and digital-rock-physics science and workflows \
+(imaging, segmentation, simulation, permeability/porosity/relative-permeability/etc.), \
+literature search, general foundational science/math/physics concepts, and \
+domain-related coding/data-analysis help (including scripts, debugging, statistics). \
+Ordinary conversational courtesies (greetings, thanks, small talk, self-introductions) \
+are also in scope.
+
+Respond with a JSON object only, no markdown fences:
+{"route": "in_domain"} or {"route": "off_domain"}
+
+Route "off_domain" ONLY for requests with no plausible connection to any of the above —
+e.g. requests for a recipe, personal medical/health/allergy advice unrelated to \
+materials science, relationship advice, entertainment/sports/trivia, or general \
+personal-life assistance completely unrelated to research, science, or data work.
+
+When in doubt, or when a message mixes an off-topic part with any genuine \
+science/data/portal question, route "in_domain" — never block a real research \
+question because it was phrased alongside something else.
+
+Examples:
+- "why would someone be allergic to peanuts? How do I make a jelly donut?" -> off_domain
+- "What's a good recipe for banana bread?" -> off_domain
+- "What is porosity?" -> in_domain
+- "Explain Darcy's law" -> in_domain
+- "How do I compute relative permeability?" -> in_domain
+- "How do I upload a dataset to the portal?" -> in_domain
+- "Can you help me think through my sampling design?" -> in_domain
+- "write a script to compute porosity from this CSV" -> in_domain
+- "why is my segmentation pipeline crashing?" -> in_domain
+- "Hi! I'm Bernie" -> in_domain
+- "What's the weather like for my sampling trip, and how do I compute porosity?" -> in_domain
+"""
+
+
+def _classify_off_domain(user_input: str, prior: list[dict]) -> bool:
+    """A separate, dedicated gate — deliberately NOT folded into _classify_needs_tool
+    as a third route, which would blur that gate's already-imperfect tool/direct
+    boundary (see its own docstring). This gate's only job is a coarse in/out-of-domain
+    call, run BEFORE _classify_needs_tool in chat().
+
+    Fixes a real gap: _answer_direct's Tier-0 instruction to "gently steer the
+    conversation back" for off-domain requests is purely prompt-driven and was
+    observed (live, 3/3) to acknowledge the domain mismatch and then answer the
+    off-topic question(s) anyway — the instruction never explicitly says "do not
+    answer". Per this project's own repeatedly-validated lesson, a soft "don't do X"
+    instruction alone isn't reliable for this model; closing the loophole requires a
+    deterministic classify-then-return-a-fixed-string guard (see
+    _OFF_DOMAIN_STEER_BACK_MSG) so there's no further LLM call left that could
+    "helpfully" continue past the acknowledgment.
+
+    Defaults to False (in-domain) on any parse/call failure or ambiguity — a false
+    negative here just reproduces today's already-tolerated behavior (falls through to
+    _classify_needs_tool/_answer_direct as before); a false positive would incorrectly
+    block a real research question, the strictly worse failure mode for a broad
+    research-assistant domain.
+    """
+    from src.assistant.llm import get_chat_model
+
+    try:
+        llm = get_chat_model()
+        messages = (
+            [{"role": "system", "content": _OFF_DOMAIN_GATE_SYSTEM_PROMPT}]
+            + prior[-6:]
+            + [{"role": "user", "content": user_input}]
+        )
+        raw = llm.invoke(messages).content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            raw = raw[len("json"):] if raw.startswith("json") else raw
+        route = str(json.loads(raw.strip()).get("route", "in_domain")).strip().lower()
+        return route == "off_domain"
+    except Exception as e:
+        logger.warning("Off-domain gate failed (%s); defaulting to in-domain.", e)
+        return False
+
+
+_OFF_DOMAIN_STEER_BACK_MSG = (
+    "That's outside what I can help with — I'm focused on the Digital Porous Media "
+    "Portal and porous-media/digital-rock-physics research. I'd be glad to help you "
+    "find datasets, work through DRP workflows, look up literature, answer domain "
+    "science questions, navigate the portal, or work on domain-related code/analysis. "
+    "Is there something along those lines I can help with?"
+)
+
+
 _GATE_SYSTEM_PROMPT = """\
 You are a routing gate in front of a research-assistant chatbot. You do NOT have any \
 tools available in this call — your only job is to decide whether the user's message \
@@ -535,8 +657,16 @@ workflow guidance should still be looked up first).
 
 Route to "direct" for: greetings, small talk, thanks, self-introductions (a name \
 mentioned this way, e.g. "Hi, I'm Bernie", is NOT a lookup request), brainstorming, \
-general programming/code help, and self-contained foundational science concepts \
+general programming/code help, and self-contained GENERAL SCIENCE concepts \
 (e.g. "What is porosity?", "Explain Darcy's law") that don't need portal-specific data.
+
+Do NOT route a question about the DPM Portal's own data model/schema/terminology to \
+"direct" just because it's phrased like "What is X?" or "What's the difference between \
+X and Y?" — "Dataset", "Sample", "Digital Dataset", and "Analysis Dataset" are portal-\
+specific entity names with real, specific definitions documented on the portal (not \
+general scientific concepts), and answering from general knowledge instead of looking \
+them up produces wrong, made-up definitions. If X or Y in the question is a portal \
+entity name rather than a science/physics concept, route to "tool".
 
 Examples:
 - "Hi! I'm Bernie" -> direct
@@ -547,12 +677,24 @@ Examples:
 - "How many sandstone datasets have porosity > 0.2?" -> tool
 - "Find datasets suitable for LBM simulation" -> tool
 - "How do I compute relative permeability?" -> tool
+- "How is permeability computed from a lattice Boltzmann simulation?" -> tool
 - "Find papers on relative permeability" -> tool
 - "How do I upload a dataset to the portal?" -> tool
 - "Hi, I'm Bernie, can you help me find sandstone datasets?" -> tool
+- "What is porosity? How do I compute it from an image?" -> tool
+- "What is the difference between a Digital Dataset and an Analysis Dataset?" -> tool
+- "What's the difference between a Dataset and a Sample?" -> tool
 
-If the message mixes small talk with a real request (like the last example), route to "tool" \
-— the agent on the other side will handle the conversational part too.
+If the message mixes small talk OR a self-contained foundational-concept question with \
+a real lookup/workflow request (like the "What is porosity? How do I..." example above), \
+route to "tool" — the agent on the other side can still explain the foundational concept \
+directly in its response while also calling the tool for the part that needs one. Do not \
+let a leading "What is X?" phrasing cause you to route the whole message to "direct" when \
+a later part of the same message asks "how do I compute/do X" — that second part needs \
+get_workflow_guidance. This misclassification risk is higher, not lower, later in a \
+conversation that already covered general domain science or workflow topics — a portal-\
+schema question can still come up at any point and must still route to "tool" regardless \
+of what was just discussed.
 """
 
 
@@ -586,16 +728,99 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
         return True
 
 
-def _answer_direct(user_input: str, prior: list[dict]) -> str:
-    """Answer without ever exposing the model to tool schemas this turn — used when
-    _classify_needs_tool says no lookup is needed."""
+_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT = """\
+You are checking whether a single tool's answer is enough to fully address a user's
+question, or whether the question also needs a DIFFERENT kind of lookup beyond what
+that one tool already covers (e.g. it also explicitly asks to find/search datasets,
+find papers/literature, or look up a specific dataset property/count).
+
+You will be given the user's original question and which tool was already called.
+
+Respond with a JSON object only, no markdown fences:
+{"needs_followup": true} or {"needs_followup": false}
+
+Examples:
+- question: "How do I compute relative permeability?", tool_called: "get_workflow_guidance" -> {"needs_followup": false}
+- question: "How do I compute relative permeability, and can you also find datasets that measure it?", tool_called: "get_workflow_guidance" -> {"needs_followup": true}
+- question: "What is porosity, and are there any recent papers on it?", tool_called: "get_educational_context" -> {"needs_followup": true}
+- question: "How do I upload a dataset to the portal?", tool_called: "search_portal_docs" -> {"needs_followup": false}
+"""
+
+
+def _needs_followup_tool_call(user_input: str, tool_name: str) -> bool:
+    """A cheap, tools-unbound gate (same 400-proof pattern as _classify_needs_tool),
+    checked only when chat()'s single-tool-call short-circuit (see Fix 1 in
+    HANDOFF.md's 400-error-recovery section) would otherwise fire.
+
+    Live-verified this model's first ReAct turn requests tools SEQUENTIALLY, not in
+    one parallel tool_calls list, for genuine cross-intent phrasing ("compute relative
+    permeability, and also find datasets that measure it" -> a single
+    get_workflow_guidance call on the first turn, with search_datasets only decided on
+    a later turn after seeing that answer) — so short-circuiting on "exactly one tool
+    call" alone silently drops that follow-up call. This gate catches that case before
+    committing to the short-circuit.
+
+    Defaults to False (short-circuit proceeds) on any parse/call failure: the
+    short-circuit exists to fix a confirmed, reported 400-error bug (LaTeX-heavy
+    self-contained answers sometimes get mis-detected as malformed tool calls on the
+    graph's second turn) — an uncertain case should not reintroduce that risk. The cost
+    of a wrong "no follow-up needed" guess is a dropped second tool call, not a
+    fabricated or ungrounded answer.
+    """
     from src.assistant.llm import get_chat_model
 
     try:
         llm = get_chat_model()
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + prior + [
-            {"role": "user", "content": user_input}
+        messages = [
+            {"role": "system", "content": _FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT},
+            {"role": "user", "content": f"question: {user_input!r}, tool_called: {tool_name!r}"},
         ]
+        raw = llm.invoke(messages).content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            raw = raw[len("json"):] if raw.startswith("json") else raw
+        return bool(json.loads(raw.strip()).get("needs_followup", False))
+    except Exception as e:
+        logger.warning("Follow-up tool gate failed (%s); proceeding with short-circuit.", e)
+        return False
+
+
+_NO_TOOL_ACCESS_NOTICE = (
+    "[This specific response has NO tool access — Tier 1/2's \"call the tool first\" "
+    "instructions above do not apply to this turn; _classify_needs_tool has already "
+    "decided no lookup is needed. Never write as if you called a tool, and never "
+    "invent or narrate tool output (e.g. \"the get_workflow_guidance tool "
+    "provides...\", \"### Results\", \"searching datasets...\", \"let's call X\"). "
+    "Never state a dataset title, DOI, or portal-specific property as if it was "
+    "retrieved — anything like that in this response is always fabricated. If the "
+    "question actually needs portal-specific or dataset-specific data, say plainly "
+    "that you don't have it available in this response rather than inventing one; "
+    "only answer directly for genuine Tier 0/3 conversation or foundational-concept "
+    "content.]"
+)
+
+
+def _answer_direct(user_input: str, prior: list[dict]) -> str:
+    """Answer without ever exposing the model to tool schemas this turn — used when
+    _classify_needs_tool says no lookup is needed.
+
+    _classify_needs_tool is not perfectly reliable (observed misrouting Tier 2
+    questions here despite matching the gate's own "-> tool" examples) — when that
+    happens, the model still sees SYSTEM_PROMPT's Tier 1/2 "call the tool first"
+    instructions and, having no actual tool access in this call, was observed
+    fabricating an entire fake tool-use transcript (including fabricated dataset
+    DOIs) rather than recognizing it couldn't comply. _NO_TOOL_ACCESS_NOTICE is a
+    defensive addendum for exactly that misrouted case."""
+    from src.assistant.llm import get_chat_model
+
+    try:
+        llm = get_chat_model()
+        messages = (
+            [{"role": "system", "content": SYSTEM_PROMPT},
+             {"role": "system", "content": _NO_TOOL_ACCESS_NOTICE}]
+            + prior
+            + [{"role": "user", "content": user_input}]
+        )
         return _clean_response(llm.invoke(messages).content)
     except Exception as e:
         logger.error("Direct-answer call failed: %s", e)
@@ -648,6 +873,15 @@ class ConversationManager:
         """
         prior = [{"role": m["role"], "content": m["content"]} for m in (history or [])]
 
+        # Off-domain gate: runs first, before any other classification or LLM
+        # synthesis call. See _classify_off_domain docstring — closes a gap where
+        # _answer_direct's prompt-only "steer back" instruction was observed
+        # acknowledging an off-topic request and then answering it anyway. A false
+        # negative here just falls through to the existing tool/direct gate below
+        # unchanged.
+        if _classify_off_domain(user_input, prior):
+            return _OFF_DOMAIN_STEER_BACK_MSG
+
         # Tool-need gate: a separate, tools-unbound call that decides whether this turn
         # needs the tool-bound ReAct agent at all. See _classify_needs_tool docstring —
         # this exists because the tool-bound agent below is what exposes the model to
@@ -658,7 +892,55 @@ class ConversationManager:
 
         messages = prior + [{"role": "user", "content": user_input}]
         try:
-            result = self._agent.invoke({"messages": messages})
+            # Stream instead of a single .invoke() so a single self-contained/verbatim
+            # tool call can be dispatched and returned WITHOUT ever letting the graph
+            # run its second ("relay the tool result") model turn. That second turn is
+            # the actual source of the 400 tool-format errors this whole except block
+            # exists to recover from (e.g. get_workflow_guidance's LaTeX-heavy answers
+            # sometimes get mis-detected by LiteLLM as a malformed function call when
+            # the model retypes them) — and its own output is discarded unconditionally
+            # anyway whenever exactly one self-contained/verbatim tool ran (see the
+            # post-hoc checks below, and _run_manual_dispatch's identical short-circuit)
+            # so skipping it removes a failure-prone call whose result was never used.
+            stream = self._agent.stream({"messages": messages}, stream_mode="values")
+            # stream_mode="values" yields the accumulated state after each superstep,
+            # starting with the initial state itself — i.e. the FIRST value is just the
+            # echoed input (no model has run yet); the model's first tool-call decision
+            # only appears in the SECOND value, after the "agent" node's first
+            # execution. (Confirmed live: value 0 is a lone HumanMessage, value 1 is the
+            # first AIMessage carrying tool_calls.) Pull both.
+            initial_step = next(stream)
+            first_model_step = next(stream)
+            new_after_first = first_model_step["messages"][len(initial_step["messages"]):]
+            last_first = new_after_first[-1] if new_after_first else None
+            first_turn_tool_calls = getattr(last_first, "tool_calls", None) or []
+
+            if (
+                len(first_turn_tool_calls) == 1
+                and first_turn_tool_calls[0]["name"] in (_SELF_CONTAINED_TOOLS | _VERBATIM_TOOLS)
+                and not _needs_followup_tool_call(user_input, first_turn_tool_calls[0]["name"])
+            ):
+                dispatched = _run_manual_dispatch(
+                    [{"name": first_turn_tool_calls[0]["name"], "args": first_turn_tool_calls[0]["args"]}],
+                    user_input,
+                    prior,
+                )
+                if dispatched is not None:
+                    return dispatched
+                # The tool itself failed inside manual dispatch — fall through to the
+                # normal graph execution below (which has its own per-tool error
+                # handling), resuming from the same first model step so the model's
+                # initial tool-call decision isn't wastefully redone.
+                # NOTE: a genuinely sequential cross-intent turn (call tool A, inspect
+                # its answer, THEN decide to also call tool B) would otherwise have
+                # that second call silently dropped by this single-tool-call check —
+                # live-verified this model requests cross-intent tools sequentially,
+                # not in one parallel tool_calls list, so _needs_followup_tool_call
+                # above is the actual guard against that, not the tool_calls count.
+
+            result = first_model_step
+            for step in stream:
+                result = step
 
             # If exactly one verbatim tool ran this turn, bypass the agent's own
             # free-form final message entirely — that message is the LLM retyping the
@@ -707,25 +989,26 @@ class ConversationManager:
                         return dispatched
                     # A tool call WAS identified and dispatch was attempted — real,
                     # grounded tool output may or may not exist depending on whether the
-                    # tool itself failed. Either way, do not fall through to the
-                    # no-tool-context direct LLM call below: that has nothing to ground
-                    # it and will hedge/guess rather than admit it has no data (this is
+                    # tool itself failed. Either way, do not fall through to an
+                    # ungrounded direct LLM guess: that has nothing to ground it and
+                    # will hedge/guess rather than admit it has no data (this is
                     # exactly how a successful tool call's real data previously got
                     # discarded and replaced by a fabricated answer). Give up honestly.
                     logger.error("Manual dispatch produced no usable output after a 400.")
                     return _HONEST_TOOL_FAILURE_MSG
 
-                logger.warning("No tool calls extracted from 400 error; falling back to direct LLM.")
-                # Last resort: direct LLM call with no tool context. Only reached when no
-                # tool call could even be identified from the error — there is genuinely
-                # nothing to dispatch, so this is the least-bad option left.
-                try:
-                    from src.assistant.llm import get_chat_model
-                    llm = get_chat_model()
-                    synth_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
-                    return _clean_response(llm.invoke(synth_messages).content)
-                except Exception as e2:
-                    logger.error("Synthesis fallback failed: %s", e2)
+                # No tool call could even be identified from the error — genuinely
+                # nothing to dispatch. Previously this fell back to a no-tool-context
+                # direct LLM call: confident-sounding, ungrounded, and with zero
+                # indication anything went wrong — this is exactly the mechanism behind
+                # a citation/notebook-reference "silently vanishing" (e.g.
+                # get_workflow_guidance's answer computed correctly, but the relay turn
+                # 400'd on LaTeX braces and nothing was recoverable from the error text).
+                # An honest disclosure beats a silent, unlabeled guess from pretrained
+                # knowledge — same rationale as the sibling "tool call identified but
+                # dispatch failed" branch just above.
+                logger.error("No tool calls extracted from 400 error; giving up honestly.")
+                return _HONEST_TOOL_FAILURE_MSG
 
             logger.error("Agent invocation failed: %s", e)
             return "I encountered an error processing your request. Please try rephrasing."
