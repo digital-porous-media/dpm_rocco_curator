@@ -4,8 +4,8 @@ Shared tool interface for the General Assistant.
 All callable tools are defined here — both interns code to this interface.
 
 Intern A owns (Week 2-3): search_datasets, get_dataset_details
-Bernie owns:              get_educational_context, get_workflow_guidance,
-                          expand_query, search_literature
+
+Bernie owns: get_educational_context, get_workflow_guidance, expand_query, search_literature
 """
 
 import json

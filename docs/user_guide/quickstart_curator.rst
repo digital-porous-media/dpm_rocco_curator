@@ -1,7 +1,11 @@
-Quick Start
-===========
+Quick Start: Description Curator
+==================================
 
-Get up and running with Rocco!
+Get up and running with the Description Curator!
+
+.. note::
+
+   Looking for the General Assistant instead? See :doc:`quickstart_assistant`.
 
 Step 1: Install & Configure
 ----------------------------
@@ -35,7 +39,8 @@ Step 2: Start the App
 
    streamlit run rocco_ui.py
 
-Your browser will automatically open to ``http://localhost:8501``.
+Your browser will automatically open to ``http://localhost:8501``. Select **"Description
+Curator"** from the page selector.
 
 Step 3: Enter a Dataset Description
 -------------------------------------
@@ -167,11 +172,10 @@ Tips & Best Practices
 **Try Different Models**
    Different LLM models have different strengths. Try changing the model in your ``.env`` file.
 
-
-
 What's Next?
 -------------
 
 - **Full configuration guide**: :doc:`configuration` — all LLM providers, models, and options
+- **General Assistant quick start**: :doc:`quickstart_assistant` — dataset discovery, domain Q&A, and more
 - **Under the hood**: :doc:`../developer_guide/architecture` — how Rocco works, extending it
 - **Contributing**: :doc:`../developer_guide/contributing` — report issues, contribute improvements

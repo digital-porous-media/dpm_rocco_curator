@@ -611,9 +611,278 @@ Key test patterns:
 - **Editor tests** — verify prompt rendering and citation tracking
 - **Integration tests** — end-to-end workflow (evaluate → enhance → screen)
 
+General Assistant Architecture
+--------------------------------
+
+The General Assistant is a second, independent module (``src/assistant/``) sharing only the
+LLM/embedding layer (``src/llm/client.py``) with the curator described above.
+
+There is **no hardcoded intent dispatcher**. A message passes through a short chain of cheap,
+tools-unbound gate calls, then (if needed) a LangGraph ReAct agent
+(``langgraph.prebuilt.create_react_agent``) that picks a tool by matching its description
+against the system prompt's routing rules — not a lookup table. How the final response is
+assembled then depends on *which kind* of tool ran. See :doc:`../user_guide/assistant` for the
+user-facing version of this same flow, and the per-capability pages linked from its table for
+each tool's own internals.
+
+**Request Lifecycle**
+
+.. graphviz::
+
+   digraph AssistantLifecycle {
+
+       rankdir=TB;
+       fontsize=16;
+       fontname="Helvetica";
+       bgcolor="transparent";
+
+       node [
+           shape=box,
+           style="rounded,filled",
+           fontname="Helvetica",
+           fontsize=13,
+           margin="0.3,0.2",
+           penwidth=2
+       ];
+
+       edge [
+           fontname="Helvetica",
+           fontsize=11,
+           penwidth=2
+       ];
+
+       QUERY [label="User message\n+ prior history", fillcolor="#e3f2fd", width=2.6, height=0.9];
+
+       OFFDOMAIN [
+           label="Off-domain gate\n_classify_off_domain()\n(tools-unbound LLM call)",
+           shape=diamond, fillcolor="#fff9c4", width=2.6, height=1.3
+       ];
+
+       STEERBACK [
+           label="Fixed steer-back message\n(no further LLM calls)",
+           fillcolor="#ffcdd2", width=2.6, height=0.9
+       ];
+
+       TOOLGATE [
+           label="Tool-need gate\n_classify_needs_tool()\n(tools-unbound LLM call)",
+           shape=diamond, fillcolor="#fff9c4", width=2.6, height=1.3
+       ];
+
+       DIRECT [
+           label="_answer_direct()\nSYSTEM_PROMPT, no tools bound\n(greetings, small talk, Tier 3 concepts)",
+           fillcolor="#f3e5f5", width=3.0, height=1.1
+       ];
+
+       REACT [
+           label="ReAct agent\ncreate_react_agent()\nSYSTEM_PROMPT + all 6 tools bound\n(model picks tool(s) from descriptions)",
+           fillcolor="#fff3e0", width=3.4, height=1.3
+       ];
+
+       TOOLS [
+           label="search_datasets · get_dataset_details\nsearch_portal_docs\nget_educational_context · get_workflow_guidance\nsearch_literature",
+           fillcolor="#e1f5fe", width=3.6, height=1.4
+       ];
+
+       ASSEMBLE [
+           label="Response assembly\n(by which tool(s) ran this turn)",
+           shape=diamond, fillcolor="#fff9c4", width=2.8, height=1.3
+       ];
+
+       VERBATIM [
+           label="Verbatim splice\nsearch_datasets / get_dataset_details\nLLM lead-in only + fixed disclaimer",
+           fillcolor="#d1c4e9", width=3.0, height=1.1
+       ];
+
+       SELFCONTAINED [
+           label="Self-contained passthrough\nget_workflow_guidance / get_educational_context\nsearch_portal_docs — already cited, not re-synthesized",
+           fillcolor="#d1c4e9", width=3.4, height=1.2
+       ];
+
+       SYNTHESIZE [
+           label="Outer-agent synthesis\ncross-intent / multi-tool turns\n(preserves source labels + DOIs)",
+           fillcolor="#d1c4e9", width=3.0, height=1.1
+       ];
+
+       OUTPUT [label="Response to user", fillcolor="#c8e6c9", width=2.6, height=0.9];
+
+       QUERY -> OFFDOMAIN;
+       OFFDOMAIN -> STEERBACK [label="off-domain"];
+       OFFDOMAIN -> TOOLGATE [label="in-domain"];
+       TOOLGATE -> DIRECT [label="direct"];
+       TOOLGATE -> REACT [label="tool"];
+       REACT -> TOOLS;
+       TOOLS -> ASSEMBLE;
+       ASSEMBLE -> VERBATIM;
+       ASSEMBLE -> SELFCONTAINED;
+       ASSEMBLE -> SYNTHESIZE;
+       STEERBACK -> OUTPUT;
+       DIRECT -> OUTPUT;
+       VERBATIM -> OUTPUT;
+       SELFCONTAINED -> OUTPUT;
+       SYNTHESIZE -> OUTPUT;
+   }
+
+A manual-dispatch fallback (not pictured) handles a known tool-call-format issue with one
+supported model (Llama-4-Maverick via SambaNova/TACC): if the backend rejects the model's native
+tool-call syntax with a 400 error, the intended call is parsed out of the error text and
+dispatched directly, following the same verbatim/self-contained rules above rather than falling
+back to an ungrounded direct answer.
+
+**Core Modules**
+
+For what each tool actually does internally (prompts, matching logic, data schemas), see the
+capability pages: :doc:`../user_guide/dataset_discovery`, :doc:`../user_guide/structured_queries`,
+:doc:`../user_guide/portal_docs`, :doc:`../user_guide/domain_qa`,
+:doc:`../user_guide/workflow_guidance`, :doc:`../user_guide/literature_search`. The dropdowns
+below are the module-level (class/file) reference.
+
+.. dropdown:: src/assistant/conversation_manager.py — Orchestrator
+   :icon: file-directory-fill
+
+   - ``ConversationManager`` class — built on ``langgraph.prebuilt.create_react_agent`` with
+     ``MemorySaver`` for per-session (in-process) history
+   - ``_classify_off_domain()`` / ``_classify_needs_tool()`` / ``_needs_followup_tool_call()`` —
+     the tools-unbound gate calls in the Request Lifecycle diagram above
+   - ``_build_verbatim_response()`` / ``_run_manual_dispatch()`` — response-assembly and
+     400-error manual-dispatch logic
+   - ``SYSTEM_PROMPT`` — implements the tiered knowledge-source policy (tools-only for dataset
+     facts, tools-first-with-disclaimer for domain Q&A/workflows, pre-trained knowledge allowed
+     for foundational concepts) and the tool-routing rules the ReAct agent follows
+
+.. dropdown:: src/assistant/tools.py — Tool Interface
+   :icon: file-directory-fill
+
+   - ``search_datasets`` / ``get_dataset_details`` — dataset discovery (semantic + structured)
+   - ``get_workflow_guidance`` / ``get_educational_context`` — domain Q&A and workflow guidance,
+     backed by ``data/domain_workflows.yaml`` and ``data/tutorials.yaml``
+   - ``search_portal_docs`` — DPM Portal documentation search
+   - ``search_literature`` — Semantic Scholar search
+   - ``expand_query`` — LLM-based query expansion + inferred metadata filters (not a LangChain
+     tool itself — called internally by ``search_datasets``)
+   - ``build_langchain_tools()`` — registers all tools with the LangGraph agent
+
+.. dropdown:: src/assistant/graph_store.py — Dataset Graph Search
+   :icon: file-directory-fill
+
+   - ``GraphStore`` class — two layers:
+
+     - **High-level** (``search()``, ``hybrid_search()``, ``component_search()``,
+       ``cypher_qa()``) via ``langchain-neo4j`` — used by ``tools.py``
+     - **Low-level** (``semantic_search()``, ``filter_by_metadata()``, ``search_datasets()``,
+       ``execute_cypher()``) via the raw ``neo4j`` driver, for hybrid structured/semantic queries
+   - Accepts a ``filters: dict`` (not hardcoded field names), per the Croissant extensibility
+     constraint in ``CLAUDE.md``
+   - Degrades gracefully: all search methods return empty results immediately if
+     ``USE_NEO4J=false``, without importing the Neo4j driver
+
+.. dropdown:: src/assistant/literature_search.py — Literature Search
+   :icon: file-directory-fill
+
+   - ``LiteratureSearch`` class — wraps the Semantic Scholar API
+   - Works with or without ``SEMANTIC_SCHOLAR_API_KEY`` (unauthenticated requests allowed,
+     just rate-limited)
+
+.. dropdown:: src/assistant/portal_docs_retrieval.py + portal_docs_tree.py — Portal Doc Search
+   :icon: file-directory-fill
+
+   - PageIndex-style heading-tree retrieval over the DPM Portal's user documentation
+     (``data/portal_docs/``), replacing an earlier FAISS/chunk-based approach
+   - Returns results labeled ``[portal docs]``
+
+.. dropdown:: src/prompts/ — Assistant Prompts
+   :icon: file-directory-fill
+
+   - ``assistant.yaml`` — a standalone 6-intent classifier; used for testing/offline analysis
+     only, **not** called by ``ConversationManager`` at runtime (routing there is implicit — see
+     the Request Lifecycle diagram above)
+   - ``query_expander.yaml`` — renders ``expand_query()``'s semantic expansion + filter
+     inference (see :doc:`../user_guide/dataset_discovery`)
+   - ``educational.yaml`` — shared synthesis prompt for both ``get_educational_context`` and
+     ``get_workflow_guidance`` (see :doc:`../user_guide/domain_qa`,
+     :doc:`../user_guide/workflow_guidance`)
+   - ``portal_docs.yaml`` — synthesis prompt for ``search_portal_docs``
+     (see :doc:`../user_guide/portal_docs`)
+
+.. dropdown:: src/assistant/assistant_ui.py — Streamlit Tab
+   :icon: file-directory-fill
+
+   - ``render_assistant_tab()`` — chat interface, added as the ``"General Assistant"`` page in
+     ``rocco_ui.py``
+   - Renders colored source-label badges, linkifies DOIs/URLs, and normalizes LaTeX delimiters
+     for KaTeX
+   - Session state keys prefixed ``assistant_`` to avoid collisions with the curator tab
+
+**Configuration**
+
+- ``USE_NEO4J`` — set to ``false`` to disable dataset graph search
+- ``NEO4J_URI`` / ``NEO4J_USER`` / ``NEO4J_PASSWORD`` — Neo4j connection details
+- ``SEMANTIC_SCHOLAR_API_KEY`` — optional, raises the Semantic Scholar rate limit
+
+See :doc:`../user_guide/configuration` for the full reference.
+
+Maintenance
+-----------
+
+.. dropdown:: Adding or updating datasets in the Neo4j graph
+   :icon: sync
+
+   Three steps, run from the repo root with ``NEO4J_URI``/``NEO4J_USER``/``NEO4J_PASSWORD`` set:
+
+   1. **Fetch/refresh source metadata** — ``python scripts/scrape_metadata.py`` downloads DRP
+      metadata JSONs from TACC Corral into ``data/metadata/`` (gitignored).
+   2. **Load into Neo4j**:
+
+      .. code-block:: bash
+
+         # Incremental — merges new/changed datasets, preserves embeddings on
+         # unchanged nodes. Use this for adding a handful of new datasets.
+         python scripts/load_graph.py --mode upsert
+
+         # Full rebuild — clears and reloads everything. Use after a schema change.
+         python scripts/load_graph.py --mode rebuild
+
+      ``load_graph.py`` does **not** generate embeddings or LLM keywords — see step 3.
+   3. **Re-embed**:
+
+      .. code-block:: bash
+
+         # Re-embed everything (needed after `--mode rebuild`, or after changing
+         # the embedding model / text-assembly logic — see CLAUDE.md's Index
+         # Rebuild section for when this applies)
+         python scripts/build_dataset_vector_index.py
+
+         # Or patch a single dataset added via `--mode upsert`
+         python scripts/reembed_single_dataset.py --doi 10.xxxx/xxxx
+
+   Verify with ``python scripts/audit_schema.py --neo4j --verify`` (node/property counts,
+   embedding coverage). See :doc:`../neo4j_schema` for the full schema reference and
+   CLAUDE.md's "Index Rebuild" section for `CREATE ... IF NOT EXISTS` / re-run safety notes.
+
+.. dropdown:: Pulling updates from dpm_docs (portal documentation)
+   :icon: sync
+
+   ``search_portal_docs`` reads from ``data/portal_docs/docs/`` — a synced copy of the
+   `dpm_docs <https://github.com/digital-porous-media/dpm_docs>`_ repo, not a live fetch per
+   query. There is **no separate index/build step**: ``portal_docs_tree.py`` parses these
+   markdown files into a heading tree at query/import time, so re-syncing and restarting the
+   app is all that's needed.
+
+   .. code-block:: bash
+
+      # Check whether the local copy is behind dpm_docs' current HEAD, without fetching
+      python scripts/sync_dpm_docs.py --check
+
+      # Fetch and overwrite data/portal_docs/docs/ with the latest dpm_docs content
+      python scripts/sync_dpm_docs.py
+
+   dpm_docs updates roughly every 3–6 months upstream; ``--check`` compares against
+   ``data/portal_docs/_sync_meta.json``'s last-synced commit SHA. Requires network access to
+   ``api.github.com`` and ``raw.githubusercontent.com``.
+
 See Also
 --------
 
-- :doc:`../user_guide/streamlit_app` — User-facing workflow
+- :doc:`../user_guide/streamlit_app` — Description Curator user-facing workflow
+- :doc:`../user_guide/assistant` — General Assistant user-facing workflow
 - :doc:`../developer_guide/contributing` — Development guidelines
-- ``CLAUDE.md`` — Detailed implementation patterns
+- ``CLAUDE.md`` — Detailed implementation patterns for both modules

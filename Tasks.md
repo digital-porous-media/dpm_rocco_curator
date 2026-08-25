@@ -279,6 +279,44 @@ a dedicated standalone package may be released; migrate then rather than reimple
 
 ---
 
+## Future Feature: Dataset Detail Follow-Up Queries
+
+**Problem:** After `search_datasets` (or `get_dataset_details`) returns results, a natural
+follow-up like *"tell me more about this dataset"* / *"give me more details on the first one"*
+currently has no dedicated handling. It re-triggers the same search/lookup path and returns the
+same title/DOI/summary shape as the original result — not a fuller profile of the one dataset
+the user is actually asking about.
+
+**Why current tools don't cover this:**
+- `search_datasets` is tuned for discovery across many datasets (semantic/hybrid search, one
+  short LLM-summarized sentence per result) — not a deep single-dataset profile.
+- `get_dataset_details` answers structured questions via generated Cypher — it doesn't have a
+  "give me everything you have on dataset X" mode, and isn't naturally triggered by a pronoun
+  reference ("this dataset") with no named property.
+- `GraphStore.get_dataset(dataset_id)` (`src/assistant/graph_store.py`) already exists and
+  fetches full `Dataset` node properties by `datasetNumber` — but it's dead code from the
+  assistant's perspective: not registered as a LangChain tool in `tools.py`, and nothing calls
+  it today.
+
+**Proposed approach (not yet implemented):**
+- [ ] Add a new tool (e.g. `get_dataset_profile(doi_or_title)`) in `src/assistant/tools.py` that
+  pulls the full `Dataset` node plus its `Sample`/`DigitalDataset`/`AnalysisDataset`/
+  `RelatedPublication` sub-nodes (extend `GraphStore.get_dataset()` or add a sibling method —
+  the existing one only fetches the `Dataset` node itself, not its `PART_OF` sub-nodes) and
+  renders a fuller profile than a search-result summary line.
+- [ ] Update `conversation_manager.py`'s `SYSTEM_PROMPT` tool-selection rules so a follow-up
+  referencing a specific already-shown result ("tell me more about *this*/*the first*/*the
+  sandstone one*") routes here instead of re-running `search_datasets`. This needs the DOI/title
+  to be resolved from conversation history (already passed in as `history`), since the tool
+  itself is stateless per call.
+- [ ] Decide response-assembly classification for the new tool — likely `_VERBATIM_TOOLS` (real
+  dataset metadata that must reach the user unmodified), same as `search_datasets`/
+  `get_dataset_details`.
+- [ ] Add test coverage (`tests/assistant/test_tools.py` and/or
+  `tests/assistant/test_search_integration.py`) for a two-turn "search → tell me more" flow.
+- [ ] Document the new capability — either fold into `docs/user_guide/structured_queries.rst` or
+  give it its own capability page (matches the existing pattern; see e.g. `dataset_discovery.rst`).
+
 ## Notes
 
 - **Conda env:** Always `conda activate rocco_ai` before running anything

@@ -8,30 +8,25 @@ Rocco — AI Curator for Dataset Descriptions
      <strong>Digital Porous Media Portal</strong>.
    </p>
 
-.. grid:: 3
+.. grid:: 2
    :gutter: 3
    :class-container: rocco-hero-grid
 
-   .. grid-item-card:: :octicon:`book;1em` Rubric-Based Evaluation
-      :link: user_guide/evaluator
-      :link-type: doc
-      :text-align: center
-
-      Score any dataset description against **10 domain-specific criteria**.
-
-   .. grid-item-card:: :octicon:`search;1em` RAG-Powered Enhancement
-      :link: user_guide/writer
-      :link-type: doc
-      :text-align: center
-
-      Improve descriptions with relevant excerpts drawn from your papers.
-
-   .. grid-item-card:: :octicon:`sync;1em` Iterate
+   .. grid-item-card:: :octicon:`book;1em` Description Curator
       :link: user_guide/streamlit_app
       :link-type: doc
       :text-align: center
 
-      Refine with **interactive feedback** across multiple rounds until your description is publication-ready.
+      Score any dataset description against **10 domain-specific criteria**, then improve it
+      with RAG-powered enhancement and interactive feedback.
+
+   .. grid-item-card:: :octicon:`comment-discussion;1em` General Assistant
+      :link: user_guide/assistant
+      :link-type: doc
+      :text-align: center
+
+      Ask Rocco to find datasets, explain digital rock physics concepts, guide you through a
+      workflow, or search the literature.
 
 ----
 
@@ -66,7 +61,8 @@ Getting Started Locally
 
          # Opens at http://localhost:8501
 
-For a full walkthrough, see :doc:`user_guide/quickstart`.
+For a full walkthrough, see :doc:`user_guide/quickstart_curator` (Description Curator) or
+:doc:`user_guide/quickstart_assistant` (General Assistant).
 
 ----
 
@@ -75,7 +71,8 @@ For a full walkthrough, see :doc:`user_guide/quickstart`.
    :maxdepth: 1
 
    user_guide/installation
-   user_guide/quickstart
+   user_guide/quickstart_curator
+   user_guide/quickstart_assistant
 
 .. toctree::
    :caption: Description Curator
@@ -85,6 +82,18 @@ For a full walkthrough, see :doc:`user_guide/quickstart`.
    user_guide/evaluator
    user_guide/rag
    user_guide/writer
+
+.. toctree::
+   :caption: General Assistant
+   :maxdepth: 1
+
+   user_guide/assistant
+   user_guide/dataset_discovery
+   user_guide/structured_queries
+   user_guide/portal_docs
+   user_guide/domain_qa
+   user_guide/workflow_guidance
+   user_guide/literature_search
 
 .. toctree::
    :caption: AI Providers
@@ -100,3 +109,4 @@ For a full walkthrough, see :doc:`user_guide/quickstart`.
    developer_guide/contributing
    developer_guide/api_reference
    developer_guide/prompts
+   neo4j_schema

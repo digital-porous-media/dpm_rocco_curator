@@ -85,6 +85,25 @@ The app should open at ``http://localhost:8501``.
 
 ----
 
+Optional: Enable the General Assistant
+----------------------------------------
+
+The Streamlit app always includes a **"General Assistant"** tab. Domain Q&A, workflow guidance,
+portal documentation search, and literature search work out of the box. **Dataset discovery**
+additionally requires the ``graph`` extra, which pulls in the Neo4j driver and
+``langchain-neo4j``/``langchain-openai``:
+
+.. code-block:: bash
+
+   pip install -e ".[graph]"
+
+If you skip this, or don't have a Neo4j instance available, set ``USE_NEO4J=false`` in ``.env``
+— the assistant tab still loads and the rest of its capabilities work normally. See
+:doc:`configuration` for Neo4j and Semantic Scholar setup, and :doc:`assistant` for a full
+walkthrough.
+
+----
+
 Troubleshooting
 ---------------
 
@@ -106,5 +125,6 @@ Troubleshooting
 Next Steps
 ----------
 
-- Read the :doc:`quickstart` guide for your first evaluation
+- Read the :doc:`quickstart_curator` guide for your first evaluation
 - See :doc:`configuration` for all LLM provider options
+- See :doc:`assistant` for the General Assistant's capabilities

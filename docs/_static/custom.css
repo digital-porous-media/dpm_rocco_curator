@@ -91,6 +91,20 @@ table.docutils thead tr th {
     font-weight: 600;
 }
 
+/* Header text color above doesn't reach these two elements the way it should:
+   inline code keeps its own (near-white) background but was inheriting white
+   text on top of it, and internal doc links render in the same teal as the
+   header background itself — both effectively invisible. Pin explicit,
+   legible colors for each rather than relying on inheritance. */
+table.docutils thead tr th code {
+    color: var(--color-code-foreground);
+}
+
+table.docutils thead tr th a {
+    color: white;
+    text-decoration: underline;
+}
+
 /* ── Horizontal rule ── */
 article hr {
     border-color: var(--color-background-border);

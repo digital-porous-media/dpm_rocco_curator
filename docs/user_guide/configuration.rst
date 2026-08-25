@@ -189,30 +189,114 @@ The API must expose a ``/v1/chat/completions`` endpoint with the same request/re
 Environment Variable Reference
 -------------------------------
 
-==================  =========  ==============================================
-Variable            Required?  Description
-==================  =========  ==============================================
-``LLM_PROVIDER``    No         Shortcut to pre-fill ``LLM_BASE_URL``.
-                               Options: ``openai``, ``anthropic``, ``gemini``,
-                               ``deepseek``, ``huggingface``, ``ollama``,
-                               ``sambanova``, ``openai_compatible`` (custom).
+.. list-table::
+   :widths: 25 12 63
+   :header-rows: 1
 
+   * - Variable
+     - Required?
+     - Description
+   * - ``LLM_PROVIDER``
+     - No
+     - Shortcut to pre-fill ``LLM_BASE_URL``. Options: ``openai``, ``anthropic``, ``gemini``,
+       ``deepseek``, ``huggingface``, ``ollama``, ``sambanova``, ``openai_compatible`` (custom).
+   * - ``LLM_API_KEY``
+     - **Yes**
+     - Your API key. For Ollama or local services, can be a dummy value (e.g., ``ollama`` or
+       ``unused``).
+   * - ``LLM_BASE_URL``
+     - No
+     - Custom endpoint URL. Required for custom or proprietary providers. If not set, provider
+       mapping is used (or defaults to OpenAI).
+   * - ``LLM_MODEL``
+     - No
+     - Model name (e.g., ``gpt-4o-mini``). Defaults to ``gpt-4o-mini``.
+   * - ``LLM_TIMEOUT``
+     - No
+     - Request timeout in seconds. Defaults to ``120``.
+   * - ``USE_NEO4J``
+     - No
+     - General Assistant only. Set to ``false`` to disable Neo4j-backed dataset search; the
+       assistant still answers domain Q&A, workflow, literature, and portal doc questions.
+       Defaults to ``true``.
+   * - ``NEO4J_URI``
+     - No\*
+     - Neo4j connection URI, e.g. ``bolt://localhost:7687`` (local) or
+       ``neo4j+s://<id>.databases.neo4j.io`` (AuraDB). \*Required if ``USE_NEO4J=true``.
+   * - ``NEO4J_USER``
+     - No\*
+     - Neo4j username (typically ``neo4j``). \*Required if ``USE_NEO4J=true``.
+   * - ``NEO4J_PASSWORD``
+     - No\*
+     - Neo4j password. \*Required if ``USE_NEO4J=true``.
+   * - ``EMBEDDING_URL`` / ``EMBEDDING_MODEL`` / ``EMBEDDING_API_KEY``
+     - No
+     - Override the embedding model/endpoint used for RAG and dataset-graph search. Auto-selected
+       from ``LLM_PROVIDER`` when unset — see "Embedding Model Overrides" below.
+   * - ``SEMANTIC_SCHOLAR_API_KEY``
+     - No
+     - General Assistant only. Optional API key for the Semantic Scholar literature search tool
+       — unauthenticated requests work but with a lower rate limit.
 
-``LLM_API_KEY``     **Yes**    Your API key. For Ollama or local services, can
-                               be dummy value (e.g., ``ollama`` or ``unused``).
+Embedding Model Overrides
+--------------------------
 
-``LLM_BASE_URL``    No         Custom endpoint URL. Required for custom or
-                               proprietary providers. If not set, provider
-                               mapping is used (or defaults to OpenAI).
+Rocco auto-selects an embedding model/endpoint based on ``LLM_PROVIDER`` if
+``EMBEDDING_URL``/``EMBEDDING_MODEL``/``EMBEDDING_API_KEY`` are left unset:
 
-``LLM_MODEL``       No         Model name (e.g., ``gpt-4o-mini``). Defaults to
-                               ``gpt-4o-mini``.
-==================  =========  ==============================================
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - ``LLM_PROVIDER``
+     - Default embedding model
+   * - ``openai``
+     - ``text-embedding-3-small`` (API)
+   * - ``sambanova``
+     - ``E5-Mistral-7B-Instruct`` (API, TACC endpoint, 4096-dim)
+   * - ``gemini``
+     - ``gemini-embedding-2`` (API)
+   * - ``ollama`` / ``huggingface`` / ``anthropic`` / ``deepseek`` / other
+     - ``BAAI/bge-large-en-v1.5`` (local — these providers have no embedding API)
+
+Set any of ``EMBEDDING_URL``, ``EMBEDDING_MODEL``, ``EMBEDDING_API_KEY`` to override — e.g. to
+use OpenAI embeddings alongside an Anthropic chat model. Local embedding models require the
+``local-embeddings`` extra (``pip install -e ".[local-embeddings]"``, pulls in ``torch``).
 
 Changing Providers
 ------------------
 
 To switch providers at runtime, just edit ``.env`` and restart the Streamlit app.
+
+General Assistant: Neo4j and Semantic Scholar
+-----------------------------------------------
+
+The General Assistant tab uses the same ``.env`` file. Two additional integrations are
+configured here — see :doc:`assistant` for what each one enables.
+
+Neo4j (Dataset Discovery)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: ini
+
+   USE_NEO4J=true
+   NEO4J_URI=bolt://localhost:7687
+   NEO4J_USER=neo4j
+   NEO4J_PASSWORD=your-neo4j-password-here
+
+Set ``USE_NEO4J=false`` to disable this — the assistant falls back gracefully and keeps
+domain Q&A, workflow guidance, literature search, and portal documentation search working.
+Requires the ``graph`` extra (see :doc:`installation`).
+
+Semantic Scholar (Literature Search)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: ini
+
+   SEMANTIC_SCHOLAR_API_KEY=
+
+Optional — unauthenticated requests work without a key, but a key gives a dedicated rate limit.
+Get one at https://www.semanticscholar.org/product/api.
 
 
 Troubleshooting
@@ -233,6 +317,7 @@ Troubleshooting
 Next Steps
 ==========
 
-- Ready to use Rocco? See :doc:`quickstart`
+- Ready to use Rocco? See :doc:`quickstart_curator` or :doc:`quickstart_assistant`
+- Want to try the General Assistant? See :doc:`assistant`
 - Want to understand the architecture? See :doc:`../developer_guide/architecture`
 - Need help? Check :doc:`../developer_guide/contributing`
