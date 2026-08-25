@@ -80,6 +80,7 @@ See Also
 --------
 
 - :doc:`dataset_discovery` — Open-ended/suitability dataset search
+- :doc:`dataset_profiles` — Follow-up detail questions on a dataset you've already found
 - :doc:`assistant` — Overview of how all capabilities fit together
 - :doc:`../neo4j_schema` — Full graph schema reference and coverage stats
 - `DPM data model diagram <https://digital-porous-media.github.io/dpm_docs/images/data_model_v2.png>`_ — visual entity-relationship reference

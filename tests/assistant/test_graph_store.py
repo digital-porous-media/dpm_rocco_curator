@@ -7,7 +7,12 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from src.assistant.graph_store import GraphStore, SearchResult
+from src.assistant.graph_store import (
+    GraphStore,
+    SearchResult,
+    DatasetProfileMatch,
+    DatasetProfileAmbiguous,
+)
 
 
 # Helpers
@@ -377,3 +382,181 @@ class TestGetSchemaBlueprint:
 
         assert schema["node_labels"]        == ["DigitalDataset"]
         assert schema["relationship_types"] == ["HAS_CORE"]
+
+
+# get_dataset_profile
+
+_FULL_PROFILE_ROW = {
+    "d": {"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"},
+    "samples": [{"identifier": "s1", "title": "Core 1", "porousMediaType": "sandstone"}],
+    "digital_datasets": [{"identifier": "dd1", "title": "Scan 1", "fileTypes": ["tiff"]}],
+    "analysis_datasets": [{"identifier": "ad1", "title": "PNM 1"}],
+    "related_publications": [],
+    "related_software": [],
+    "related_datasets": [],
+    "sample_to_digital_edges": [{"sample": "s1", "digitalDataset": "dd1"}, {"sample": None, "digitalDataset": None}],
+    "digital_to_analysis_edges": [{"digitalDataset": "dd1", "analysisDataset": "ad1"}],
+}
+
+
+def _tier(query: str) -> str:
+    """Identifies which of get_dataset_profile's Cypher queries `query` is, by a
+    substring unique to each — used by these tests' fake execute_cypher side effects."""
+    if "OPTIONAL MATCH" in query:
+        return "full_profile"
+    if "{datasetNumber: $ref}" in query:
+        return "dataset_number"
+    if "$bare" in query:
+        return "doi"
+    if "CONTAINS" in query:
+        return "title"
+    raise AssertionError(f"Unrecognized query shape: {query}")
+
+
+class TestGetDatasetProfile:
+    def test_matches_by_dataset_number_exact(self):
+        store = make_store()
+
+        def fake_execute(query, params=None):
+            tier = _tier(query)
+            if tier == "dataset_number":
+                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
+            if tier == "full_profile":
+                return [_FULL_PROFILE_ROW]
+            raise AssertionError(f"Unexpected tier reached: {tier}")
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            result = store.get_dataset_profile("42")
+
+        assert isinstance(result, DatasetProfileMatch)
+        assert result.dataset["title"] == "Bentheimer Sandstone"
+
+    def test_matches_by_doi_exact_when_not_numeric(self):
+        store = make_store()
+
+        def fake_execute(query, params=None):
+            tier = _tier(query)
+            if tier == "doi":
+                # Case-folding happens inside the Cypher query (toLower), not in Python —
+                # the passed param preserves the reference's original casing.
+                assert params["bare"] == "10.1234/DRP42"
+                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/DRP42"}]
+            if tier == "full_profile":
+                return [_FULL_PROFILE_ROW]
+            return []  # dataset_number tier: not a numeric reference
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            result = store.get_dataset_profile("10.1234/DRP42")
+
+        assert isinstance(result, DatasetProfileMatch)
+
+    def test_matches_by_title_contains_when_not_number_or_doi(self):
+        store = make_store()
+
+        def fake_execute(query, params=None):
+            tier = _tier(query)
+            if tier == "title":
+                assert params["ref"] == "Bentheimer"
+                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
+            if tier == "full_profile":
+                return [_FULL_PROFILE_ROW]
+            return []  # dataset_number/doi tiers: reference is neither
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            result = store.get_dataset_profile("Bentheimer")
+
+        assert isinstance(result, DatasetProfileMatch)
+
+    def test_zero_matches_returns_none(self):
+        store = make_store()
+        with patch.object(store, "execute_cypher", return_value=[]):
+            assert store.get_dataset_profile("Nonexistent Dataset") is None
+
+    def test_multiple_matches_returns_ambiguous_without_second_round_trip(self):
+        store = make_store()
+        candidates = [
+            {"datasetNumber": 1, "title": "Bentheimer A", "doi": "10.1/a"},
+            {"datasetNumber": 2, "title": "Bentheimer B", "doi": "10.1/b"},
+        ]
+
+        def fake_execute(query, params=None):
+            return candidates if _tier(query) == "title" else []
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute) as mock_exec:
+            result = store.get_dataset_profile("Bentheimer")
+
+        assert isinstance(result, DatasetProfileAmbiguous)
+        assert result.candidates == candidates
+        # No full-profile query should have run.
+        assert not any(_tier(c.args[0]) == "full_profile" for c in mock_exec.call_args_list)
+
+    def test_single_match_assembles_subnodes_and_input_for_edges(self):
+        store = make_store()
+
+        def fake_execute(query, params=None):
+            tier = _tier(query)
+            if tier == "dataset_number":
+                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
+            return [_FULL_PROFILE_ROW]
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            result = store.get_dataset_profile("42")
+
+        assert result.samples == [{"identifier": "s1", "title": "Core 1", "porousMediaType": "sandstone"}]
+        assert result.digital_datasets == [{"identifier": "dd1", "title": "Scan 1", "fileTypes": ["tiff"]}]
+        assert result.analysis_datasets == [{"identifier": "ad1", "title": "PNM 1"}]
+        # The null-identifier edge pair must be dropped.
+        assert result.sample_to_digital_edges == [{"sample": "s1", "digitalDataset": "dd1"}]
+        assert result.digital_to_analysis_edges == [{"digitalDataset": "dd1", "analysisDataset": "ad1"}]
+
+    def test_related_publication_and_optional_software_dataset_included(self):
+        store = make_store()
+        row = dict(_FULL_PROFILE_ROW)
+        row["related_publications"] = [{"identifier": "rp1", "title": "A paper", "doi": "10.9/x"}]
+        # RelatedSoftware/RelatedDataset's PART_OF relationship to Dataset is not confirmed
+        # against the live schema (see get_dataset_profile's docstring) — this test only
+        # checks that whatever the query returns is threaded through unmodified.
+        row["related_software"] = [{"identifier": "rs1", "title": "Some Tool"}]
+        row["related_datasets"] = [{"identifier": "rds1", "title": "Companion Dataset"}]
+
+        def fake_execute(query, params=None):
+            tier = _tier(query)
+            if tier == "dataset_number":
+                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
+            return [row]
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            result = store.get_dataset_profile("42")
+
+        assert result.related_publications == row["related_publications"]
+        assert result.related_software == row["related_software"]
+        assert result.related_datasets == row["related_datasets"]
+
+    def test_disabled_returns_none(self):
+        store = make_store(use_neo4j=False)
+        with patch.object(store, "execute_cypher") as mock_exec:
+            assert store.get_dataset_profile("42") is None
+        mock_exec.assert_not_called()
+
+    def test_full_profile_query_nulls_embedding_vectors(self):
+        """The full-profile query must never let a real 4096-float datasetEmbedding/
+        componentEmbedding vector cross the wire — this is the wire-level defense layer
+        for the reported context-window-exceeded bug (a real Bentheimer Sandstone-sized
+        dataset, once embedded by build_dataset_vector_index.py, was enough to blow the
+        model's context window on a single call)."""
+        store = make_store()
+        captured_queries = []
+
+        def fake_execute(query, params=None):
+            captured_queries.append(query)
+            tier = _tier(query)
+            if tier == "dataset_number":
+                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
+            return [_FULL_PROFILE_ROW]
+
+        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            store.get_dataset_profile("42")
+
+        full_profile_query = next(q for q in captured_queries if _tier(q) == "full_profile")
+        assert "datasetEmbedding: null" in full_profile_query
+        assert full_profile_query.count("componentEmbedding: null") == 3  # s, dd, ad

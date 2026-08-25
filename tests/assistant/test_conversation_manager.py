@@ -20,6 +20,8 @@ from src.assistant.conversation_manager import (
     _answer_direct,
     _build_verbatim_response,
     _classify_off_domain,
+    _extract_tool_calls_from_error,
+    _extract_tool_calls_from_text,
     _needs_followup_tool_call,
     _run_manual_dispatch,
     _strip_recap_paragraph,
@@ -38,6 +40,10 @@ class TestToolRoutingClassification:
     def test_search_portal_docs_is_self_contained_not_verbatim(self):
         assert "search_portal_docs" in _SELF_CONTAINED_TOOLS
         assert "search_portal_docs" not in _VERBATIM_TOOLS
+
+    def test_get_dataset_profile_is_self_contained_not_verbatim(self):
+        assert "get_dataset_profile" in _SELF_CONTAINED_TOOLS
+        assert "get_dataset_profile" not in _VERBATIM_TOOLS
 
     def test_search_datasets_framing_unchanged(self):
         hit = "DOI: 10.1/x\ntitle: foo"
@@ -340,6 +346,56 @@ class TestNeedsFollowupToolCall:
                 "How do I compute relative permeability, and can you also find datasets that measure it?",
                 "get_workflow_guidance",
             ) is True
+
+    def test_dataset_comparison_with_same_tool_needs_followup(self):
+        """A comparison names a second dataset but calls the SAME tool
+        (get_dataset_profile) both times — the gate's added rule for this case must
+        still surface needs_followup=True rather than short-circuiting after the
+        first dataset's profile. See _FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT's added example."""
+        with patch("src.assistant.llm.get_chat_model") as mock_get_llm:
+            mock_get_llm.return_value.invoke.return_value = MagicMock(
+                content='{"needs_followup": true}'
+            )
+            assert _needs_followup_tool_call(
+                "Compare Dataset A and Dataset B for two-phase flow simulation",
+                "get_dataset_profile",
+            ) is True
+
+
+class TestExtractToolCallsMultiArg:
+    """get_dataset_profile is the first tool with two required args — both
+    reconstruction paths must recover BOTH (dataset_reference, question), not just
+    one, or the 400-error recovery path silently drops the question arg."""
+
+    def test_extract_from_text_recovers_both_args(self):
+        text = (
+            '<|python_start|>get_dataset_profile('
+            'dataset_reference="Bentheimer Sandstone", question="what is its porosity?"'
+            ')<|python_end|>'
+        )
+        calls = _extract_tool_calls_from_text(text)
+        assert calls == [{
+            "name": "get_dataset_profile",
+            "args": {"dataset_reference": "Bentheimer Sandstone", "question": "what is its porosity?"},
+        }]
+
+    def test_extract_from_error_recovers_both_args_via_json_strategy(self):
+        err_str = (
+            'LiteLLM Exception: tool call get_dataset_profile '
+            '{"dataset_reference": "Bentheimer Sandstone", "question": "what is its porosity?"}'
+        )
+        calls = _extract_tool_calls_from_error(err_str)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "get_dataset_profile"
+        assert calls[0]["args"] == {
+            "dataset_reference": "Bentheimer Sandstone",
+            "question": "what is its porosity?",
+        }
+
+    def test_single_arg_tool_still_works(self):
+        text = '<|python_start|>get_workflow_guidance(goal="compute permeability")<|python_end|>'
+        calls = _extract_tool_calls_from_text(text)
+        assert calls == [{"name": "get_workflow_guidance", "args": {"goal": "compute permeability"}}]
 
 
 class TestPreemptSecondTurnMultiTool:

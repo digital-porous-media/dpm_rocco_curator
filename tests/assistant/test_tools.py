@@ -277,6 +277,205 @@ class TestGetEducationalContext:
 
 
 # ---------------------------------------------------------------------------
+# get_dataset_profile
+# ---------------------------------------------------------------------------
+
+def _fake_profile():
+    from src.assistant.graph_store import DatasetProfileMatch
+    return DatasetProfileMatch(
+        dataset={"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42", "description": "A sandstone dataset."},
+        samples=[{"identifier": "s1", "title": "Core 1", "porousMediaType": "sandstone", "porosity": 0.21, "waterDepth": None}],
+        digital_datasets=[{"identifier": "dd1", "title": "Scan 1", "fileTypes": ["tiff"], "imageFormat": "TIFF", "imageByteOrder": ""}],
+        analysis_datasets=[{"identifier": "ad1", "title": "PNM 1", "type": "geometric_analysis"}],
+        related_publications=[],
+        related_software=[],
+        related_datasets=[],
+        sample_to_digital_edges=[{"sample": "s1", "digitalDataset": "dd1"}],
+        digital_to_analysis_edges=[{"digitalDataset": "dd1", "analysisDataset": "ad1"}],
+    )
+
+
+class TestGetDatasetProfile:
+    def test_general_profile_returns_string_with_source_label(self):
+        mock_llm = _mock_chat_model("This dataset is a Bentheimer sandstone core scan.")
+        with patch("src.assistant.tools._get_graph_store") as mock_factory:
+            mock_factory.return_value.get_dataset_profile.return_value = _fake_profile()
+            with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
+                from src.assistant.tools import get_dataset_profile
+                result = get_dataset_profile.func("Bentheimer Sandstone", "tell me more about this dataset")
+
+        assert "[dataset profile]" in result
+        assert "Bentheimer Sandstone" in result
+        assert "10.1234/drp42" in result
+
+    def test_llm_called_with_question_and_context(self):
+        mock_llm = _mock_chat_model("Response.")
+        with patch("src.assistant.tools._get_graph_store") as mock_factory:
+            mock_factory.return_value.get_dataset_profile.return_value = _fake_profile()
+            with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
+                from src.assistant.tools import get_dataset_profile
+                get_dataset_profile.func("Bentheimer Sandstone", "what is its porosity?")
+
+        call_kwargs = mock_llm.send_prompt.call_args
+        user_arg = call_kwargs[0][0]
+        context_arg = call_kwargs[1].get("context") or call_kwargs[0][1]
+        assert "what is its porosity?" in user_arg
+        assert "porosity" in context_arg  # real field from the mocked profile
+
+    def test_file_reasoning_question_passes_file_types_in_context(self):
+        mock_llm = _mock_chat_model("Response.")
+        with patch("src.assistant.tools._get_graph_store") as mock_factory:
+            mock_factory.return_value.get_dataset_profile.return_value = _fake_profile()
+            with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
+                from src.assistant.tools import get_dataset_profile
+                get_dataset_profile.func("Bentheimer Sandstone", "how do I read this dataset's files in Python?")
+
+        context_arg = mock_llm.send_prompt.call_args[1].get("context")
+        assert "tiff" in context_arg.lower()
+        assert "imageFormat" in context_arg
+        # datasetNumber 42 -> a real, constructed archive URL should be present.
+        assert "archive/DRP-42/" in context_arg
+
+    def test_ambiguous_match_returns_disambiguation_without_llm_call(self):
+        from src.assistant.graph_store import DatasetProfileAmbiguous
+        ambiguous = DatasetProfileAmbiguous(candidates=[
+            {"datasetNumber": 1, "title": "Bentheimer A", "doi": "10.1/a"},
+            {"datasetNumber": 2, "title": "Bentheimer B", "doi": "10.1/b"},
+        ])
+        mock_llm = _mock_chat_model("should not be called")
+        with patch("src.assistant.tools._get_graph_store") as mock_factory:
+            mock_factory.return_value.get_dataset_profile.return_value = ambiguous
+            with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
+                from src.assistant.tools import get_dataset_profile
+                result = get_dataset_profile.func("Bentheimer", "tell me more")
+
+        mock_llm.send_prompt.assert_not_called()
+        assert "Bentheimer A" in result and "Bentheimer B" in result
+
+    def test_not_found_returns_message_without_llm_call(self):
+        mock_llm = _mock_chat_model("should not be called")
+        with patch("src.assistant.tools._get_graph_store") as mock_factory:
+            mock_factory.return_value.get_dataset_profile.return_value = None
+            with patch("src.assistant.llm.get_chat_model", return_value=mock_llm):
+                from src.assistant.tools import get_dataset_profile
+                result = get_dataset_profile.func("Nonexistent Dataset", "tell me more")
+
+        mock_llm.send_prompt.assert_not_called()
+        assert "No dataset was found" in result
+        assert "Nonexistent Dataset" in result
+
+    def test_use_neo4j_false_graceful_fallback(self):
+        with patch.dict("os.environ", {"USE_NEO4J": "false"}):
+            with patch("src.assistant.tools._graph_store", None):
+                with patch("src.assistant.graph_store.GraphStore.get_dataset_profile", return_value=None):
+                    from src.assistant.tools import get_dataset_profile
+                    result = get_dataset_profile.func("Bentheimer Sandstone", "tell me more")
+
+        assert isinstance(result, str)
+        assert "No dataset was found" in result
+
+
+class TestBuildProfileContext:
+    def test_omits_empty_none_and_falsy_fields(self):
+        from src.assistant.tools import _build_profile_context
+        context = _build_profile_context(_fake_profile())
+
+        # waterDepth: None and imageByteOrder: "" in the fixture must never appear.
+        assert "waterDepth" not in context
+        assert "imageByteOrder" not in context
+
+    def test_populated_fields_present(self):
+        from src.assistant.tools import _build_profile_context
+        context = _build_profile_context(_fake_profile())
+
+        assert "porosity" in context
+        assert "fileTypes" in context
+        assert "Core 1" in context
+        assert "Scan 1" in context
+        assert "PNM 1" in context
+
+    def test_organizational_structure_chain_rendered(self):
+        from src.assistant.tools import _build_profile_context
+        context = _build_profile_context(_fake_profile())
+        assert "Core 1" in context and "Scan 1" in context and "PNM 1" in context
+        assert "->" in context
+
+    def test_large_sub_node_count_is_capped_not_unbounded(self):
+        """A dataset with far more sub-nodes than typical must not blow up context size —
+        this is the guard against the reported context-window-exceeded failure, which
+        reproduced with no prior conversation history (a single oversized profile call is
+        enough)."""
+        from src.assistant.tools import _build_profile_context, _MAX_NODES_PER_TYPE
+        from src.assistant.graph_store import DatasetProfileMatch
+
+        many_samples = [
+            {"identifier": f"s{i}", "title": f"Core {i}", "porousMediaType": "sandstone"}
+            for i in range(500)
+        ]
+        profile = DatasetProfileMatch(
+            dataset={"datasetNumber": 1, "title": "Huge Collection", "doi": "10.1/huge"},
+            samples=many_samples,
+            digital_datasets=[],
+            analysis_datasets=[],
+            related_publications=[],
+            related_software=[],
+            related_datasets=[],
+            sample_to_digital_edges=[],
+            digital_to_analysis_edges=[],
+        )
+        context = _build_profile_context(profile)
+
+        assert context.count("Core ") <= _MAX_NODES_PER_TYPE
+        assert "more samples not shown" in context.lower()
+
+    def test_embedding_vectors_are_stripped_from_context(self):
+        """Reproduces the reported context-window-exceeded bug: a real dataset's Dataset/
+        Sample/DigitalDataset nodes carry a 4096-float datasetEmbedding/componentEmbedding
+        vector (populated by scripts/build_dataset_vector_index.py for every dataset/
+        sub-node) which, left in, is alone enough to blow the model's context window on a
+        single call — no large sub-node count or prior history required."""
+        from src.assistant.tools import _build_profile_context
+        from src.assistant.graph_store import DatasetProfileMatch
+
+        fake_vector = [0.123456] * 4096
+        profile = DatasetProfileMatch(
+            dataset={
+                "datasetNumber": 10, "title": "Bentheimer Sandstone", "doi": "10.17612/P77P49",
+                "datasetEmbedding": fake_vector,
+            },
+            samples=[{"identifier": "s1", "title": "Core 1", "componentEmbedding": fake_vector}],
+            digital_datasets=[{"identifier": "dd1", "title": "Scan 1", "componentEmbedding": fake_vector}],
+            analysis_datasets=[],
+            related_publications=[],
+            related_software=[],
+            related_datasets=[],
+            sample_to_digital_edges=[],
+            digital_to_analysis_edges=[],
+        )
+        context = _build_profile_context(profile)
+
+        assert "0.123456" not in context
+        assert "datasetEmbedding" not in context
+        assert "componentEmbedding" not in context
+        # Real metadata on the same nodes must still survive the strip.
+        assert "Bentheimer Sandstone" in context
+        assert "Core 1" in context
+        assert "Scan 1" in context
+        # A stripped 4096-float vector must not leave the context anywhere near that size.
+        assert len(context) < 5000
+
+
+class TestCorralArchiveUrl:
+    def test_returns_url_for_populated_dataset_number(self):
+        from src.assistant.tools import _corral_archive_url
+        assert _corral_archive_url(42) == "https://web.corral.tacc.utexas.edu/digitalporousmedia/archive/DRP-42/"
+
+    def test_returns_none_for_missing_dataset_number(self):
+        from src.assistant.tools import _corral_archive_url
+        assert _corral_archive_url(None) is None
+
+
+# ---------------------------------------------------------------------------
 # search_literature
 # ---------------------------------------------------------------------------
 
@@ -422,19 +621,20 @@ class TestSearchDatasetsWeakMatch:
 
 
 class TestBuildLangchainTools:
-    def test_returns_all_five_tools(self):
+    def test_returns_all_tools(self):
         from src.assistant.tools import build_langchain_tools
         tools = build_langchain_tools()
         names = {t.name for t in tools}
         assert "search_datasets" in names
         assert "get_dataset_details" in names
+        assert "get_dataset_profile" in names
         assert "get_workflow_guidance" in names
         assert "get_educational_context" in names
         assert "search_literature" in names
 
     def test_returns_list_of_correct_length(self):
         from src.assistant.tools import build_langchain_tools
-        assert len(build_langchain_tools()) == 6
+        assert len(build_langchain_tools()) == 7
 
 
 # ---------------------------------------------------------------------------

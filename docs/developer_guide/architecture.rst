@@ -674,13 +674,13 @@ each tool's own internals.
        ];
 
        REACT [
-           label="ReAct agent\ncreate_react_agent()\nSYSTEM_PROMPT + all 6 tools bound\n(model picks tool(s) from descriptions)",
+           label="ReAct agent\ncreate_react_agent()\nSYSTEM_PROMPT + all 7 tools bound\n(model picks tool(s) from descriptions)",
            fillcolor="#fff3e0", width=3.4, height=1.3
        ];
 
        TOOLS [
-           label="search_datasets · get_dataset_details\nsearch_portal_docs\nget_educational_context · get_workflow_guidance\nsearch_literature",
-           fillcolor="#e1f5fe", width=3.6, height=1.4
+           label="search_datasets · get_dataset_details · get_dataset_profile\nsearch_portal_docs\nget_educational_context · get_workflow_guidance\nsearch_literature",
+           fillcolor="#e1f5fe", width=3.8, height=1.5
        ];
 
        ASSEMBLE [
@@ -694,8 +694,8 @@ each tool's own internals.
        ];
 
        SELFCONTAINED [
-           label="Self-contained passthrough\nget_workflow_guidance / get_educational_context\nsearch_portal_docs — already cited, not re-synthesized",
-           fillcolor="#d1c4e9", width=3.4, height=1.2
+           label="Self-contained passthrough\nget_workflow_guidance / get_educational_context\nsearch_portal_docs / get_dataset_profile — already cited, not re-synthesized",
+           fillcolor="#d1c4e9", width=3.6, height=1.3
        ];
 
        SYNTHESIZE [
@@ -726,15 +726,24 @@ A manual-dispatch fallback (not pictured) handles a known tool-call-format issue
 supported model (Llama-4-Maverick via SambaNova/TACC): if the backend rejects the model's native
 tool-call syntax with a 400 error, the intended call is parsed out of the error text and
 dispatched directly, following the same verbatim/self-contained rules above rather than falling
-back to an ungrounded direct answer.
+back to an ungrounded direct answer. That extraction path (``_TOOL_PARAM_KEYS`` +
+``_extract_tool_calls_from_text``/``_extract_tool_calls_from_error``) supports tools with more
+than one required argument — ``get_dataset_profile`` is currently the only one, taking both
+``dataset_reference`` and ``question``.
+
+Multi-dataset comparisons ("compare dataset A and dataset B") route through the same SYNTHESIZE
+node as cross-intent queries: the agent calls ``get_dataset_profile`` once per dataset, and
+since that's more than one tool call in the turn, the single-call short-circuit
+(VERBATIM/SELFCONTAINED) never fires — the outer agent's own synthesis combines both profiles.
 
 **Core Modules**
 
 For what each tool actually does internally (prompts, matching logic, data schemas), see the
 capability pages: :doc:`../user_guide/dataset_discovery`, :doc:`../user_guide/structured_queries`,
-:doc:`../user_guide/portal_docs`, :doc:`../user_guide/domain_qa`,
-:doc:`../user_guide/workflow_guidance`, :doc:`../user_guide/literature_search`. The dropdowns
-below are the module-level (class/file) reference.
+:doc:`../user_guide/dataset_profiles`, :doc:`../user_guide/portal_docs`,
+:doc:`../user_guide/domain_qa`, :doc:`../user_guide/workflow_guidance`,
+:doc:`../user_guide/literature_search`. The dropdowns below are the module-level (class/file)
+reference.
 
 .. dropdown:: src/assistant/conversation_manager.py — Orchestrator
    :icon: file-directory-fill
@@ -753,6 +762,9 @@ below are the module-level (class/file) reference.
    :icon: file-directory-fill
 
    - ``search_datasets`` / ``get_dataset_details`` — dataset discovery (semantic + structured)
+   - ``get_dataset_profile`` — single-dataset deep-dive profile, sub-node/``INPUT_FOR`` pipeline
+     structure, file-format/data-location and reuse-suitability reasoning (backed by
+     ``src/prompts/dataset_profile.yaml``); called once per dataset for comparisons
    - ``get_workflow_guidance`` / ``get_educational_context`` — domain Q&A and workflow guidance,
      backed by ``data/domain_workflows.yaml`` and ``data/tutorials.yaml``
    - ``search_portal_docs`` — DPM Portal documentation search
@@ -767,7 +779,10 @@ below are the module-level (class/file) reference.
    - ``GraphStore`` class — two layers:
 
      - **High-level** (``search()``, ``hybrid_search()``, ``component_search()``,
-       ``cypher_qa()``) via ``langchain-neo4j`` — used by ``tools.py``
+       ``cypher_qa()``, ``get_dataset_profile()``) via ``langchain-neo4j``/the raw driver — used
+       by ``tools.py``. ``get_dataset_profile()`` resolves a title/DOI/dataset-number reference
+       to one ``Dataset`` node and fetches its full ``PART_OF``/``INPUT_FOR`` sub-node graph —
+       see :doc:`../user_guide/dataset_profiles`
      - **Low-level** (``semantic_search()``, ``filter_by_metadata()``, ``search_datasets()``,
        ``execute_cypher()``) via the raw ``neo4j`` driver, for hybrid structured/semantic queries
    - Accepts a ``filters: dict`` (not hardcoded field names), per the Croissant extensibility
@@ -800,6 +815,9 @@ below are the module-level (class/file) reference.
    - ``educational.yaml`` — shared synthesis prompt for both ``get_educational_context`` and
      ``get_workflow_guidance`` (see :doc:`../user_guide/domain_qa`,
      :doc:`../user_guide/workflow_guidance`)
+   - ``dataset_profile.yaml`` — synthesis prompt for ``get_dataset_profile``: tiered
+     knowledge policy, concise-overview-vs-specific-field framing, organizational-structure
+     rendering (see :doc:`../user_guide/dataset_profiles`)
    - ``portal_docs.yaml`` — synthesis prompt for ``search_portal_docs``
      (see :doc:`../user_guide/portal_docs`)
 

@@ -99,6 +99,7 @@ What's Next?
 
   - :doc:`dataset_discovery` — semantic dataset search
   - :doc:`structured_queries` — exact/numeric dataset property queries
+  - :doc:`dataset_profiles` — follow-up detail questions and dataset comparisons
   - :doc:`portal_docs` — portal how-to and schema questions
   - :doc:`domain_qa` — porous media science Q&A
   - :doc:`workflow_guidance` — step-by-step DRP workflows

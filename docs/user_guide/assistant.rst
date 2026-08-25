@@ -43,10 +43,11 @@ its description against the system prompt — not a lookup table. This is implem
    Greetings, small talk, brainstorming, and self-contained foundational-science questions
    ("What is porosity?") are answered directly, with no tools bound to that call (so the model
    can't hallucinate a tool call it doesn't have).
-3. **ReAct agent** — for everything else, the agent is given all six tools (see the table below)
-   and the system prompt's routing rules, and picks one or more based on the query. Cross-intent
-   queries ("explain relative permeability and find datasets that measure it") trigger multiple
-   sequential tool calls.
+3. **ReAct agent** — for everything else, the agent is given all seven tools (see the table
+   below) and the system prompt's routing rules, and picks one or more based on the query.
+   Cross-intent queries ("explain relative permeability and find datasets that measure it"), and
+   multi-dataset comparisons ("compare dataset A and dataset B"), trigger multiple sequential
+   tool calls.
 4. **Response assembly** — how the final answer is built depends on which tool(s) ran:
 
    - **Verbatim tools** (``search_datasets``, ``get_dataset_details``) return real dataset
@@ -54,9 +55,9 @@ its description against the system prompt — not a lookup table. This is implem
      these is discarded; only a short LLM-generated lead-in sentence is added, then the tool's
      output is spliced in byte-for-byte, followed by a fixed verification disclaimer.
    - **Self-contained tools** (``get_workflow_guidance``, ``get_educational_context``,
-     ``search_portal_docs``) already return a complete, synthesized, cited answer from their own
-     internal LLM call. That answer is returned directly — it is never re-synthesized by the
-     outer agent, which has no grounding in the underlying data.
+     ``search_portal_docs``, ``get_dataset_profile``) already return a complete, synthesized,
+     cited answer from their own internal LLM call. That answer is returned directly — it is
+     never re-synthesized by the outer agent, which has no grounding in the underlying data.
    - **Cross-intent / multi-tool turns** are synthesized by the outer agent into one coherent
      response, with source labels preserved from each tool's raw output.
    - A **manual-dispatch fallback** exists for a known tool-call-format issue with one supported
@@ -83,6 +84,10 @@ What the Assistant Can Do
      - "Which datasets have porosity above 0.3?"
      - ``get_dataset_details``
      - :doc:`structured_queries`
+   * - Dataset detail follow-up / comparison
+     - "Tell me more about this dataset" / "Compare A and B for two-phase flow simulation"
+     - ``get_dataset_profile``
+     - :doc:`dataset_profiles`
    * - Portal how-to / schema
      - "How do I upload a dataset to the portal?"
      - ``search_portal_docs``
@@ -121,6 +126,9 @@ information came from:
      - Match against a dataset sub-node (e.g. a specific sample or scan), not the parent dataset
    * - ``cypher match``
      - Structured Cypher query result — exact property values, numeric comparisons, named authors
+   * - ``dataset profile``
+     - Deep-dive answer about one already-identified dataset, or one dataset within a
+       multi-dataset comparison
    * - ``semantic scholar``
      - Result from the Semantic Scholar literature API
    * - ``portal docs``
@@ -185,8 +193,9 @@ See Also
 - :doc:`quickstart_assistant` — Setup and example queries for first-time use
 - :doc:`configuration` — Neo4j and Semantic Scholar environment variables
 - :doc:`streamlit_app` — The Description Curator tab
-- :doc:`dataset_discovery`, :doc:`structured_queries`, :doc:`portal_docs`, :doc:`domain_qa`,
-  :doc:`workflow_guidance`, :doc:`literature_search` — How each capability is implemented
+- :doc:`dataset_discovery`, :doc:`structured_queries`, :doc:`dataset_profiles`,
+  :doc:`portal_docs`, :doc:`domain_qa`, :doc:`workflow_guidance`, :doc:`literature_search` —
+  How each capability is implemented
 - :doc:`../developer_guide/architecture` — Assistant module reference, including how to add
   datasets to the graph and sync portal documentation updates ("Maintenance" section)
 - ``CLAUDE.md`` — Full assistant architecture and design constraints

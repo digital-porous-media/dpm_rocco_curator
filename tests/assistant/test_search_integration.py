@@ -703,3 +703,61 @@ class TestLiteratureSearch:
 
         assert response is not None
         assert "no papers found" in response.lower()
+
+
+# ---------------------------------------------------------------------------
+# P — dataset detail follow-up / profile / comparison
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.tool_layer
+class TestDatasetProfile:
+    """P-1/P-2: single-dataset detail follow-ups and multi-dataset comparisons,
+    routed through get_dataset_profile per HANDOFF.md's "Dataset Detail Follow-Up
+    Queries" feature."""
+
+    def test_p0_mocked_smoke(self, mock_graph_store):
+        """Mocked/tool_layer smoke test: the tool doesn't raise against the
+        USE_NEO4J=false mock_graph_store fixture, and degrades to an honest
+        not-found message rather than an exception."""
+        from unittest.mock import patch
+        from src.assistant.tools import get_dataset_profile
+
+        with patch("src.assistant.tools._graph_store", mock_graph_store):
+            response = _run_tool(
+                get_dataset_profile, "Bentheimer Sandstone", "tell me more about this dataset"
+            )
+
+        assert response is not None
+        assert "no dataset was found" in response.lower()
+
+    def test_p1_search_then_tell_me_more_live(self, conversation_manager):
+        """P-1: a search turn followed by "tell me more about the first one" must
+        return a fuller [dataset profile] answer, not a repeat of the search
+        result's title/DOI/one-line-summary shape."""
+        first = conversation_manager.chat("Show me sandstone datasets")
+        history = [
+            {"role": "user", "content": "Show me sandstone datasets"},
+            {"role": "assistant", "content": first},
+        ]
+        second = conversation_manager.chat("Tell me more about the first one", history=history)
+
+        assert second is not None
+        lower = second.lower()
+        has_profile = "[dataset profile]" in lower
+        has_gap = any(p in lower for p in ["no dataset was found", "which one did you mean"])
+        assert has_profile or has_gap, f"Expected a profile answer or an honest gap.\nGot: {second[:300]}"
+
+    def test_p2_compare_two_datasets_live(self, conversation_manager):
+        """P-2: a comparison request naming two datasets must profile both (via
+        two get_dataset_profile calls) and synthesize a comparison, not just
+        answer about one of them."""
+        response = conversation_manager.chat(
+            "Compare Bentheimer Sandstone and Estaillades Carbonate for two-phase flow simulation."
+        )
+
+        assert response is not None
+        lower = response.lower()
+        mentions_both = "bentheimer" in lower and "estaillades" in lower
+        has_gap = any(p in lower for p in ["no dataset was found", "which one did you mean"])
+        assert mentions_both or has_gap, f"Expected both datasets addressed or an honest gap.\nGot: {response[:300]}"

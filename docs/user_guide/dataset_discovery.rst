@@ -117,6 +117,7 @@ See Also
 --------
 
 - :doc:`structured_queries` — Numeric/exact-value/named-author dataset queries
+- :doc:`dataset_profiles` — Follow-up detail questions on a dataset you've already found
 - :doc:`assistant` — Overview of how all capabilities fit together
 - :doc:`../developer_guide/architecture` — Maintenance: adding datasets to the graph
 - ``src/prompts/query_expander.yaml`` — The query expansion prompt

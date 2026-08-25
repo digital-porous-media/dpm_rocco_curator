@@ -90,6 +90,7 @@ For a full walkthrough, see :doc:`user_guide/quickstart_curator` (Description Cu
    user_guide/assistant
    user_guide/dataset_discovery
    user_guide/structured_queries
+   user_guide/dataset_profiles
    user_guide/portal_docs
    user_guide/domain_qa
    user_guide/workflow_guidance

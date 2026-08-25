@@ -20,6 +20,10 @@ The agent performs routing implicitly. The mapping is:
                                                   property, numeric threshold/range, or
                                                   multiple values/fields — even combined
                                                   with a rock type or imaging method)
+  Dataset follow-up /     get_dataset_profile    (full profile of ONE already-identified
+  profile / comparison                           dataset: org structure, file types/data
+                                                  location, reuse-suitability reasoning;
+                                                  called once per dataset for comparisons)
   Portal how-to / schema  search_portal_docs     (dpm_docs markdown parsed into a heading
                                                   tree at runtime, LLM-selected sections —
                                                   see src/assistant/portal_docs_tree.py)
@@ -67,7 +71,15 @@ _VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
 # dumps instead of an answer. Its own LLM call (portal_docs.yaml) does that
 # synthesis and cites [portal docs] sources, so it's self-contained like
 # get_educational_context/get_workflow_guidance.
-_SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context", "search_portal_docs"}
+# get_dataset_profile also belongs here, not in _VERBATIM_TOOLS: it must reason over its
+# fetched graph data (file-format/"how do I read this" guidance, reuse-suitability
+# judgments, a concise high-level synthesis for general "tell me more" questions) rather
+# than reproduce a fixed data shape verbatim — its own LLM call (dataset_profile.yaml) is
+# grounded in the real fetched profile and prepends a code-generated, never-retyped
+# [dataset profile] title/DOI header, same as the other self-contained tools' own citations.
+_SELF_CONTAINED_TOOLS = {
+    "get_workflow_guidance", "get_educational_context", "search_portal_docs", "get_dataset_profile",
+}
 
 # Tags search_datasets prepends for the narrator's benefit only — never meant to
 # reach the user as literal bracketed text (see tools.py: rationale/weak-match tags).
@@ -213,15 +225,18 @@ _TOOL_CALL_RE = re.compile(r'<\|python_start\|>.*?<\|python_end\|>', re.DOTALL)
 # Error substrings that indicate LiteLLM rejected the model's tool-call format.
 _TOOL_FORMAT_ERRORS = ("JSONDecodeError", "dict_type", "Invalid function calling output")
 
-# Maps each tool name to its primary string parameter key.
-# Used to reconstruct tool calls from the error's model_output field.
-_TOOL_PARAM_KEYS: dict[str, str] = {
-    "get_educational_context": "question",
-    "get_workflow_guidance": "goal",
-    "search_datasets": "query",
-    "get_dataset_details": "question",
-    "search_literature": "query",
-    "search_portal_docs": "question",
+# Maps each tool name to its required string parameter key(s), in call order.
+# Used to reconstruct tool calls from the error's model_output field. Most tools take
+# exactly one required param; get_dataset_profile takes two (dataset_reference, question) —
+# both extraction functions below iterate this list rather than assuming a single key.
+_TOOL_PARAM_KEYS: dict[str, list[str]] = {
+    "get_educational_context": ["question"],
+    "get_workflow_guidance": ["goal"],
+    "search_datasets": ["query"],
+    "get_dataset_details": ["question"],
+    "get_dataset_profile": ["dataset_reference", "question"],
+    "search_literature": ["query"],
+    "search_portal_docs": ["question"],
 }
 
 # Returned when a tool call was identified but produced nothing usable after a 400
@@ -272,7 +287,7 @@ def _extract_tool_calls_from_text(text: str) -> list[dict]:
     400 error path.
     """
     calls: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
     python_call_re = re.compile(
         r'<\|python_start\|>\s*(\w+)\s*\(([^)]*)\)\s*<\|python_end\|>',
         re.DOTALL,
@@ -282,12 +297,18 @@ def _extract_tool_calls_from_text(text: str) -> list[dict]:
         tool_name = m.group(1)
         if tool_name not in _TOOL_PARAM_KEYS:
             continue
-        param_key = _TOOL_PARAM_KEYS[tool_name]
+        param_keys = _TOOL_PARAM_KEYS[tool_name]
         kwargs = dict(kwarg_re.findall(m.group(2)))
-        value = kwargs.get(param_key) or (next(iter(kwargs.values())) if kwargs else None)
-        if value and (tool_name, value) not in seen:
-            calls.append({"name": tool_name, "args": {param_key: value}})
-            seen.add((tool_name, value))
+        args = {key: kwargs[key] for key in param_keys if key in kwargs}
+        if not args and kwargs:
+            # None of the expected key names matched (e.g. the model used different
+            # names) — fall back to assigning whatever values were parsed, in order,
+            # to the tool's expected param keys.
+            args = dict(zip(param_keys, kwargs.values()))
+        dedupe_key = (tool_name, tuple(sorted(args.items())))
+        if args and dedupe_key not in seen:
+            calls.append({"name": tool_name, "args": args})
+            seen.add(dedupe_key)
     return calls
 
 
@@ -304,7 +325,7 @@ def _extract_tool_calls_from_error(err_str: str) -> list[dict]:
     3. JSON parameter key field: {"param_key": "value"} near the tool name
     """
     calls: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
 
     # Strategy 1: Llama native <|python_start|>fn(key="val")<|python_end|> format
     calls = _extract_tool_calls_from_text(err_str)
@@ -316,28 +337,33 @@ def _extract_tool_calls_from_error(err_str: str) -> list[dict]:
     # e.g. \\\\"value\\\\" — stripping all double-backslash pairs normalizes it.
     normalized = err_str.replace('\\\\', '')
 
-    for tool_name, param_key in _TOOL_PARAM_KEYS.items():
+    for tool_name, param_keys in _TOOL_PARAM_KEYS.items():
         if tool_name not in normalized:
             continue
         idx = normalized.find(tool_name)
-        snippet = normalized[idx: idx + 500]
+        # Wide enough to span a multi-arg call's full JSON args blob (e.g.
+        # get_dataset_profile's two keys), not just a single-arg one.
+        snippet = normalized[idx: idx + 800]
 
-        # Strategy 2: {"type":"string","value":"..."}
-        mv = re.search(r'"value":\s*"([^"]*)"', snippet)
-        if mv:
-            value = mv.group(1)
-            if value and (tool_name, value) not in seen:
-                calls.append({"name": tool_name, "args": {param_key: value}})
-                seen.add((tool_name, value))
-                continue
+        # Strategy 3: {"param_key": "value"} — direct JSON parameter key match, tried
+        # for every expected key so multi-arg tools can recover all of them.
+        args = {}
+        for key in param_keys:
+            mp = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"', snippet)
+            if mp:
+                args[key] = mp.group(1)
 
-        # Strategy 3: {"param_key": "value"} — direct JSON parameter key match
-        mp = re.search(rf'"{re.escape(param_key)}"\s*:\s*"([^"]*)"', snippet)
-        if mp:
-            value = mp.group(1)
-            if value and (tool_name, value) not in seen:
-                calls.append({"name": tool_name, "args": {param_key: value}})
-                seen.add((tool_name, value))
+        # Strategy 2: {"type":"string","value":"..."} only ever recovers one positional
+        # value, so it only applies as a fallback for single-param tools.
+        if not args and len(param_keys) == 1:
+            mv = re.search(r'"value":\s*"([^"]*)"', snippet)
+            if mv:
+                args[param_keys[0]] = mv.group(1)
+
+        dedupe_key = (tool_name, tuple(sorted(args.items())))
+        if args and dedupe_key not in seen:
+            calls.append({"name": tool_name, "args": args})
+            seen.add(dedupe_key)
 
     return calls
 
@@ -477,6 +503,22 @@ here by name, route there). search_datasets can only match one value per field a
 cannot express numeric comparisons at all, so it silently drops these constraints; \
 get_dataset_details generates real Cypher and handles any number/combination of them \
 correctly.
+- **A follow-up question about a dataset that is already identified** — from a prior \
+search_datasets/get_dataset_details/get_dataset_profile result, or from the user directly \
+naming/describing one dataset in this turn — including "tell me more about this/that/the \
+first one", a specific property question about that one dataset, organizational-structure \
+questions (which sample fed which scan fed which analysis), "how do I read this dataset's \
+files in Python"/"where can I download this", or a reuse-suitability judgment about that one \
+dataset ("is this suitable for X") → get_dataset_profile. Resolve the pronoun/positional \
+reference ("this", "that", "the first one", "the sandstone one") to a concrete title, DOI, or \
+dataset number from the conversation history BEFORE calling — the tool takes only a resolved \
+reference string, never a bare pronoun. Once a dataset has been identified this way, do NOT \
+re-call search_datasets or get_dataset_details for a further follow-up about that same \
+dataset — keep using get_dataset_profile with the same resolved reference.
+- **Comparing two or more already-identified datasets** ("compare dataset A and dataset B", \
+"which of these two is better for X") → call get_dataset_profile once per dataset, each with \
+its own resolved reference and the comparison question, then synthesize the comparison \
+yourself from both results — do not look for or invent a separate comparison tool.
 - Dataset discovery by topic, suitability, or purpose with no precise checkable \
 property named (e.g. "datasets suitable for LBM simulation", "something good for a \
 teaching demo") → search_datasets. (search_datasets also attempts a structured lookup \
@@ -511,8 +553,8 @@ those are leftover patterns from math-solving output and do not fit conversation
 Just answer the question directly, using headers/bullets only where they genuinely aid \
 readability.
 - Relay source labels from tool output exactly as returned: [graph match], [semantic match], \
-[semantic scholar], [cypher match], [component match], [hybrid match], [portal docs]. Do not \
-strip or rename them.
+[semantic scholar], [cypher match], [component match], [hybrid match], [portal docs], \
+[dataset profile]. Do not strip or rename them.
 - When presenting dataset search results, always include the DOI for each entry. \
 The tool output includes it as "DOI: xxx" — preserve it verbatim in your response.
 - Always use LaTeX delimiters for mathematical expressions: inline `$...$`, block `$$...$$` \
@@ -735,6 +777,12 @@ question, or whether the question also needs a DIFFERENT kind of lookup beyond w
 that one tool already covers (e.g. it also explicitly asks to find/search datasets,
 find papers/literature, or look up a specific dataset property/count).
 
+Also answer {"needs_followup": true} when the question names or clearly implies a SECOND
+distinct dataset (e.g. a comparison — "compare A and B", "which of these two...") and only
+ONE dataset's profile has been looked up so far — even though tool_called is the SAME tool
+(get_dataset_profile) both times. get_dataset_profile only ever covers one dataset per call,
+so a comparison needs it called again for the second dataset.
+
 You will be given the user's original question and which tool was already called.
 
 Respond with a JSON object only, no markdown fences:
@@ -745,6 +793,8 @@ Examples:
 - question: "How do I compute relative permeability, and can you also find datasets that measure it?", tool_called: "get_workflow_guidance" -> {"needs_followup": true}
 - question: "What is porosity, and are there any recent papers on it?", tool_called: "get_educational_context" -> {"needs_followup": true}
 - question: "How do I upload a dataset to the portal?", tool_called: "search_portal_docs" -> {"needs_followup": false}
+- question: "Compare Dataset A and Dataset B for two-phase flow simulation", tool_called: "get_dataset_profile" -> {"needs_followup": true}
+- question: "Tell me more about this dataset", tool_called: "get_dataset_profile" -> {"needs_followup": false}
 """
 
 

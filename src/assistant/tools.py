@@ -18,6 +18,10 @@ from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# Pure helpers/dataclasses only — safe at module level (no neo4j/langchain_neo4j import,
+# those stay deferred to GraphStore.__init__ so USE_NEO4J=false stays fast/dependency-free).
+from src.assistant.graph_store import DatasetProfileAmbiguous, _strip_doi_prefix
+
 logger = logging.getLogger(__name__)
 
 _graph_store = None
@@ -415,10 +419,7 @@ def search_datasets(query: str, top_k: int = 5) -> str:
         meta = r.get("metadata", {})
         title = meta.get("title", "Unknown")
         raw_doi = meta.get("doi", "")
-        # Normalize: strip any number of leading https://doi.org/ prefixes
-        doi_id = raw_doi
-        while doi_id.startswith("https://doi.org/"):
-            doi_id = doi_id[len("https://doi.org/"):]
+        doi_id = _strip_doi_prefix(raw_doi)
         doi_str = f"DOI: {doi_id}" if doi_id else ""
         label = r.get("source_label", "[graph match]")
         component_title = meta.get("component_title")
@@ -463,6 +464,240 @@ try:
     )
 except Exception as _e:  # pragma: no cover - defensive only
     logger.warning("Could not derive schema field list for get_dataset_details description: %s", _e)
+
+
+# ---------------------------------------------------------------------------
+# Single-dataset deep-dive profile (follow-up detail queries)
+# ---------------------------------------------------------------------------
+
+def _corral_archive_url(dataset_number) -> str | None:
+    """
+    Returns the DPM Portal's TACC Corral archive directory for a dataset, derived
+    deterministically from its datasetNumber (same URL pattern scripts/scrape_metadata.py
+    already uses) — or None if no dataset number is available.
+
+    Caveat (surfaced to the LLM via the prompt, not repeated here): the archive keeps every
+    published version as its own directory (DRP-{n}, DRP-{n}v2, ...) and the graph doesn't
+    record which version is current, so this bare-number link may not always be the latest.
+    """
+    if dataset_number in (None, ""):
+        return None
+    return f"https://web.corral.tacc.utexas.edu/digitalporousmedia/archive/DRP-{dataset_number}/"
+
+
+# Hard cap on how many sub-nodes of one type get rendered into the profile context. Some
+# datasets have far more Sample/DigitalDataset/AnalysisDataset sub-nodes than a typical one
+# (e.g. large multi-scan collections) — without a cap, _build_profile_context's output can grow
+# large enough to blow past the model's context window on a single call, with no prior
+# conversation history needed to reproduce it. Truncation is never silent: a "not shown" note
+# with the real omitted count is always appended so the LLM (and, downstream, the user) knows
+# the profile is partial rather than assuming these are literally all the sub-nodes that exist.
+_MAX_NODES_PER_TYPE = 25
+
+# Known vector-embedding property names (Dataset.datasetEmbedding, and componentEmbedding on
+# the DatasetComponent secondary label shared by Sample/DigitalDataset/AnalysisDataset — see
+# graph_store.py's schema docstring). GraphStore.get_dataset_profile()'s Cypher already nulls
+# these out via map projection so they never cross the wire, but this is a second, independent
+# layer: it also catches ANY other property that happens to be a long list of numbers (the
+# actual root cause hit in production — a real embedded dataset's Sample/DigitalDataset nodes
+# carried a 4096-float vector straight into the LLM context, alone enough to exceed the model's
+# context window on a single call with no prior conversation history).
+_EMBEDDING_KEYS = {"datasetEmbedding", "componentEmbedding"}
+_EMBEDDING_LIST_MIN_LEN = 16
+
+
+def _is_embedding_like(key: str, value) -> bool:
+    """True if `value` looks like a vector embedding rather than human-facing metadata —
+    either a known embedding property name, or (as a backstop against renamed/unknown
+    embedding fields) any list of _EMBEDDING_LIST_MIN_LEN+ numeric values."""
+    if key in _EMBEDDING_KEYS:
+        return True
+    return (
+        isinstance(value, list)
+        and len(value) >= _EMBEDDING_LIST_MIN_LEN
+        and all(isinstance(v, (int, float)) for v in value)
+    )
+
+
+def _render_node_list(nodes: list[dict], heading: str) -> str:
+    """
+    Renders a list of sub-node property dicts as a markdown block, one bullet per node,
+    one `key: value` per populated property. Nodes/properties with no populated fields are
+    skipped entirely — empty/None/[] values must never reach the LLM context as clutter
+    (see HANDOFF.md / project memory: no empty metadata fields shown to the user).
+    Embedding-vector properties are stripped regardless (see _is_embedding_like) — they are
+    never human-facing metadata and are large enough on their own to blow the context window.
+
+    Caps at _MAX_NODES_PER_TYPE nodes (see its docstring) to bound context size.
+    """
+    if not nodes:
+        return ""
+    total = len(nodes)
+    truncated = nodes[:_MAX_NODES_PER_TYPE]
+    lines = [f"### {heading}"]
+    for node in truncated:
+        populated = {
+            k: v for k, v in node.items()
+            if v not in (None, "", []) and not _is_embedding_like(k, v)
+        }
+        if not populated:
+            continue
+        label = populated.get("title") or populated.get("identifier") or "(untitled)"
+        lines.append(f"- **{label}**")
+        for key, value in populated.items():
+            if key in ("title",):
+                continue
+            lines.append(f"  - {key}: {value}")
+    if total > _MAX_NODES_PER_TYPE:
+        lines.append(f"- ... and {total - _MAX_NODES_PER_TYPE} more {heading.lower()} not shown here.")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _render_pipeline_edges(profile) -> str:
+    """Renders the Sample -> DigitalDataset -> AnalysisDataset INPUT_FOR chain as arrows,
+    keyed by identifier against the already-rendered node lists. Nodes with no recorded
+    edge are called out by name so the org structure doesn't look silently incomplete."""
+    by_id = {}
+    for node in profile.samples + profile.digital_datasets + profile.analysis_datasets:
+        if node.get("identifier"):
+            by_id[node["identifier"]] = node.get("title") or node["identifier"]
+
+    chains = []
+    digital_to_analysis = {e["digitalDataset"]: e["analysisDataset"] for e in profile.digital_to_analysis_edges}
+    linked_digital_ids = set()
+    for edge in profile.sample_to_digital_edges:
+        sample_id, digital_id = edge["sample"], edge["digitalDataset"]
+        linked_digital_ids.add(digital_id)
+        chain = [by_id.get(sample_id, sample_id), by_id.get(digital_id, digital_id)]
+        analysis_id = digital_to_analysis.get(digital_id)
+        if analysis_id:
+            chain.append(by_id.get(analysis_id, analysis_id))
+        chains.append(" -> ".join(chain))
+
+    orphaned = [
+        by_id.get(dd.get("identifier"), dd.get("title"))
+        for dd in profile.digital_datasets
+        if dd.get("identifier") not in linked_digital_ids
+    ]
+
+    lines = []
+    if chains:
+        lines.append("### Organizational structure (Sample -> DigitalDataset -> AnalysisDataset)")
+        shown_chains = chains[:_MAX_NODES_PER_TYPE]
+        lines.extend(f"- {c}" for c in shown_chains)
+        if len(chains) > _MAX_NODES_PER_TYPE:
+            lines.append(f"- ... and {len(chains) - _MAX_NODES_PER_TYPE} more pipeline links not shown here.")
+    if orphaned:
+        lines.append("### Digital datasets with no recorded sample/analysis link")
+        shown_orphaned = [n for n in orphaned if n][:_MAX_NODES_PER_TYPE]
+        lines.extend(f"- {name}" for name in shown_orphaned)
+        if len(orphaned) > _MAX_NODES_PER_TYPE:
+            lines.append(f"- ... and {len(orphaned) - _MAX_NODES_PER_TYPE} more not shown here.")
+    return "\n".join(lines)
+
+
+def _build_profile_context(profile) -> str:
+    """
+    Renders a DatasetProfileMatch into the structured context string fed to the
+    dataset_profile prompt. Every section omits properties/nodes with no populated value —
+    the context must never show a blank/null field, since that clutters the eventual answer
+    (see project memory on concise dataset-detail answers).
+    """
+    d = {
+        k: v for k, v in profile.dataset.items()
+        if v not in (None, "", []) and not _is_embedding_like(k, v)
+    }
+    sections = ["## Portal-verified facts", f"**{d.get('title', 'Untitled dataset')}**"]
+    for key, value in d.items():
+        if key != "title":
+            sections.append(f"- {key}: {value}")
+
+    archive_url = _corral_archive_url(d.get("datasetNumber"))
+    if archive_url:
+        sections.append(f"\n## Data location\n{archive_url}")
+
+    for nodes, heading in (
+        (profile.samples, "Samples"),
+        (profile.digital_datasets, "Digital datasets"),
+        (profile.analysis_datasets, "Analysis datasets"),
+        (profile.related_publications, "Related publications"),
+        (profile.related_software, "Related software"),
+        (profile.related_datasets, "Related datasets"),
+    ):
+        rendered = _render_node_list(nodes, heading)
+        if rendered:
+            sections.append("\n" + rendered)
+
+    pipeline = _render_pipeline_edges(profile)
+    if pipeline:
+        sections.append("\n" + pipeline)
+
+    return "\n".join(sections)
+
+
+@tool
+def get_dataset_profile(dataset_reference: str, question: str) -> str:
+    """Give a full profile / deep-dive answer about ONE already-identified dataset, using its
+    real graph data (Sample -> DigitalDataset -> AnalysisDataset organizational structure, file
+    types, imaging/segmentation metadata, related publications/software/datasets) plus
+    reasoning grounded in that data. Use this for:
+      - "tell me more about <dataset>" / general profile requests on a specific dataset
+      - a specific-field follow-up about ONE already-identified dataset (e.g. "what's its
+        porosity", "how many files does it have") when the dataset itself is already
+        known/named/resolved — NOT for a fresh multi-dataset structured lookup (that's
+        get_dataset_details) or fresh discovery across many datasets (that's search_datasets)
+      - questions about a dataset's Sample -> Digital Dataset -> Analysis Dataset pipeline
+        structure (which sample produced which scan, which scan produced which analysis)
+      - file-type/format questions and "how do I read/open this data in Python" or "where can I
+        download this" reasoning — this tool will reason from the dataset's actual recorded
+        file types/formats (and its real TACC Corral archive location, derived from its
+        dataset number) plus general file-format/programming knowledge, and will clearly flag
+        which parts of the answer are general knowledge rather than portal-verified fact
+      - reuse-suitability reasoning about ONE dataset ("is this suitable for two-phase flow
+        simulation") grounded in its actual recorded properties
+
+    dataset_reference must be a concrete title, DOI, or dataset number — resolve any pronoun or
+    positional reference ("this dataset", "the first one", "the sandstone one") against the
+    conversation history YOURSELF before calling; this tool has no memory of prior turns and
+    will treat a bare pronoun as a literal (failing) search string.
+
+    For a query comparing TWO OR MORE datasets, call this tool ONCE PER dataset (with each
+    one's own resolved reference and the comparison question) — do not invent a separate
+    comparison tool call; synthesize the comparison yourself from the multiple results.
+
+    Do NOT use this to discover NEW datasets matching a description (use search_datasets) or to
+    run a structured multi-dataset property query across the whole catalog (use
+    get_dataset_details) — this tool answers about one dataset that is already identified.
+
+    Source label: [dataset profile]
+    """
+    from src.prompts.loader import load_prompt, render
+    from src.assistant.llm import get_chat_model
+
+    profile = _get_graph_store().get_dataset_profile(dataset_reference)
+
+    if profile is None:
+        return (
+            f'No dataset was found matching "{dataset_reference}". Try the exact title, '
+            "DOI, or dataset number as shown in a prior search result."
+        )
+    if isinstance(profile, DatasetProfileAmbiguous):
+        lines = [
+            f'- **{c["title"]}** (DOI: {_strip_doi_prefix(c.get("doi")) or "not available"})'
+            for c in profile.candidates
+        ]
+        return f'Multiple datasets match "{dataset_reference}" — which one did you mean?\n\n' + "\n".join(lines)
+
+    context = _build_profile_context(profile)
+    prompt = load_prompt("dataset_profile")
+    system = render(prompt["system"], context=context)
+    user = render(prompt["user"], question=question)
+
+    response = get_chat_model().send_prompt(user, context=system, params={"temperature": 0.2, "max_tokens": 1200})
+    title = profile.dataset.get("title") or dataset_reference
+    doi = _strip_doi_prefix(profile.dataset.get("doi")) or "not available"
+    header = f"[dataset profile] {title} (DOI: {doi})"
+    return f"{header}\n\n{response}"
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +904,7 @@ def build_langchain_tools() -> list:
     return [
         search_datasets,
         get_dataset_details,
+        get_dataset_profile,
         search_portal_docs,
         get_workflow_guidance,
         get_educational_context,

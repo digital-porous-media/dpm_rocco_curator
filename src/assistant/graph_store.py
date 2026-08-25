@@ -85,6 +85,67 @@ class SearchResult:
 DatasetId = str
 
 
+@dataclass
+class DatasetProfileMatch:
+    """
+    A single, unambiguous dataset match plus its full PART_OF/INPUT_FOR sub-node graph.
+    Returned by GraphStore.get_dataset_profile().
+
+    Attributes:
+        dataset:                 Dataset node properties (title, doi, datasetNumber,
+                                  description, llmKeywords).
+        samples/digital_datasets/analysis_datasets/related_publications/related_software/
+        related_datasets:        Lists of full node properties for each PART_OF sub-node type.
+        sample_to_digital_edges: [{"sample": identifier, "digitalDataset": identifier}, ...]
+                                  describing INPUT_FOR edges — which Sample fed which
+                                  DigitalDataset. Pairs with a null identifier on either side
+                                  are dropped (that sub-node has no recorded INPUT_FOR edge).
+        digital_to_analysis_edges: Same shape, for DigitalDataset -> AnalysisDataset.
+    """
+    dataset: dict
+    samples: list[dict]
+    digital_datasets: list[dict]
+    analysis_datasets: list[dict]
+    related_publications: list[dict]
+    related_software: list[dict]
+    related_datasets: list[dict]
+    sample_to_digital_edges: list[dict]
+    digital_to_analysis_edges: list[dict]
+
+
+@dataclass
+class DatasetProfileAmbiguous:
+    """
+    Returned by GraphStore.get_dataset_profile() when a reference matches more than one
+    dataset. Candidates come from the tier-matching query alone (no second graph round-trip)
+    so callers can render a disambiguation prompt immediately.
+    """
+    candidates: list[dict]  # each: {"datasetNumber": ..., "title": ..., "doi": ...}
+
+
+def _strip_doi_prefix(doi: str | None) -> str:
+    """
+    Strips any number of leading 'https://doi.org/' prefixes from a DOI string.
+    Shared by GraphStore.get_dataset_profile() and tools.py::search_datasets, which both
+    need to compare/display bare DOI identifiers rather than full resolver URLs.
+    """
+    doi_id = doi or ""
+    while doi_id.startswith("https://doi.org/"):
+        doi_id = doi_id[len("https://doi.org/"):]
+    return doi_id
+
+
+def _try_parse_dataset_number(reference: str) -> int | None:
+    """
+    Returns the integer dataset number if `reference` looks like ONLY a dataset number
+    (optionally with a 'DRP-'/'#' prefix, e.g. "42", "DRP-42", "#42") — not a title that
+    merely contains digits somewhere (e.g. "Sample 42 Sandstone" is not a dataset-number
+    reference).
+    """
+    m = re.fullmatch(r"(?:drp-?)?#?(\d+)", reference.strip(), re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
 def _neo4j_enabled() -> bool:
     """Returns True unless USE_NEO4J is explicitly set to 'false'."""
     return os.getenv("USE_NEO4J", "true").lower() == "true"
@@ -718,6 +779,123 @@ RETURN
         if records:
             return records[0]["d"]
         return None
+
+    def get_dataset_profile(self, reference: str) -> "DatasetProfileMatch | DatasetProfileAmbiguous | None":
+        """
+        Resolves `reference` (a title, DOI, or dataset number) to exactly one Dataset node
+        and fetches its full PART_OF sub-node graph (Sample/DigitalDataset/AnalysisDataset/
+        RelatedPublication/RelatedSoftware/RelatedDataset) plus INPUT_FOR pipeline edges among
+        the sub-nodes — used for "tell me more about this dataset"-style follow-ups, which need
+        far more than the title/DOI/one-line-summary shape search()/cypher_qa() return.
+
+        Resolution tiers, tried in order, stopping at the first with >=1 match:
+          1. datasetNumber exact — only when `reference` looks like ONLY a number
+             (see _try_parse_dataset_number), so a title that happens to contain digits
+             doesn't get misread as a dataset number.
+          2. doi exact (case-insensitive, https://doi.org/ prefix stripped from both sides).
+          3. title case-insensitive CONTAINS.
+
+        Returns:
+          - None if reference matches zero datasets, or if graph search is disabled.
+          - DatasetProfileMatch if exactly one dataset matches (in whichever tier fired).
+          - DatasetProfileAmbiguous if more than one dataset matches — built directly from
+            that tier's own rows, with NO second graph round-trip, so the caller can render a
+            disambiguation prompt immediately.
+
+        NOTE: RelatedSoftware/RelatedDataset's relationship to Dataset is not confirmed to be
+        PART_OF in the live schema (MANUAL_SCHEMA above only documents this for Sample/
+        DigitalDataset/AnalysisDataset/RelatedPublication) — verify empirically
+        (e.g. MATCH (n:RelatedSoftware)-[r]->() RETURN type(r), count(*)) and update the
+        relationship type below if it differs. OPTIONAL MATCH degrades safely (empty list) if
+        the guessed relationship type is wrong, so this is safe to ship speculatively.
+        """
+        if not self._enabled or not self._driver:
+            return None
+
+        candidates: list[dict] = []
+        dataset_number = _try_parse_dataset_number(reference)
+        if dataset_number is not None:
+            candidates = self.execute_cypher(
+                "MATCH (d:Dataset {datasetNumber: $ref}) "
+                "RETURN d.datasetNumber AS datasetNumber, d.title AS title, d.doi AS doi",
+                {"ref": dataset_number},
+            )
+        if not candidates:
+            # d.doi may be stored bare or with the https://doi.org/ resolver prefix — compare
+            # against both forms of the (already-stripped) reference rather than relying on
+            # Cypher string manipulation to normalize the stored value.
+            stripped_ref = _strip_doi_prefix(reference)
+            doi_query = (
+                "MATCH (d:Dataset) WHERE toLower(d.doi) = toLower($bare) OR toLower(d.doi) = toLower($prefixed) "
+                "RETURN d.datasetNumber AS datasetNumber, d.title AS title, d.doi AS doi"
+            )
+            candidates = self.execute_cypher(
+                doi_query,
+                {"bare": stripped_ref, "prefixed": f"https://doi.org/{stripped_ref}"},
+            )
+        if not candidates:
+            candidates = self.execute_cypher(
+                "MATCH (d:Dataset) WHERE toLower(d.title) CONTAINS toLower($ref) "
+                "RETURN d.datasetNumber AS datasetNumber, d.title AS title, d.doi AS doi",
+                {"ref": reference},
+            )
+
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            return DatasetProfileAmbiguous(candidates=candidates)
+
+        matched_number = candidates[0]["datasetNumber"]
+        rows = self.execute_cypher(
+            """
+            MATCH (d:Dataset {datasetNumber: $datasetNumber})
+            OPTIONAL MATCH (s:Sample)-[:PART_OF]->(d)
+            OPTIONAL MATCH (dd:DigitalDataset)-[:PART_OF]->(d)
+            OPTIONAL MATCH (ad:AnalysisDataset)-[:PART_OF]->(d)
+            OPTIONAL MATCH (rp:RelatedPublication)-[:PART_OF]->(d)
+            OPTIONAL MATCH (rs:RelatedSoftware)-[:PART_OF]->(d)
+            OPTIONAL MATCH (rds:RelatedDataset)-[:PART_OF]->(d)
+            OPTIONAL MATCH (s)-[:INPUT_FOR]->(dd)
+            OPTIONAL MATCH (dd)-[:INPUT_FOR]->(ad)
+            RETURN d{.*, datasetEmbedding: null} AS d,
+                   collect(DISTINCT s{.*, componentEmbedding: null})   AS samples,
+                   collect(DISTINCT dd{.*, componentEmbedding: null})  AS digital_datasets,
+                   collect(DISTINCT ad{.*, componentEmbedding: null})  AS analysis_datasets,
+                   collect(DISTINCT rp)  AS related_publications,
+                   collect(DISTINCT rs)  AS related_software,
+                   collect(DISTINCT rds) AS related_datasets,
+                   collect(DISTINCT {sample: s.identifier, digitalDataset: dd.identifier}) AS sample_to_digital_edges,
+                   collect(DISTINCT {digitalDataset: dd.identifier, analysisDataset: ad.identifier}) AS digital_to_analysis_edges
+            """,
+            {"datasetNumber": matched_number},
+        )
+        if not rows:
+            return None
+        row = rows[0]
+
+        def _drop_nulls(nodes: list) -> list[dict]:
+            # d{.*, componentEmbedding: null} above nulls out the embedding vector rather
+            # than omitting the key entirely (Cypher map projection can't drop a key), and a
+            # node with ALL properties null (an OPTIONAL MATCH that found nothing at all,
+            # not even an identifier) collapses to an empty/all-null map here — both cases
+            # are filtered out downstream by _strip_embedding_fields/_build_profile_context's
+            # "drop falsy values" pass in tools.py, not here.
+            return [dict(n) for n in nodes if n is not None and any(v is not None for v in dict(n).values())]
+
+        def _drop_edgeless(edges: list, left: str, right: str) -> list[dict]:
+            return [e for e in edges if e.get(left) is not None and e.get(right) is not None]
+
+        return DatasetProfileMatch(
+            dataset=dict(row["d"]),
+            samples=_drop_nulls(row["samples"]),
+            digital_datasets=_drop_nulls(row["digital_datasets"]),
+            analysis_datasets=_drop_nulls(row["analysis_datasets"]),
+            related_publications=_drop_nulls(row["related_publications"]),
+            related_software=_drop_nulls(row["related_software"]),
+            related_datasets=_drop_nulls(row["related_datasets"]),
+            sample_to_digital_edges=_drop_edgeless(row["sample_to_digital_edges"], "sample", "digitalDataset"),
+            digital_to_analysis_edges=_drop_edgeless(row["digital_to_analysis_edges"], "digitalDataset", "analysisDataset"),
+        )
 
     def cypher_qa(self, question: str) -> str:
         """
