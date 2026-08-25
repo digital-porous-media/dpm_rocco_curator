@@ -298,6 +298,31 @@ Important:
   - authors (on Dataset and RelatedPublication) is a single concatenated "First Last, First
     Last" string, NOT a list — never compare it with `=`. To find datasets by a named
     person, use toLower(d.authors) CONTAINS toLower('<name>').
+  - porousMediaType is a coarse enum (see the 8 values above), not the sample's specific
+    geological rock name — a question naming a specific rock by its common/geological name
+    must be mapped to the enum value it falls under, or it will silently match zero rows
+    (e.g. toLower(s.porousMediaType) = 'limestone' never matches anything, since 'limestone'
+    is not one of the 8 enum values). Known mappings: "limestone", "dolomite", "chalk",
+    "Ketton", "Estaillades", "Savonnieres"/"Savonnières" → carbonate; "quartzite",
+    "greywacke"/"graywacke", "arkose", "Bentheimer", "Berea", "Fontainebleau" → sandstone;
+    "anthracite", "lignite" → coal. If a named rock isn't in this list and you're unsure
+    which enum value it maps to, fall back to a title/description substring match instead
+    (e.g. toLower(d.title) CONTAINS 'limestone') rather than filtering porousMediaType on
+    the literal name.
+  - There is no queryable imaging-technique/modality field (imagingCenter,
+    imagingEquipmentAndModel, and similar fields are 0% populated across the dataset — see
+    docs/neo4j_schema.md). Virtually every dataset in this portal already involves some form
+    of tomographic/micro-CT/X-ray imaging, so a question mentioning "tomographic", "CT",
+    "micro-CT", "X-ray imaging", etc. is describing the portal as a whole, not a
+    distinguishing, filterable property — do not add a WHERE clause for it, and do not let
+    its absence as a property cause the whole query to return zero rows. Filter only on
+    whatever OTHER concrete property the question also names (e.g. segmented status, rock
+    type, porosity). In particular, do NOT try to match an imaging technique against
+    fileTypes (see below) — fileTypes records file extensions/formats (tiff, raw, vtk,
+    ...), not imaging modality, and "tomographic"/"CT"/"micro-CT" will never appear there.
+  - fileTypes (on DigitalDataset/AnalysisDataset) is a LIST of strings, not a single string —
+    toLower(dd.fileTypes) raises a runtime type error (toLower requires a string). To match
+    a value inside it, use: any(f IN dd.fileTypes WHERE toLower(f) CONTAINS 'tiff').
 """
 
 # Derived (not hand-maintained) list of every queryable node-property name in
@@ -635,14 +660,17 @@ RETURN
         retriever = self._vector_index.as_retriever(search_kwargs={"k": candidate_k})
         vec_docs = retriever.invoke(query)
 
-        # Build rank lookup by DOI: {doi: rank (0-based)}
+        # Build rank lookup by datasetNumber: {datasetNumber: rank (0-based)}. Keyed on
+        # datasetNumber rather than doi — doi is missing/null for some datasets (a known
+        # upstream metadata gap), and keying on it would silently drop those datasets out of
+        # the merge entirely; datasetNumber is always present and unique.
         vec_rank: dict[str, int] = {}
-        vec_meta: dict[str, dict] = {}  # doi -> metadata dict for result assembly
+        vec_meta: dict[str, dict] = {}  # datasetNumber -> metadata dict for result assembly
         for rank, doc in enumerate(vec_docs):
-            doi = doc.metadata.get("doi", "")
-            if doi and doi not in vec_rank:
-                vec_rank[doi] = rank
-                vec_meta[doi] = {"meta": doc.metadata, "text": doc.page_content}
+            dataset_number = doc.metadata.get("datasetNumber", "")
+            if dataset_number and dataset_number not in vec_rank:
+                vec_rank[dataset_number] = rank
+                vec_meta[dataset_number] = {"meta": doc.metadata, "text": doc.page_content}
 
         # --- BM25 fulltext search ---
         bm25_rank: dict[str, int] = {}
@@ -682,14 +710,14 @@ RETURN
                     limit=candidate_k,
                 ).data()
             for rank, row in enumerate(rows):
-                doi = row.get("doi", "")
-                if doi and doi not in bm25_rank:
-                    bm25_rank[doi] = rank
-                    bm25_meta[doi] = {
+                dataset_number = row.get("datasetNumber", "")
+                if dataset_number and dataset_number not in bm25_rank:
+                    bm25_rank[dataset_number] = rank
+                    bm25_meta[dataset_number] = {
                         "meta": {
                             "title": row["title"],
-                            "doi": doi,
-                            "datasetNumber": row.get("datasetNumber"),
+                            "doi": row.get("doi"),
+                            "datasetNumber": dataset_number,
                             "sampleTitles": row.get("sampleTitles") or [],
                             "segmented": row.get("segmented"),
                             "porousMediaType": row.get("porousMediaType"),
@@ -705,24 +733,24 @@ RETURN
             )
 
         # --- RRF merge ---
-        all_dois = set(vec_rank) | set(bm25_rank)
-        penalty = candidate_k + 1  # rank assigned to a DOI absent from one list
+        all_ids = set(vec_rank) | set(bm25_rank)
+        penalty = candidate_k + 1  # rank assigned to a datasetNumber absent from one list
         k_rrf = 60  # standard RRF constant
 
         scored: list[tuple[float, str]] = []
-        for doi in all_dois:
-            r_vec = vec_rank.get(doi, penalty)
-            r_bm25 = bm25_rank.get(doi, penalty)
+        for dataset_number in all_ids:
+            r_vec = vec_rank.get(dataset_number, penalty)
+            r_bm25 = bm25_rank.get(dataset_number, penalty)
             rrf = 1.0 / (r_vec + k_rrf) + 1.0 / (r_bm25 + k_rrf)
-            scored.append((rrf, doi))
+            scored.append((rrf, dataset_number))
         scored.sort(reverse=True)
 
         # --- Apply filters and assemble results ---
         results = []
-        for _, doi in scored:
+        for _, dataset_number in scored:
             if len(results) >= top_k:
                 break
-            entry = vec_meta.get(doi) or bm25_meta.get(doi)
+            entry = vec_meta.get(dataset_number) or bm25_meta.get(dataset_number)
             if entry is None:
                 continue
             meta = entry["meta"]
@@ -897,7 +925,7 @@ RETURN
             digital_to_analysis_edges=_drop_edgeless(row["digital_to_analysis_edges"], "digitalDataset", "analysisDataset"),
         )
 
-    def cypher_qa(self, question: str) -> str:
+    def cypher_qa(self, question: str, restrict_to_titles: list[str] | None = None) -> str:
         """
         Answer a structured question about datasets using LLM-generated Cypher.
         Source label: [cypher match]
@@ -918,6 +946,22 @@ RETURN
         prompt instructions alone; formatting the one high-stakes shape in code
         removes the failure mode instead of trying to word the prompt more carefully.
         Other shapes (counts, aggregates) still use the QA chain's own prose answer.
+
+        restrict_to_titles: when given (a follow-up refinement of a previously
+        listed set of datasets), deterministically narrow the freshly generated
+        Cypher's rows to only those whose title matches one of these — in code,
+        not by trusting the Cypher-generation LLM to re-derive every prior
+        constraint from the compounded natural-language question and re-run it
+        consistently over the whole graph. That trust was found to fail in
+        practice: the SAME "sandstone" constraint, reworded into two different
+        compound questions across two refinement turns, generated two different
+        WHERE clauses (`s IS NULL OR toLower(s.porousMediaType) = 'sandstone'`
+        vs. `s IS NOT NULL AND toLower(s.porousMediaType) = 'sandstone'`) —
+        meaning a refinement's Cypher search re-scans the entire catalog each
+        turn and can silently drift from the actual previously-listed set instead
+        of narrowing it. Post-filtering the rows to a known-good prior title set
+        makes each refinement a true subset of the last one regardless of how
+        the regenerated Cypher phrases the earlier filters.
         """
         if not self._enabled or not self._cypher_chain:
             return "Graph search is disabled (USE_NEO4J=false)."
@@ -929,7 +973,19 @@ RETURN
             return "The query ran successfully and found no matching datasets or samples for this question."
 
         if context_steps:
-            formatted = _format_dataset_rows(context_steps[-1])
+            rows = context_steps[-1]
+            if restrict_to_titles:
+                wanted = {t.lower() for t in restrict_to_titles if t}
+                narrowed = [
+                    r for r in rows
+                    if isinstance(r, dict) and str(_row_field(r, "title") or "").lower() in wanted
+                ]
+                if not narrowed:
+                    return (
+                        "None of the previously listed datasets match this additional filter."
+                    )
+                rows = narrowed
+            formatted = _format_dataset_rows(rows)
             if formatted:
                 return formatted
 

@@ -16,7 +16,7 @@ _DOI_RE = re.compile(r'DOI:\s*(10\.[^\s)]+)')
 _BARE_URL_RE = re.compile(r'(?<!\]\()(https?://\S+?)(?=[\s)]|$)')
 
 _SOURCE_LABEL_RE = re.compile(
-    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match|portal docs)\]',
+    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match|portal docs|dataset profile)\]',
     re.IGNORECASE,
 )
 
@@ -29,6 +29,7 @@ _LABEL_COLORS = {
     "semantic scholar": "#9467bd",
     "cypher match":     "#ff7f0e",
     "portal docs":      "#d62728",
+    "dataset profile":  "#8c564b",
 }
 
 
@@ -106,6 +107,15 @@ def render_assistant_tab() -> None:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = st.session_state.assistant_manager.chat(question, history=prior_history)
+            if not response or not response.strip():
+                # Belt-and-suspenders: ConversationManager.chat() should never return an
+                # empty string (see conversation_manager.py's _non_empty), but an empty
+                # assistant turn appended to history here would be replayed on every later
+                # call and tends to keep tripping the same failure — never let it through.
+                response = (
+                    "I wasn't able to put together a response for that — could you try "
+                    "rephrasing?"
+                )
             st.markdown(_render_response(response), unsafe_allow_html=True)
 
         st.session_state.assistant_messages.append({"role": "assistant", "content": response})

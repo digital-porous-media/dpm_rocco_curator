@@ -420,7 +420,7 @@ def search_datasets(query: str, top_k: int = 5) -> str:
         title = meta.get("title", "Unknown")
         raw_doi = meta.get("doi", "")
         doi_id = _strip_doi_prefix(raw_doi)
-        doi_str = f"DOI: {doi_id}" if doi_id else ""
+        doi_str = f"DOI: {doi_id}" if doi_id else "DOI: not available"
         label = r.get("source_label", "[graph match]")
         component_title = meta.get("component_title")
         component_type = meta.get("component_type")
@@ -442,9 +442,15 @@ def search_datasets(query: str, top_k: int = 5) -> str:
 
 
 @tool
-def get_dataset_details(question: str) -> str:
-    """Answer structured questions about dataset properties using Cypher. Source: [cypher match]"""
-    return _get_graph_store().cypher_qa(question)
+def get_dataset_details(question: str, restrict_to_titles: list[str] | None = None) -> str:
+    """Answer structured questions about dataset properties using Cypher. Source: [cypher match]
+
+    restrict_to_titles: internal use only — leave unset for a normal, catalog-wide
+    question. When a caller is refining an earlier dataset listing (e.g. "which of
+    these are segmented?"), pass the exact titles from that earlier listing here so
+    the answer is deterministically narrowed to that set instead of re-running the
+    new filter over the entire graph."""
+    return _get_graph_store().cypher_qa(question, restrict_to_titles=restrict_to_titles)
 
 
 # The static docstring above is deliberately generic — the routing detail (which
@@ -483,6 +489,22 @@ def _corral_archive_url(dataset_number) -> str | None:
     if dataset_number in (None, ""):
         return None
     return f"https://web.corral.tacc.utexas.edu/digitalporousmedia/archive/DRP-{dataset_number}/"
+
+
+def _corral_repl_path(dataset_number) -> str | None:
+    """
+    Returns the TACC-internal filesystem path (usable directly from a TACC system, e.g. a
+    Lonestar6/Stampede3 job or an interactive session — NOT a URL) where this dataset's
+    published files live on Corral, derived deterministically from its datasetNumber the same
+    way as `_corral_archive_url()`. Only relevant to users already working on a TACC system;
+    everyone else should use the web.corral URL (or, preferably, the DOI/portal page) instead.
+
+    Same versioning caveat as `_corral_archive_url()`: the graph doesn't record which published
+    version (v1, v2, ...) is current, so the bare-number path may not be the latest.
+    """
+    if dataset_number in (None, ""):
+        return None
+    return f"/corral-repl/utexas/OTH21076/data_prod/published/DRP-{dataset_number}/"
 
 
 # Hard cap on how many sub-nodes of one type get rendered into the profile context. Some
@@ -613,8 +635,17 @@ def _build_profile_context(profile) -> str:
             sections.append(f"- {key}: {value}")
 
     archive_url = _corral_archive_url(d.get("datasetNumber"))
-    if archive_url:
-        sections.append(f"\n## Data location\n{archive_url}")
+    repl_path = _corral_repl_path(d.get("datasetNumber"))
+    doi_value = d.get("doi")
+    if archive_url or repl_path or doi_value:
+        lines = ["\n## Data location"]
+        if doi_value:
+            lines.append(f"- Portal page (preferred, general access): DOI {_strip_doi_prefix(doi_value)}")
+        if archive_url:
+            lines.append(f"- Direct/scripting download URL: {archive_url}")
+        if repl_path:
+            lines.append(f"- TACC filesystem path (only relevant if the user is working directly on a TACC system): {repl_path}")
+        sections.append("\n".join(lines))
 
     for nodes, heading in (
         (profile.samples, "Samples"),

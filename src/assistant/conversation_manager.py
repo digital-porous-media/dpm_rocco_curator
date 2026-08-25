@@ -248,6 +248,230 @@ _HONEST_TOOL_FAILURE_MSG = (
 )
 
 
+def _non_empty(text: str | None, fallback: str = _HONEST_TOOL_FAILURE_MSG) -> str:
+    """Guarantee a non-empty, non-whitespace-only response string.
+
+    A leaked `<|python_start|>...<|python_end|>` block that is stripped down to nothing by
+    _clean_response (or a synthesis LLM call that returns an empty completion) must never
+    surface as a literal "" response: appending "" into the UI's session history poisons
+    every later turn's replayed context (see HANDOFF.md — this was the actual mechanism
+    behind "comparing two datasets silently returns nothing, and subsequent turns also
+    return nothing until a different tool is used")."""
+    return text if text and text.strip() else fallback
+
+
+# Dataset-listing tools whose rendered output includes an ordered list of "Title (DOI: ...)"
+# entries — used by _extract_dataset_mentions/_resolve_reference below to let a later
+# ordinal/name-only follow-up ("the first one", "the Gildehauser sandstone sample") resolve
+# deterministically instead of relying solely on the LLM re-deriving it from raw chat history.
+_DATASET_LISTING_TOOLS = _VERBATIM_TOOLS
+
+_DATASET_MENTION_PATTERNS = [
+    # search_datasets/hybrid_search: "[label] Title — matched via ... (DOI: xxx)"
+    re.compile(r'^\[[\w\s]+\]\s+(?P<title>.+?)(?:\s+—\s+matched via[^(\n]*)?\s*\(DOI:\s*(?P<doi>[^)]*)\)', re.MULTILINE),
+    # get_dataset_details / _format_dataset_rows: "- **Title** (DOI: xxx)"
+    re.compile(r'^-\s+\*\*(?P<title>.+?)\*\*\s*\(DOI:\s*(?P<doi>[^)]*)\)', re.MULTILINE),
+]
+
+
+def _extract_dataset_mentions(tool_output: str) -> list[dict]:
+    """Best-effort, ordered extraction of {"title", "doi"} pairs from a dataset-listing
+    tool's rendered text. Not a structured API — these tools return plain strings by design
+    (see _VERBATIM_TOOLS) — so this just parses the same "Title (DOI: xxx)" shapes a human
+    reader would use to identify which dataset is "the first one"."""
+    mentions: list[dict] = []
+    seen_titles: set[str] = set()
+    for pattern in _DATASET_MENTION_PATTERNS:
+        for m in pattern.finditer(tool_output):
+            title = m.group("title").strip()
+            doi_raw = m.group("doi").strip()
+            doi = doi_raw if doi_raw and doi_raw.lower() != "not available" else None
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                mentions.append({"title": title, "doi": doi})
+    return mentions
+
+
+# get_dataset_profile's own code-generated, never-retyped header (tools.py:
+# f"[dataset profile] {title} (DOI: {doi})") — parsed the same deterministic way as
+# _DATASET_MENTION_PATTERNS above so a later anaphoric comparison ("how does that
+# dataset compare with X") can resolve "that dataset" to whichever single dataset was
+# profiled most recently, the same way _resolve_reference resolves against a listing.
+_PROFILE_HEADER_RE = re.compile(r'^\[dataset profile\]\s+(?P<title>.+?)\s*\(DOI:\s*(?P<doi>[^)]*)\)', re.MULTILINE)
+
+
+def _extract_profiled_dataset(tool_output: str) -> dict | None:
+    """Parse the {"title", "doi"} of a single get_dataset_profile call from its header.
+    Returns None if the text doesn't start with a recognizable profile header (e.g. an
+    ambiguous-match or not-found response, which has no dataset to remember)."""
+    m = _PROFILE_HEADER_RE.search(tool_output)
+    if not m:
+        return None
+    title = m.group("title").strip()
+    doi_raw = m.group("doi").strip()
+    doi = doi_raw if doi_raw and doi_raw.lower() != "not available" else None
+    return {"title": title, "doi": doi} if title else None
+
+
+_ORDINAL_WORDS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+    "fifth": 4, "5th": 4,
+    "last": -1,
+}
+_ORDINAL_RE = re.compile(
+    r'\b(' + '|'.join(re.escape(w) for w in _ORDINAL_WORDS) + r')\b(?:\s+(?:one|dataset|result))?',
+    re.IGNORECASE,
+)
+
+
+def _title_mentioned(title: str, lowered_message: str) -> bool:
+    """True if `title` — or a distinguishing leading portion of it — appears in
+    `lowered_message` (already lowercased). Titles are often longer/more formal than how a
+    user refers to them conversationally (e.g. the user says "Leman Sandstone" for a mention
+    titled "Leman Sandstone SEM Images"), so a full-title-only substring check misses real
+    references. Falls back to the title's leading two words (or the whole title, if it's
+    shorter than that) as an anchor — long enough to avoid a single generic word like
+    "sandstone" alone matching everything, short enough to tolerate a truncated title."""
+    t = title.lower()
+    if t in lowered_message:
+        return True
+    words = t.split()
+    anchor_len = min(2, len(words))
+    if anchor_len == 0:
+        return False
+    return " ".join(words[:anchor_len]) in lowered_message
+
+
+def _resolve_reference(user_input: str, mentions: list[dict]) -> dict | None:
+    """Deterministically resolve an ordinal reference ("the first one", "the last result")
+    or an unambiguous dataset-title mention (see _title_mentioned) in `user_input` against
+    `mentions` (the most recent dataset-listing tool's parsed results this session). Returns
+    the matched {"title", "doi"} dict, or None if there's no confident match — in which case
+    chat() falls back to today's LLM-only resolution from replayed conversation history.
+
+    Deliberately conservative: an ordinal out of range, or a title mention matching more
+    than one prior mention, returns None rather than guessing — a missed deterministic
+    resolution just falls back to the existing (imperfect) behavior; a wrong guess would
+    silently point the user at the wrong dataset."""
+    if not mentions:
+        return None
+
+    m = _ORDINAL_RE.search(user_input)
+    if m:
+        idx = _ORDINAL_WORDS[m.group(1).lower()]
+        try:
+            return mentions[idx]
+        except IndexError:
+            pass
+
+    lowered = user_input.lower()
+    name_matches = [mn for mn in mentions if mn["title"] and _title_mentioned(mn["title"], lowered)]
+    if len(name_matches) == 1:
+        return name_matches[0]
+
+    return None
+
+
+# Matches a literal DOI typed directly in a user message (e.g. "compare X (DOI: 10.17612/...)
+# and Y (DOI: 10.17612/...)"). Stops before trailing sentence punctuation/closing paren so it
+# doesn't swallow a ")" or "." immediately following the DOI.
+_DOI_IN_TEXT_RE = re.compile(r'10\.\d{4,9}/[^\s,).]+', re.IGNORECASE)
+
+# Bare anaphoric references to "the dataset I was just told about" rather than a named
+# one — "that dataset", "this one", "the other dataset". Only meaningful alongside
+# last_profiled below; on its own it can't be resolved to anything.
+_DATASET_ANAPHORA_RE = re.compile(r'\b(that|this|the other) (dataset|one)\b', re.IGNORECASE)
+
+
+def _detect_comparison_references(
+    user_input: str, mentions: list[dict], last_profiled: dict | None = None
+) -> list[str] | None:
+    """Deterministically collect 2+ distinct dataset references named in ONE message —
+    e.g. "compare X (DOI: ...) and Y (DOI: ...)", "difference between the first and second",
+    "how do X and Y compare" (where X/Y are titles from a prior result list) — and return
+    them as resolved reference strings (DOI when available, else title), or None if fewer
+    than 2 are found.
+
+    This exists because getting the ReAct agent to reliably call get_dataset_profile twice
+    in one turn depends on three independent, individually-unreliable steps succeeding
+    together (the followup-tool-gate classifier, the model's own choice to emit a second
+    tool call, and — if a 400 forces manual recovery — both calls being parseable out of the
+    error text). Live testing showed this chain drops the second dataset often enough, even
+    when both DOIs are given explicitly, that it isn't viable as the sole mechanism. When
+    this function finds 2+ references, chat() dispatches get_dataset_profile for all of them
+    directly, bypassing the agent's own tool-selection for this turn entirely.
+
+    last_profiled: the {"title", "doi"} of whichever single dataset get_dataset_profile most
+    recently returned (see _extract_profiled_dataset), used to resolve a bare anaphoric
+    reference — "how does THAT DATASET compare with the downscaling-based one" — to the
+    dataset actually being talked about. Without this, "that dataset" matches none of the
+    explicit-reference checks below (it's not a DOI, ordinal, or title substring), so a
+    message naming one dataset explicitly plus one anaphoric reference was only ever
+    resolving to a single ref and silently falling through to the unreliable agent path
+    this function exists to bypass."""
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    for m in _DOI_IN_TEXT_RE.finditer(user_input):
+        doi = m.group(0)
+        if doi.lower() not in seen:
+            seen.add(doi.lower())
+            refs.append(doi)
+
+    for om in _ORDINAL_RE.finditer(user_input):
+        idx = _ORDINAL_WORDS[om.group(1).lower()]
+        try:
+            mn = mentions[idx]
+        except IndexError:
+            continue
+        ref = mn.get("doi") or mn.get("title")
+        if ref and ref.lower() not in seen:
+            seen.add(ref.lower())
+            refs.append(ref)
+
+    lowered = user_input.lower()
+    for mn in mentions:
+        title = mn.get("title")
+        if not title:
+            continue
+        doi = mn.get("doi")
+        if doi and doi.lower() in seen:
+            continue  # already captured via its literal DOI above
+        if title.lower() in seen:
+            continue
+        if _title_mentioned(title, lowered):
+            # Prefer the mention's known DOI over the bare title: get_dataset_profile
+            # resolves a DOI exactly, but a bare title only CONTAINS-matches, which goes
+            # ambiguous whenever another dataset's title contains this one as a substring
+            # (e.g. "Belgian Fieldstone" vs "DRP Visualization Challenge: Belgian
+            # Fieldstone") — exactly the ambiguity this deterministic path exists to avoid.
+            seen.add(title.lower())
+            if doi:
+                seen.add(doi.lower())
+            refs.append(doi or title)
+
+    if len(refs) == 1 and last_profiled and _DATASET_ANAPHORA_RE.search(user_input):
+        ref = last_profiled.get("doi") or last_profiled.get("title")
+        if ref and ref.lower() not in seen:
+            refs.append(ref)
+
+    return refs if len(refs) >= 2 else None
+
+
+# Matches a message that narrows/refines a previous dataset-listing result rather than
+# starting a fresh, unrelated search — "of these", "which of these", "any of those",
+# "now filter/narrow further", etc.
+_REFINEMENT_RE = re.compile(
+    r'\b(of (these|those)\b|which (of (these|those)|ones)\b|among (these|those)\b|'
+    r'from (these|those)\b|out of (these|those)\b|any of (these|those)\b|'
+    r'now (filter|narrow)|filter (further|again)|narrow (it |them )?(down|further))',
+    re.IGNORECASE,
+)
+
+
 # Trailing paragraphs that just restate bulleted dataset results in prose instead of
 # adding new information. Matched only against a paragraph that begins with one of
 # these openers, so a legitimate leading header ("Datasets:") before the bullets is
@@ -340,32 +564,61 @@ def _extract_tool_calls_from_error(err_str: str) -> list[dict]:
     for tool_name, param_keys in _TOOL_PARAM_KEYS.items():
         if tool_name not in normalized:
             continue
-        idx = normalized.find(tool_name)
-        # Wide enough to span a multi-arg call's full JSON args blob (e.g.
-        # get_dataset_profile's two keys), not just a single-arg one.
-        snippet = normalized[idx: idx + 800]
+        # Scan for EVERY occurrence of tool_name, not just the first — a comparison
+        # ("compare A and B") issues the same tool (get_dataset_profile) twice with
+        # different args, and a single `.find()` here used to only ever recover the
+        # first call, silently dropping the second dataset (see HANDOFF.md).
+        search_start = 0
+        while True:
+            idx = normalized.find(tool_name, search_start)
+            if idx == -1:
+                break
+            # Wide enough to span a multi-arg call's full JSON args blob (e.g.
+            # get_dataset_profile's two keys), not just a single-arg one.
+            snippet = normalized[idx: idx + 800]
+            search_start = idx + len(tool_name)
 
-        # Strategy 3: {"param_key": "value"} — direct JSON parameter key match, tried
-        # for every expected key so multi-arg tools can recover all of them.
-        args = {}
-        for key in param_keys:
-            mp = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"', snippet)
-            if mp:
-                args[key] = mp.group(1)
+            # Strategy 3: {"param_key": "value"} — direct JSON parameter key match, tried
+            # for every expected key so multi-arg tools can recover all of them.
+            args = {}
+            for key in param_keys:
+                mp = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"', snippet)
+                if mp:
+                    args[key] = mp.group(1)
 
-        # Strategy 2: {"type":"string","value":"..."} only ever recovers one positional
-        # value, so it only applies as a fallback for single-param tools.
-        if not args and len(param_keys) == 1:
-            mv = re.search(r'"value":\s*"([^"]*)"', snippet)
-            if mv:
-                args[param_keys[0]] = mv.group(1)
+            # Strategy 2: {"type":"string","value":"..."} only ever recovers one positional
+            # value, so it only applies as a fallback for single-param tools.
+            if not args and len(param_keys) == 1:
+                mv = re.search(r'"value":\s*"([^"]*)"', snippet)
+                if mv:
+                    args[param_keys[0]] = mv.group(1)
 
-        dedupe_key = (tool_name, tuple(sorted(args.items())))
-        if args and dedupe_key not in seen:
-            calls.append({"name": tool_name, "args": args})
-            seen.add(dedupe_key)
+            dedupe_key = (tool_name, tuple(sorted(args.items())))
+            if args and dedupe_key not in seen:
+                calls.append({"name": tool_name, "args": args})
+                seen.add(dedupe_key)
 
     return calls
+
+_COMPARISON_SYNTHESIS_SYSTEM_PROMPT = """\
+You are given 2 or more already-complete, grounded dataset write-ups below — each one was \
+produced by its own dedicated lookup against the real portal graph, so every fact in them is \
+already verified; you do not need to re-derive or re-verify anything, only organize/compare \
+what's already there.
+
+- Preserve every recorded property or fact mentioned in EACH write-up below. Never say a \
+property, DOI, or detail "isn't provided," "isn't available," or "isn't mentioned" if it \
+appears anywhere in the write-ups below — that would be a wrong under-report of data you \
+were actually given; re-read both write-ups carefully before concluding something is missing.
+- Organize by dataset, then cover similarities and differences relevant to the user's actual \
+question — for a general "what's the difference" question, cover whatever properties both \
+write-ups actually contain (rock type, porosity, imaging, organizational structure, etc.), \
+not just the first difference you happen to notice.
+- Preserve any [dataset profile] source labels, DOIs, and LaTeX math verbatim.
+- If a property is genuinely absent from BOTH write-ups, it's fine to say so — but only after \
+checking both carefully, not as a default hedge.
+"""
+
 
 def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[dict]) -> str | None:
     """
@@ -385,7 +638,7 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
                 res = fn.invoke(call["args"])
                 results.append(f"--- {call['name']} ---\n{res}")
                 raw_results.append((call["name"], res))
-                logger.info("Manual dispatch: %s(%s)", call["name"], call["args"])
+                logger.warning("Manual dispatch: %s(%s)", call["name"], call["args"])
             except Exception as te:
                 logger.warning("Tool %s failed in manual dispatch: %s", call["name"], te)
 
@@ -398,12 +651,38 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
     # citation rule) was silently dropping tutorial notebook references and inventing
     # DOIs — so for a single call to one of these tools, return its own output directly.
     if len(raw_results) == 1 and raw_results[0][0] in _SELF_CONTAINED_TOOLS:
-        return _clean_response(raw_results[0][1])
+        return _non_empty(_clean_response(raw_results[0][1]), fallback=_non_empty(raw_results[0][1]))
 
     # Same verbatim-passthrough rationale as the normal ReAct path in chat(): don't let
     # a second LLM call retype search_datasets' real DOIs/descriptions from memory.
     if len(raw_results) == 1 and raw_results[0][0] in _VERBATIM_TOOLS:
-        return _build_verbatim_response(user_input, raw_results[0][1])
+        return _non_empty(_build_verbatim_response(user_input, raw_results[0][1]))
+
+    # Multiple calls to the SAME self-contained tool (the dataset-comparison case: N>=2
+    # get_dataset_profile calls, one per dataset). Each raw result is already a complete,
+    # grounded write-up (dataset_profile.yaml's own honesty/tiered-knowledge synthesis
+    # already ran per dataset) — it does not need re-deriving, only presenting together.
+    # Live testing showed running this through the GENERIC synthesis path below (full
+    # SYSTEM_PROMPT + entire prior conversation history) actively hurt quality: it
+    # under-reported real recorded facts that were plainly present in the per-dataset
+    # write-ups just above it (e.g. claiming a property "isn't provided in the given
+    # context" for one dataset while it plainly was, a few lines up) — the wider context
+    # and full conversation history distracted the model from the two write-ups it was
+    # actually supposed to compare. Use a narrow, comparison-only prompt with NO prior
+    # history instead, whose only job is to organize/compare what's already there.
+    tool_names_used = {name for name, _ in raw_results}
+    if len(tool_names_used) == 1 and tool_names_used <= _SELF_CONTAINED_TOOLS:
+        combined = "\n\n---\n\n".join(res for _, res in raw_results)
+        try:
+            llm = get_chat_model()
+            compare_messages = [
+                {"role": "system", "content": _COMPARISON_SYNTHESIS_SYSTEM_PROMPT},
+                {"role": "user", "content": f"{user_input}\n\n{combined}"},
+            ]
+            return _non_empty(_clean_response(llm.invoke(compare_messages).content), fallback=_non_empty(combined))
+        except Exception as e:
+            logger.error("Comparison synthesis failed: %s; returning raw profiles", e)
+            return _non_empty(_clean_response(combined), fallback=_non_empty(combined))
 
     tool_output = "\n\n".join(results)
     try:
@@ -420,14 +699,14 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
                 f"{tool_output}"
             )}]
         )
-        return _clean_response(llm.invoke(synth_messages).content)
+        return _non_empty(_clean_response(llm.invoke(synth_messages).content), fallback=_non_empty(tool_output))
     except Exception as e:
         # The tool call(s) already succeeded and produced real, grounded data (results
         # is non-empty here) — a failure in this polish-only synthesis step must not
         # cause that real data to be thrown away and replaced by an ungrounded guess.
         # Fall back to the raw tool output directly rather than returning None.
         logger.error("Synthesis after manual dispatch failed: %s; returning raw tool output", e)
-        return _clean_response(tool_output)
+        return _non_empty(_clean_response(tool_output), fallback=_non_empty(tool_output))
 
 
 SYSTEM_PROMPT = """\
@@ -503,6 +782,18 @@ here by name, route there). search_datasets can only match one value per field a
 cannot express numeric comparisons at all, so it silently drops these constraints; \
 get_dataset_details generates real Cypher and handles any number/combination of them \
 correctly.
+- **A follow-up that narrows/refines a previous dataset-listing result** ("of these, are \
+there any with X", "which of these also have Y", "now filter by Z") — get_dataset_details \
+and search_datasets are both STATELESS per call: each call only ever sees the exact \
+question/query string passed that call, with no memory of what was asked or filtered in an \
+earlier turn. Passing just the new constraint in isolation ("are there any with porosity \
+between 0.2 and 0.25") silently drops every constraint from the earlier turn(s) and searches \
+the WHOLE catalog instead of narrowing the prior result set. Always compose ONE \
+self-contained question that restates every constraint from this conversation so far \
+(all earlier filters PLUS the new one) as the tool's argument — e.g. if the prior turn asked \
+for "segmented sandstone datasets" and this turn adds "porosity between 0.2 and 0.25", call \
+get_dataset_details with "segmented sandstone datasets with porosity between 0.2 and 0.25", \
+not just the new clause alone.
 - **A follow-up question about a dataset that is already identified** — from a prior \
 search_datasets/get_dataset_details/get_dataset_profile result, or from the user directly \
 naming/describing one dataset in this turn — including "tell me more about this/that/the \
@@ -899,6 +1190,16 @@ class ConversationManager:
         follow_up = manager.chat("Which of those have micro-CT images?", session_id="abc123")
     """
 
+    # Class-level fallbacks for _last_dataset_mentions/_cumulative_filter_text: __init__
+    # always sets fresh instance attributes for real usage, but several existing tests
+    # construct a manager via object.__new__(ConversationManager) (bypassing __init__
+    # entirely) to avoid building the real agent — these class attributes keep chat()
+    # working for those instances too. Never mutated in place (always rebound via
+    # `self._x = ...`), so this shared list/None is never actually written into.
+    _last_dataset_mentions: list[dict] = []
+    _cumulative_filter_text: str | None = None
+    _last_profiled_dataset: dict | None = None
+
     def __init__(self):
         from src.assistant.llm import get_chat_model
 
@@ -906,6 +1207,62 @@ class ConversationManager:
             get_chat_model(),
             build_langchain_tools(),
             prompt=SYSTEM_PROMPT,
+        )
+
+        # Ordered {"title", "doi"} mentions from the most recent search_datasets/
+        # get_dataset_details result this instance has seen — instance-scoped (one
+        # ConversationManager per session per assistant_ui.py's caching), used by
+        # _resolve_reference to deterministically resolve a later ordinal/name-only
+        # follow-up ("the first one", "the Gildehauser sandstone sample") without
+        # relying solely on the LLM re-deriving it from replayed chat history.
+        self._last_dataset_mentions: list[dict] = []
+
+        # The full cumulative constraint text behind the CURRENT dataset-listing result
+        # chain, e.g. "segmented sandstone datasets" after turn 1, then "segmented
+        # sandstone datasets AND of these, porosity between 0.2 and 0.25" after a turn-2
+        # refinement. Used by the deterministic refinement dispatch in chat() — a
+        # SYSTEM_PROMPT instruction asking the agent to restate all prior constraints
+        # itself was live-tested and found unreliable (see HANDOFF.md), so this is composed
+        # in code instead. None until the first dataset-listing result of a session/chain.
+        self._cumulative_filter_text: str | None = None
+
+        # The {"title", "doi"} of whichever single dataset get_dataset_profile most
+        # recently returned — used by _detect_comparison_references to resolve a bare
+        # anaphoric follow-up ("how does THAT DATASET compare with X") the same way
+        # _last_dataset_mentions resolves ordinal/name references against a listing.
+        # None until the first get_dataset_profile result of a session.
+        self._last_profiled_dataset: dict | None = None
+
+    def _track_dataset_listing(
+        self,
+        tool_name: str,
+        tool_output: str,
+        base_text: str,
+        refinement_text: str | None = None,
+    ) -> None:
+        """Update _last_dataset_mentions/_cumulative_filter_text from a
+        search_datasets/get_dataset_details result, or _last_profiled_dataset from a
+        get_dataset_profile result, regardless of which of chat()'s several return paths
+        produced it (the single-tool-call short-circuit, the deterministic refinement/
+        comparison dispatches, or the normal end-of-stream path all call this) — every
+        path must keep this state in sync or later ordinal/name-reference, refinement, or
+        anaphoric-comparison detection silently stops working depending on which path a
+        given turn happened to take. No-op for any other tool."""
+        if tool_name == "get_dataset_profile":
+            profiled = _extract_profiled_dataset(tool_output)
+            if profiled:
+                self._last_profiled_dataset = profiled
+                logger.warning("_track_dataset_listing(tool=get_dataset_profile): last profiled dataset now %r", profiled)
+            return
+        if tool_name not in _DATASET_LISTING_TOOLS:
+            return
+        mentions = _extract_dataset_mentions(tool_output)
+        if mentions:
+            self._last_dataset_mentions = mentions
+        self._cumulative_filter_text = refinement_text if refinement_text is not None else base_text
+        logger.warning(
+            "_track_dataset_listing(tool=%s): %d mentions parsed; _cumulative_filter_text now %r",
+            tool_name, len(mentions), self._cumulative_filter_text,
         )
 
     def chat(self, user_input: str, history: list[dict] | None = None) -> str:
@@ -933,6 +1290,82 @@ class ConversationManager:
         if _classify_off_domain(user_input, prior):
             return _OFF_DOMAIN_STEER_BACK_MSG
 
+        # Deterministic multi-dataset comparison dispatch: if this one message names 2+
+        # distinct datasets (explicit DOIs, ordinals against the last result list, or
+        # matched titles from it), fetch all of their profiles directly and synthesize the
+        # comparison — bypassing the ReAct agent's own tool-selection for this turn. See
+        # _detect_comparison_references docstring: relying on the agent to reliably choose
+        # to call get_dataset_profile once per dataset in the same turn was live-tested to
+        # drop the second dataset often enough (even with both DOIs given explicitly) that
+        # it isn't viable as the sole mechanism. Falls through to the normal path below if
+        # fewer than 2 references are found, or if dispatch produces nothing usable.
+        comparison_refs = _detect_comparison_references(
+            user_input, self._last_dataset_mentions, self._last_profiled_dataset
+        )
+        if comparison_refs:
+            dispatched = _run_manual_dispatch(
+                [
+                    {"name": "get_dataset_profile", "args": {"dataset_reference": ref, "question": user_input}}
+                    for ref in comparison_refs
+                ],
+                user_input,
+                prior,
+            )
+            if dispatched is not None:
+                return dispatched
+
+        # Deterministic cumulative-filter refinement dispatch: get_dataset_details and
+        # search_datasets are both STATELESS per call — each only ever sees the exact
+        # question/query string passed that call, with no memory of an earlier turn's
+        # constraints. A SYSTEM_PROMPT instruction asking the agent to compose the full
+        # cumulative question itself (all prior constraints plus the new one) was live-
+        # tested and found unreliable: the agent kept passing just the new constraint in
+        # isolation, silently dropping earlier filters and searching the whole catalog
+        # instead of narrowing the prior result set. When this message looks like a
+        # refinement ("of these", "which of these", ...) of an existing filter chain,
+        # compose the compound question in code and dispatch get_dataset_details directly,
+        # bypassing the agent's own argument-construction for this turn entirely.
+        #
+        # The compound question alone is NOT sufficient, even though it reads like it
+        # should be: live testing showed the Cypher-generation LLM re-derives every prior
+        # constraint from scratch from that text each turn, over the whole graph, rather
+        # than narrowing the actual previous result set — and it isn't even consistent
+        # about it (the identical "sandstone" constraint, reworded into two compound
+        # questions, produced two different WHERE clauses covering different rows). So
+        # restrict_to_titles is passed alongside it — a deterministic, code-level
+        # narrowing to the previous turn's actual listed titles that the regenerated
+        # Cypher's own (possibly drifting) filtering can't bypass.
+        if self._cumulative_filter_text and _REFINEMENT_RE.search(user_input):
+            compound_question = f"{self._cumulative_filter_text} AND {user_input}"
+            restrict_to_titles = [m["title"] for m in self._last_dataset_mentions if m.get("title")]
+            logger.warning(
+                "Refinement dispatch: get_dataset_details(question=%r, restrict_to_titles=%r)",
+                compound_question, restrict_to_titles,
+            )
+            dispatched = _run_manual_dispatch(
+                [{
+                    "name": "get_dataset_details",
+                    "args": {"question": compound_question, "restrict_to_titles": restrict_to_titles},
+                }],
+                compound_question,
+                prior,
+            )
+            if dispatched is not None:
+                self._track_dataset_listing(
+                    "get_dataset_details", dispatched, user_input, refinement_text=compound_question
+                )
+                return dispatched
+        elif _REFINEMENT_RE.search(user_input):
+            # Looked like a refinement, but there's no active filter chain to refine
+            # (self._cumulative_filter_text is still None/empty) — e.g. the very first
+            # message of a session, or ConversationManager instance/session state was
+            # reset between turns. Logged so a live report of "refinement isn't working"
+            # can be distinguished from the dispatch path simply never being reached.
+            logger.warning(
+                "Refinement phrase detected but no active filter chain (_cumulative_filter_text "
+                "is empty) — falling through to normal routing for: %r", user_input,
+            )
+
         # Tool-need gate: a separate, tools-unbound call that decides whether this turn
         # needs the tool-bound ReAct agent at all. See _classify_needs_tool docstring —
         # this exists because the tool-bound agent below is what exposes the model to
@@ -941,7 +1374,23 @@ class ConversationManager:
         if not _classify_needs_tool(user_input, prior):
             return _answer_direct(user_input, prior)
 
-        messages = prior + [{"role": "user", "content": user_input}]
+        # Deterministic reference-resolution assist: if this message is an ordinal
+        # ("the first one") or names exactly one title from the last dataset-listing
+        # result this instance has seen, tell the agent explicitly which dataset that
+        # is rather than relying solely on it re-deriving the reference from replayed
+        # chat history (see _resolve_reference docstring / HANDOFF.md — this was
+        # unreliable in practice for get_dataset_profile follow-ups). No match leaves
+        # user_input untouched, so behavior is unchanged when resolution doesn't apply.
+        resolved = _resolve_reference(user_input, self._last_dataset_mentions)
+        effective_user_input = user_input
+        if resolved:
+            doi_note = f', DOI {resolved["doi"]}' if resolved.get("doi") else ""
+            effective_user_input = (
+                f'{user_input}\n\n(Resolved reference: the dataset being referred to is '
+                f'"{resolved["title"]}"{doi_note}.)'
+            )
+
+        messages = prior + [{"role": "user", "content": effective_user_input}]
         try:
             # Stream instead of a single .invoke() so a single self-contained/verbatim
             # tool call can be dispatched and returned WITHOUT ever letting the graph
@@ -973,10 +1422,13 @@ class ConversationManager:
             ):
                 dispatched = _run_manual_dispatch(
                     [{"name": first_turn_tool_calls[0]["name"], "args": first_turn_tool_calls[0]["args"]}],
-                    user_input,
+                    effective_user_input,
                     prior,
                 )
                 if dispatched is not None:
+                    self._track_dataset_listing(
+                        first_turn_tool_calls[0]["name"], dispatched, effective_user_input
+                    )
                     return dispatched
                 # The tool itself failed inside manual dispatch — fall through to the
                 # normal graph execution below (which has its own per-tool error
@@ -998,12 +1450,25 @@ class ConversationManager:
             # tool's data from memory, which is where dropped/hallucinated DOIs and
             # descriptions come from. Splice the tool's real output in verbatim instead.
             new_messages = result["messages"][len(messages):]
+
+            # Refresh the deterministic reference-resolution/refinement cache from any
+            # search_datasets/get_dataset_details result produced this turn — a later
+            # follow-up ("tell me about the first one", "of these, which are segmented")
+            # resolves/refines against this. Also refreshes _last_profiled_dataset from any
+            # get_dataset_profile result, for a later anaphoric comparison follow-up ("how
+            # does that dataset compare with X"). Left unchanged for tools that produced
+            # neither, so a get_dataset_profile turn doesn't wipe out the prior listing and
+            # vice versa.
+            for m in new_messages:
+                if isinstance(m, ToolMessage) and getattr(m, "name", None) in (_DATASET_LISTING_TOOLS | {"get_dataset_profile"}):
+                    self._track_dataset_listing(m.name, m.content, effective_user_input)
+
             verbatim_tool_msgs = [
                 m for m in new_messages
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in _VERBATIM_TOOLS
             ]
             if len(verbatim_tool_msgs) == 1:
-                return _build_verbatim_response(user_input, verbatim_tool_msgs[0].content)
+                return _non_empty(_build_verbatim_response(effective_user_input, verbatim_tool_msgs[0].content))
 
             # Same rationale for tools that already return a complete, grounded answer —
             # skip the outer agent's own retelling of it.
@@ -1012,7 +1477,7 @@ class ConversationManager:
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in _SELF_CONTAINED_TOOLS
             ]
             if len(self_contained_tool_msgs) == 1 and not verbatim_tool_msgs:
-                return _clean_response(self_contained_tool_msgs[0].content)
+                return _non_empty(_clean_response(self_contained_tool_msgs[0].content))
 
             raw = result["messages"][-1].content
             # Llama-4-Maverick sometimes emits tool-call syntax as plain text that
@@ -1022,10 +1487,12 @@ class ConversationManager:
                 logger.warning("Tool call leaked into final response; dispatching manually.")
                 tool_calls = _extract_tool_calls_from_text(raw)
                 if tool_calls:
-                    dispatched = _run_manual_dispatch(tool_calls, user_input, prior)
-                    if dispatched:
+                    dispatched = _run_manual_dispatch(tool_calls, effective_user_input, prior)
+                    if dispatched is not None:
+                        for tc in tool_calls:
+                            self._track_dataset_listing(tc["name"], dispatched, effective_user_input)
                         return dispatched
-            return _clean_response(raw)
+            return _non_empty(_clean_response(raw))
         except Exception as e:
             err_str = str(e)
             # Llama-4-Maverick uses a non-OpenAI tool-call format that LiteLLM rejects
@@ -1035,8 +1502,10 @@ class ConversationManager:
                 logger.warning("Tool-call format mismatch (400); attempting manual dispatch.")
                 tool_calls = _extract_tool_calls_from_error(err_str)
                 if tool_calls:
-                    dispatched = _run_manual_dispatch(tool_calls, user_input, prior)
-                    if dispatched:
+                    dispatched = _run_manual_dispatch(tool_calls, effective_user_input, prior)
+                    if dispatched is not None:
+                        for tc in tool_calls:
+                            self._track_dataset_listing(tc["name"], dispatched, effective_user_input)
                         return dispatched
                     # A tool call WAS identified and dispatch was attempted — real,
                     # grounded tool output may or may not exist depending on whether the
