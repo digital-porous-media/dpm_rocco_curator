@@ -29,7 +29,13 @@ Both are available as tabs in the same Streamlit app (`rocco_ui.py`).
 
 ### General Assistant
 
-**Dataset Discovery**: Semantic and structured search over the DPM Portal's dataset catalog, backed by a Neo4j vector index and Cypher-based property filtering (numeric ranges, rock type, exact metadata values, named authors).
+**Dataset Discovery**: Semantic and structured search over the DPM Portal's dataset catalog — hybrid vector + BM25 retrieval over a Neo4j index, plus Cypher-based property filtering (numeric ranges, rock type, exact metadata values, named authors).
+
+**Dataset Profiles & Comparisons**: Follow up on a dataset you've already found — "tell me more about this one," a specific field, how its samples/scans/analyses relate, how to read its files, or whether it suits your use case — and compare two or more datasets against each other.
+
+**Relationship & Content Reasoning**: Answers questions no single metadata field can settle — "are there paired tomographic and segmented images?", "which datasets image the same sample at different resolutions?", "which were imaged on an Xradia scanner?" — by reasoning over precomputed per-dataset fact sheets, with a mandatory citation behind every candidate.
+
+**Multi-Turn Refinement**: Narrow a result set conversationally ("of these, which are coal?") and refer back to earlier results by position or pronoun ("the second one", "that dataset") — the assistant tracks which result set "these" means across turns.
 
 **Domain Q&A & Workflow Guidance**: Ask digital rock physics questions or request step-by-step workflow guidance (e.g. "how do I compute relative permeability?"), backed by a curated workflow library, portal tutorials, and literature fallback.
 
@@ -37,7 +43,7 @@ Both are available as tabs in the same Streamlit app (`rocco_ui.py`).
 
 **Portal Documentation Search**: Answers how-to and metadata-schema questions directly from the DPM Portal's user documentation.
 
-**Source-Labeled Answers**: Every answer is tagged with where it came from (`[graph match]`, `[cypher match]`, `[semantic scholar]`, `[portal docs]`, etc.) so you can tell tool-grounded facts apart from general domain knowledge.
+**Source-Labeled Answers**: Every answer is tagged with where it came from (`[hybrid match]`, `[cypher match]`, `[dataset profile]`, `[content reasoning]`, `[semantic scholar]`, `[portal docs]`, etc.) so you can tell tool-grounded facts apart from general domain knowledge.
 
 **Graceful Degradation**: Works even without a Neo4j connection (`USE_NEO4J=false`) — literature search, domain Q&A, and portal doc search keep working; only dataset graph search is disabled.
 
@@ -51,8 +57,8 @@ Both are available as tabs in the same Streamlit app (`rocco_ui.py`).
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/digital-porous-media/dpm-rocco-curator.git
-   cd dpm-rocco-curator
+   git clone https://github.com/digital-porous-media/dpm_rocco_curator.git
+   cd dpm_rocco_curator
    ```
 
 2. **Install in editable mode:**
@@ -134,21 +140,36 @@ See [`.env.example`](.env.example) for all supported providers and their base UR
 ### General Assistant (optional)
 
 1. **Switch tabs**: Select **"General Assistant"** in `rocco_ui.py`.
-2. **Ask a question**: Type a natural-language question in the chat box — dataset discovery ("sandstone datasets with porosity above 0.3"), domain Q&A ("what is relative permeability?"), workflow guidance ("how do I compute absolute permeability from a segmented image?"), literature search ("papers on micro-CT of carbonate rocks"), or portal how-to ("how do I upload a dataset?").
-3. **Read the answer**: Responses include colored source badges (e.g. `[graph match]`, `[cypher match]`, `[semantic scholar]`, `[portal docs]`) showing whether the answer came from portal data, domain knowledge, or literature.
+2. **Ask a question**: Type a natural-language question in the chat box — dataset discovery ("sandstone datasets with porosity above 0.3"), relationship questions ("are there paired tomographic and segmented images?"), domain Q&A ("what is relative permeability?"), workflow guidance ("how do I compute absolute permeability from a segmented image?"), literature search ("papers on micro-CT of carbonate rocks"), or portal how-to ("how do I upload a dataset?").
+3. **Follow up**: Ask about one result ("tell me more about the second one"), narrow the set ("of these, which are coal?"), or compare two ("compare A and B for pore network extraction").
+4. **Read the answer**: Responses include colored source badges (e.g. `[hybrid match]`, `[cypher match]`, `[dataset profile]`, `[content reasoning]`, `[semantic scholar]`, `[portal docs]`) showing whether the answer came from portal data, domain knowledge, or literature.
 
 See [Quick Start: General Assistant](https://digital-porous-media.github.io/dpm_rocco_curator/user_guide/quickstart_assistant.html) for setup details (Neo4j is optional) and more example queries.
 
 ## Architecture
 
-![Architecture Diagram](docs/architecture_diagram.svg)
+Rocco's two modules are independent, sharing only the LLM/embedding layer (`src/llm/client.py`).
+
+**Description Curator** — evaluate → retrieve → enhance:
+
+![Description Curator pipeline](docs/architecture_diagram.svg)
+
+**General Assistant** — gate → route → assemble. There is no hardcoded intent dispatcher: cheap
+tools-unbound gate calls run first, then a LangGraph ReAct agent picks tools by matching their
+descriptions against the system prompt's routing rules. How the response is assembled depends on
+which kind of tool ran.
+
+![General Assistant request lifecycle](docs/assistant_diagram.svg)
+
+Full detail, including the maintenance runbooks for the Neo4j graph and portal-doc sync, is in
+the [Architecture guide](https://digital-porous-media.github.io/dpm_rocco_curator/developer_guide/architecture.html).
 
 ## Core Components
 
 ### General Assistant (src/assistant/)
-- **conversation_manager.py**: LangGraph ReAct agent — classifies intent and dispatches to the tools below.
-- **tools.py**: Callable tool interface — `search_datasets`, `get_dataset_details`, `get_workflow_guidance`, `get_educational_context`, `search_portal_docs`, `search_literature`.
-- **graph_store.py**: Neo4j vector index (semantic dataset/component search) + structured Cypher search over dataset/sample properties.
+- **conversation_manager.py**: Orchestrator — cheap tools-unbound gate calls, then a LangGraph ReAct agent that picks tools from their descriptions (no hardcoded intent dispatcher). Also handles response assembly and cross-turn result-set tracking.
+- **tools.py**: Callable tool interface — `search_datasets`, `get_dataset_details`, `get_dataset_profile`, `reason_about_dataset_content`, `search_portal_docs`, `get_workflow_guidance`, `get_educational_context`, `search_literature`.
+- **graph_store.py**: Neo4j hybrid search (vector + BM25 via reciprocal rank fusion), per-sub-node component search, fact-sheet ranking, single-dataset profile assembly, and structured Cypher search over dataset/sample properties.
 - **literature_search.py**: Semantic Scholar API wrapper.
 - **portal_docs_retrieval.py / portal_docs_tree.py**: Heading-tree retrieval over the DPM Portal's user documentation.
 
@@ -168,10 +189,20 @@ See [Quick Start: General Assistant](https://digital-porous-media.github.io/dpm_
 - **RoccoClient**: Unified interface to OpenAI-compatible LLM endpoints.
 
 ### Prompts (src/prompts/)
-All LLM prompts are externalized as YAML files with semantic versioning:
+All LLM prompts are externalized as YAML files with semantic versioning. Description Curator:
 - **evaluator.yaml**: Rubric scoring prompt
 - **editor.yaml**: Description enhancement prompt
 - **content_screener.yaml**: Feedback validation prompt
+
+General Assistant:
+- **query_expander.yaml**: Query expansion + inferred metadata filters
+- **educational.yaml**: Domain Q&A and workflow synthesis
+- **dataset_profile.yaml**: Single-dataset deep-dive profile synthesis
+- **corpus_reasoning.yaml**: Relationship/content reasoning over fact sheets (+ batch screening)
+- **portal_docs.yaml**: Portal documentation answer synthesis
+- **assistant.yaml**: Standalone 6-intent classifier — testing/offline analysis only, not called at runtime
+
+See the [Prompt Reference](https://digital-porous-media.github.io/dpm_rocco_curator/developer_guide/prompts.html) for each prompt's template variables and output format.
 
 ## Evaluation Benchmarks
 
@@ -198,8 +229,8 @@ Rocco's evaluation results demonstrate high agreement with expert human judgment
 To contribute to Rocco:
 
 ```bash
-git clone https://github.com/digital-porous-media/dpm-rocco-curator.git
-cd dpm-rocco-curator
+git clone https://github.com/digital-porous-media/dpm_rocco_curator.git
+cd dpm_rocco_curator
 pip install -e ".[dev]"
 ```
 
@@ -276,7 +307,7 @@ If you use Rocco in your research, please cite it:
   title = {Rocco: AI Curator for Dataset Descriptions},
   year = {2025},
   doi = {10.5281/zenodo.20172376},
-  url = {https://github.com/digital-porous-media/dpm-rocco-curator}
+  url = {https://github.com/digital-porous-media/dpm_rocco_curator}
 }
 ```
 
@@ -294,8 +325,8 @@ We welcome bug reports, feature requests, and pull requests! Please see [CONTRIB
 
 ## Support
 
-- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/digital-porous-media/dpm-rocco-curator/issues)
-- **Questions**: Open a discussion on [GitHub Discussions](https://github.com/digital-porous-media/dpm-rocco-curator/discussions)
+- **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/digital-porous-media/dpm_rocco_curator/issues)
+- **Questions**: Open a discussion on [GitHub Discussions](https://github.com/digital-porous-media/dpm_rocco_curator/discussions)
 
 ## Acknowledgments
 

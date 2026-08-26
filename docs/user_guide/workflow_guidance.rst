@@ -65,8 +65,10 @@ Example Queries
    How do I compute absolute permeability from a segmented image?
    How do I set up a lattice Boltzmann simulation for this image?
    What's the best way to organize core flooding data?
-   How should I cite datasets from the DPM Portal?
    Does this image have enough resolution for a simulation?
+
+("How should I cite a dataset?" is a portal *action*, not a workflow — that routes to
+:doc:`portal_docs`.)
 
 See Also
 --------

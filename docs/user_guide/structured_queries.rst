@@ -16,9 +16,18 @@ if it also mentions a rock type or imaging method (e.g. "sandstone datasets with
 What It Does
 ------------
 
-``get_dataset_details(question)`` (``src/assistant/tools.py``) passes your question directly to
-``GraphStore.cypher_qa()`` (``src/assistant/graph_store.py``), which wraps LangChain's
-``GraphCypherQAChain``:
+``get_dataset_details(question, restrict_to_titles=None)`` (``src/assistant/tools.py``) first
+runs a deterministic gate, then passes your question to ``GraphStore.cypher_qa()``
+(``src/assistant/graph_store.py``), which wraps LangChain's ``GraphCypherQAChain``.
+
+**Before any Cypher runs**, ``_needs_content_reasoning()`` checks whether every property in the
+question is a plain, literal, structured field. If anything in it is relational ("paired", "the
+same sample", "derived from") or exists only in free text (an instrument name), the *whole*
+question is handed to ``reason_about_dataset_content`` instead and that result is returned — a
+literal clause pulled out of a relational claim is a wrong answer, not a partial one. See
+:doc:`content_reasoning`.
+
+Otherwise:
 
 1. The chain's LLM generates a Cypher query against a **hardcoded schema** fed via
    ``MANUAL_SCHEMA`` (not introspected live — ``refresh_schema=False`` skips the
@@ -39,6 +48,21 @@ Because this can return real dataset titles/DOIs, ``get_dataset_details`` is als
 **verbatim tool** in the conversation manager's response assembly (see :doc:`assistant`) — its
 output reaches you unmodified, aside from a short LLM-generated lead-in sentence.
 
+Narrowing a Previous Result Set
+---------------------------------
+
+``restrict_to_titles`` is internal — you never set it, and the routing agent leaves it unset for
+a normal catalog-wide question. It is injected by the conversation manager when a turn is
+refining datasets already listed this session ("of these, which are segmented?", "how about any
+below 0.25?"), so the answer is bounded by that set instead of re-running the new filter over the
+whole graph. See :doc:`multi_turn` for how a refinement is detected.
+
+.. note::
+
+   ``cypher_qa`` treats an **empty** ``restrict_to_titles`` list as no restriction at all, which
+   is why the conversation manager requires a non-empty title list before dispatching a
+   restricted search.
+
 Queryable Properties
 ----------------------
 
@@ -57,8 +81,11 @@ without a second place to edit. Broadly, queryable properties span:
 For the visual entity-relationship diagram behind this schema, see the DPM Portal's
 `data model reference <https://digital-porous-media.github.io/dpm_docs/images/data_model_v2.png>`_.
 For the full, canonical field-by-field reference with coverage percentages against the live
-graph, see :doc:`../neo4j_schema` — some fields (e.g. imaging-center metadata) are 0% populated
-in current data, and the assistant must not assume they exist.
+graph, see :doc:`../neo4j_schema` — several fields are populated on well under 10% of nodes
+(imaging-center and imaging-equipment metadata sit around 4%), so the assistant must not assume
+they exist. A tiny non-zero percentage is the trickier case: such a filter *will* return a few
+rows while silently dropping the rest of the catalog, so it needs the sparsity caveat even when
+it looks like it worked.
 
 A named person ("datasets by Jane Doe", "who has published data on sandstone permeability")
 counts as a checkable property here too — it maps to the ``authors`` field. The routing prompt
@@ -83,6 +110,7 @@ See Also
 - :doc:`dataset_profiles` — Follow-up detail questions on a dataset you've already found
 - :doc:`content_reasoning` — Relational questions ("paired", "the same sample at different
   resolutions") that a literal field lookup cannot answer
+- :doc:`multi_turn` — Narrowing an earlier result set in a follow-up
 - :doc:`assistant` — Overview of how all capabilities fit together
 - :doc:`../neo4j_schema` — Full graph schema reference and coverage stats
 - `DPM data model diagram <https://digital-porous-media.github.io/dpm_docs/images/data_model_v2.png>`_ — visual entity-relationship reference

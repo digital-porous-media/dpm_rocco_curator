@@ -100,6 +100,8 @@ What's Next?
   - :doc:`dataset_discovery` — semantic dataset search
   - :doc:`structured_queries` — exact/numeric dataset property queries
   - :doc:`dataset_profiles` — follow-up detail questions and dataset comparisons
+  - :doc:`content_reasoning` — relationship questions no single metadata field can answer
+  - :doc:`multi_turn` — narrowing a result set and referring back to earlier results
   - :doc:`portal_docs` — portal how-to and schema questions
   - :doc:`domain_qa` — porous media science Q&A
   - :doc:`workflow_guidance` — step-by-step DRP workflows

@@ -7,7 +7,7 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 ## Environment & Infrastructure
 
 - [x] Install Neo4j via Homebrew (`neo4j 2026.04.0`)
-- [x] Create `rocco_ai` conda environment with all dependencies (includes `langchain-neo4j`)
+- [x] Create the `rocco` conda environment with all dependencies (includes `langchain-neo4j`)
 - [ ] Install graph dependencies:
   ```bash
   pip install -e ".[graph]"  # Installs neo4j, langchain-neo4j, langchain-openai
@@ -26,7 +26,7 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
   ```
 - [ ] Verify Neo4j connection:
   ```bash
-  conda activate rocco_ai
+  conda activate rocco
   python -c "
   from neo4j import GraphDatabase
   import os; from dotenv import load_dotenv; load_dotenv()
@@ -43,7 +43,7 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 
 - [ ] Download DRP metadata from TACC Corral:
   ```bash
-  conda activate rocco_ai
+  conda activate rocco
   python scripts/scrape_metadata.py --output data/metadata/
   ```
 - [ ] Load metadata into Neo4j:
@@ -124,7 +124,7 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 Run these before intern Week 1 to confirm everything works end-to-end:
 
 ```bash
-conda activate rocco_ai
+conda activate rocco
 
 # 1. Imports clean
 python -c "from src.assistant.tools import build_langchain_tools; print('OK')"
@@ -157,7 +157,7 @@ Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Ju
 - [x] Record or write Rocco codebase walkthrough (#19)
 - [x] Write `CONTRIBUTING.md` (#14)
 - [x] Add pytest scaffolding `tests/assistant/conftest.py` (#15)
-- [x] Confirm intern has repo access, `rocco_ai` env setup instructions, `.env.example`, Neo4j
+- [x] Confirm intern has repo access, `rocco` env setup instructions, `.env.example`, Neo4j
 
 ### Completed during Week 1 (May 31 – Jun 6)
 
@@ -218,8 +218,11 @@ Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Ju
 - [ ] **#42** — Run the full 20-query acceptance suite through the tabbed `rocco_ui.py`; demo to BCC, MP, and ME
   - All 20 queries already exist as automated tests in `tests/assistant/test_search_integration.py` (S-1..4, M-1..3, D-1..4, W-1..4, Q-1..2, L-1..3) — this task is *execution*, not authoring
   - Demo must show both tabs (Curator + General Assistant) working independently with no session-state collision
-- [ ] **Investigate hanging test suite** — `pytest tests/assistant/test_graph_store.py` passes cleanly (22/22, ~6s), but `pytest tests/assistant/` (full directory) hangs indefinitely. Likely a live network call (Semantic Scholar or Neo4j) in `test_search_integration.py` or `test_tools.py` that isn't mocked/skipped when it should be. Must be fixed before #43's "final index rebuild, evaluation" can rely on `pytest tests/ -v` passing cleanly.
-- [ ] **#43** — Final index rebuild (`build_dataset_vector_index.py`, `build_publication_index.py`), evaluation, write `docs/assistant.md`
+- [x] **Investigate hanging test suite** — **resolved.** The cause was live network tests running unintentionally. They now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`, so the default run excludes them. Verified Aug 2026: `pytest tests/ -v` → **380 passed, 51 deselected, ~21s**, reproducible across runs. Run the live tier explicitly with `pytest tests/ -m live -v` (needs real credentials + a running Neo4j). #43 can rely on a clean default run.
+- [ ] **#43** — Final index rebuild (`python scripts/build_dataset_vector_index.py`) + evaluation.
+  Assistant documentation is **done** — it shipped as `docs/user_guide/assistant.rst` plus nine
+  per-capability pages, not the originally-planned single `docs/assistant.md`. There is no
+  `build_publication_index.py`; the publication corpus was dropped with #27/#32.
 - [ ] **#45** — README updates, handoff doc, tag `v2.0.0`, record demo video
 
 ### Week 8–9 (Jul 19–Aug 1)
@@ -388,7 +391,7 @@ verification of the three example queries is still outstanding.
 
 ## Notes
 
-- **Conda env:** Always `conda activate rocco_ai` before running anything
+- **Conda env:** Always `conda activate rocco` before running anything
 - **Neo4j notebook:** Use `CurationTools/JsonToNeo4jwKeywords.ipynb` (not the chunking one) to load data
 - **`langchain-neo4j`** is installed via `pip install -e ".[graph]"` and provides `Neo4jVector` for semantic search abstractions
 - **`langchain_sambanova`** is not installed — embeddings use `OpenAIEmbeddings` with custom base URL instead; if SambaNova's embedding endpoint is not OpenAI-compatible, update `src/assistant/llm.py`

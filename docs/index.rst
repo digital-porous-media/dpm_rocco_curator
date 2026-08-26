@@ -92,6 +92,7 @@ For a full walkthrough, see :doc:`user_guide/quickstart_curator` (Description Cu
    user_guide/structured_queries
    user_guide/dataset_profiles
    user_guide/content_reasoning
+   user_guide/multi_turn
    user_guide/portal_docs
    user_guide/domain_qa
    user_guide/workflow_guidance
@@ -107,6 +108,7 @@ For a full walkthrough, see :doc:`user_guide/quickstart_curator` (Description Cu
    :caption: Developer Guide
    :maxdepth: 1
 
+   developer_guide/onboarding
    developer_guide/architecture
    developer_guide/contributing
    developer_guide/api_reference

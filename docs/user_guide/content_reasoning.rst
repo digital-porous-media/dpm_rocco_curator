@@ -12,9 +12,10 @@ The Problem It Solves
 
 Take *"are there paired tomographic and segmented images?"*
 
-There is no imaging-modality field in the DPM schema (``imagingCenter``,
-``imagingEquipmentAndModel`` and friends are 0% populated — see :doc:`../neo4j_schema`), and
-"paired" is not a property at all: it is a statement about two scans of the *same sample*
+There is no usable imaging-modality field in the DPM schema — ``imagingCenter`` and
+``imagingEquipmentAndModel`` exist but are populated on roughly 4% of nodes, which is worse than
+useless as a filter: it answers for 4% of the catalog and silently drops the rest (see
+:doc:`../neo4j_schema`). And "paired" is not a property at all: it is a statement about two scans of the *same sample*
 standing in a particular relationship. A structured query can only pick out the one literal
 clause it recognises, ``segmented = 'yes'``, and answer that.
 
@@ -194,4 +195,5 @@ See Also
 - :doc:`dataset_discovery` — open-ended semantic search
 - :doc:`structured_queries` — literal field lookups via generated Cypher
 - :doc:`dataset_profiles` — deep dive on ONE already-identified dataset
+- :doc:`multi_turn` — how these results are tracked for follow-up questions
 - :doc:`../neo4j_schema` — schema, indexes, and the ``INPUT_FOR`` direction gotcha

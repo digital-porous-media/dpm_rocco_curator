@@ -2,8 +2,7 @@
 Pytest fixtures for src/assistant/ tests.
 
 Provides:
-  neo4j_driver   — mock Neo4j driver; records queries without a live database
-  small_faiss    — tiny in-memory FAISS index (3 docs) for PublicationCorpus tests
+  neo4j_driver     — mock Neo4j driver; records queries without a live database
   mock_graph_store — GraphStore with Neo4j replaced by the mock driver
 """
 
@@ -12,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 
@@ -86,72 +84,6 @@ class _FakeDriver:
 def neo4j_driver() -> _FakeDriver:
     """A mock Neo4j driver that accepts queries without a live database."""
     return _FakeDriver()
-
-
-# ---------------------------------------------------------------------------
-# Small in-memory FAISS index
-# ---------------------------------------------------------------------------
-
-THREE_DOCS = [
-    {
-        "doc_title": "Blunt et al. 2013",
-        "page": 1,
-        "dataset_id": "DRP-11",
-        "snippet": "Pore-scale imaging of multiphase flow in Bentheimer sandstone.",
-    },
-    {
-        "doc_title": "Gostick et al. 2019",
-        "page": 2,
-        "dataset_id": "DRP-1",
-        "snippet": "PoreSpy: a Python toolkit for quantitative analysis of porous media images.",
-    },
-    {
-        "doc_title": "Wildenschild & Sheppard 2013",
-        "page": 3,
-        "dataset_id": None,
-        "snippet": "X-ray imaging and analysis techniques for quantifying pore-scale structure.",
-    },
-]
-
-EMBEDDING_DIM = 8  # tiny dimension — fast, no model required
-
-
-def _fake_embed(texts: list[str]) -> np.ndarray:
-    """Deterministic fake embeddings: hash-based unit vectors."""
-    vecs = []
-    for t in texts:
-        rng = np.random.default_rng(abs(hash(t)) % (2**31))
-        v = rng.standard_normal(EMBEDDING_DIM).astype(np.float32)
-        v /= np.linalg.norm(v)
-        vecs.append(v)
-    return np.array(vecs)
-
-
-@pytest.fixture
-def small_faiss():
-    """
-    A tiny FAISS flat index pre-loaded with THREE_DOCS.
-
-    Returns a dict with keys:
-        index      — faiss.IndexFlatIP (inner-product / cosine on unit vecs)
-        metadata   — list of doc metadata dicts (same order as index vectors)
-        embed_fn   — callable: list[str] -> np.ndarray of unit vectors
-        dim        — embedding dimension
-    """
-    faiss = pytest.importorskip("faiss")
-
-    texts = [d["snippet"] for d in THREE_DOCS]
-    vecs = _fake_embed(texts)
-
-    index = faiss.IndexFlatIP(EMBEDDING_DIM)
-    index.add(vecs)
-
-    return {
-        "index": index,
-        "metadata": list(THREE_DOCS),
-        "embed_fn": _fake_embed,
-        "dim": EMBEDDING_DIM,
-    }
 
 
 # ---------------------------------------------------------------------------

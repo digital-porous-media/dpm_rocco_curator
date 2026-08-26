@@ -66,7 +66,10 @@ Environment variables required:
     NEO4J_URI      - bolt://localhost:7687 (local) or neo4j+s://... (cloud)
     NEO4J_USER     - typically "neo4j"
     NEO4J_PASSWORD - your password
-    USE_NEO4J      - set to "false" to disable graph and fall back to publication FAISS only
+    USE_NEO4J      - set to "false" to disable all graph-backed dataset search. Every search
+                     method then returns empty immediately without importing the Neo4j driver.
+                     There is no alternative dataset backend; domain Q&A, workflow guidance,
+                     portal-doc search and literature search are unaffected.
 
 APOC note:
     APOC is not required. The Cypher generation prompt explicitly forbids apoc.* calls,
@@ -369,9 +372,12 @@ Important:
     which enum value it maps to, fall back to a title/description substring match instead
     (e.g. toLower(d.title) CONTAINS 'limestone') rather than filtering porousMediaType on
     the literal name.
-  - There is no queryable imaging-technique/modality field (imagingCenter,
-    imagingEquipmentAndModel, and similar fields are 0% populated across the dataset — see
-    docs/neo4j_schema.md). Virtually every dataset in this portal already involves some form
+  - There is no usable imaging-technique/modality field. imagingCenter,
+    imagingEquipmentAndModel and similar fields exist in the schema but are populated on
+    only ~4% of nodes (see docs/neo4j_schema.md), so filtering on one answers for a
+    handful of datasets and silently drops the rest of the catalog — which is worse than
+    returning nothing, because it looks like it worked. Virtually every dataset in this
+    portal already involves some form
     of tomographic/micro-CT/X-ray imaging, so a question mentioning "tomographic", "CT",
     "micro-CT", "X-ray imaging", etc. is describing the portal as a whole, not a
     distinguishing, filterable property — do not add a WHERE clause for it, and do not let

@@ -1,6 +1,6 @@
 # Contributing to Rocco
 
-Thank you for contributing to Rocco! This guide covers both the **Description Curator** (current) and the **General Assistant** (in development). Please read the relevant sections for your task.
+Thank you for contributing to Rocco! This guide covers both of Rocco's modules — the **Description Curator** and the **General Assistant** — which ship as two tabs of the same Streamlit app. Please read the relevant sections for your task.
 
 ## Code of Conduct
 
@@ -22,21 +22,21 @@ We are committed to a welcoming and respectful environment. Please treat all con
 
 1. **Clone the repository:**
    ```bash
-   git clone git@github.com:digital-porous-media/dpm_rocco_ai.git
-   cd dpm_rocco_ai
+   git clone git@github.com:digital-porous-media/dpm_rocco_curator.git
+   cd dpm_rocco_curator
    ```
 
 2. **Create the conda environment:**
    ```bash
    conda env create -f environment.yml    # if environment.yml exists
    # — or —
-   conda create -n rocco_ai python=3.11
-   conda activate rocco_ai
+   conda create -n rocco python=3.11
+   conda activate rocco
    ```
 
 3. **Install the package in editable mode:**
    ```bash
-   conda activate rocco_ai
+   conda activate rocco
 
    # Curator only (evaluator, editor, screener)
    pip install -e ".[dev]"
@@ -87,9 +87,14 @@ The assistant's dataset search requires Neo4j. Skip this if you are only working
 
 4. **Load the dataset graph and build vector indexes** (first time only):
    ```bash
+   python scripts/scrape_metadata.py              # populates data/metadata/ (gitignored)
    python scripts/load_graph.py --mode rebuild
-   python scripts/build_dataset_vector_index.py
+   python scripts/build_dataset_vector_index.py   # embeddings, fact sheets, all 5 indexes
    ```
+
+   The second step only loads nodes and relationships. Embeddings, fact sheets, and every
+   vector/fulltext index come from the third — a graph loaded without it will answer
+   structured Cypher questions but return nothing from semantic search or content reasoning.
 
 ---
 
@@ -99,7 +104,7 @@ Branch names follow the pattern `<type>/<short-kebab-description>`:
 
 | Type | When to use | Example |
 |------|-------------|---------|
-| `feature/` | New functionality | `feature/publication-corpus` |
+| `feature/` | New functionality | `feature/dataset-details` |
 | `fix/` | Bug fix | `fix/graph-store-null-filter` |
 | `docs/` | Documentation only | `docs/update-contributing` |
 | `refactor/` | Code restructuring, no behavior change | `refactor/llm-client-pydantic` |
@@ -124,7 +129,7 @@ Branch names follow the pattern `<type>/<short-kebab-description>`:
 # Always branch from feature/general-assistant for assistant work
 git checkout feature/general-assistant
 git pull origin feature/general-assistant
-git checkout -b feature/<your-task>   # e.g. feature/publication-corpus
+git checkout -b feature/<your-task>   # e.g. feature/dataset-details
 ```
 
 ---
@@ -155,10 +160,25 @@ isort .
 ### Assistant-Specific Constraints
 
 - **`graph_store.py`** must accept `filters: dict` — do not hardcode field names.
-- **`USE_NEO4J=false`** must keep the assistant functional (falls back to publication FAISS).
-- **Session state** in `assistant_ui.py` must use `assistant_`-prefixed keys to avoid collisions with the curator's `curator_`-prefixed keys.
-- **Never assert a dataset property that isn't in the graph.** If a field is missing, say so honestly — do not fabricate values.
+- **`USE_NEO4J=false`** must keep the assistant functional. Dataset search (discovery, structured
+  queries, profiles, content reasoning) goes dark; domain Q&A, workflow guidance, portal doc
+  search, and literature search must all keep working. Search methods return empty results
+  immediately without importing the Neo4j driver.
+- **Session state** in `assistant_ui.py` must use `assistant_`-prefixed keys. The curator's keys
+  in `rocco_ui.py` are currently *unprefixed* (`description_text`, `evaluation`, …), so the
+  `assistant_` prefix is the only thing keeping the two tabs from colliding — don't add an
+  unprefixed key to the assistant tab.
+- **Never assert a dataset property that isn't in the graph.** If a field is missing, say so
+  honestly — do not fabricate values. Note that "the field exists in the schema" is not the same
+  as "the field has data": several are populated on well under 10% of nodes (see
+  `docs/neo4j_schema.md`'s Graceful Degradation Tiers).
+- **Never modify published DRP metadata.** `title`, `description`, `doi`, `authors`, and all
+  sub-node properties are public, published data. Improve retrieval in the embedding/search
+  layer, not by editing source values in Neo4j or in a loading script.
 - **No APOC.** All Cypher must run on vanilla Neo4j (local, TACC, or AuraDB). The Cypher generation prompt already enforces this.
+- **`INPUT_FOR` points child → parent** ("was derived from"), the same direction as `PART_OF`.
+  `(dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)` is correct; the intuitive reverse matches zero
+  rows and fails silently. See `docs/neo4j_schema.md`.
 
 ---
 
@@ -167,7 +187,7 @@ isort .
 **Always run tests before committing.**
 
 ```bash
-conda activate rocco_ai
+conda activate rocco
 
 # Full suite
 pytest tests/ -v
@@ -182,6 +202,24 @@ pytest tests/assistant/ -v
 pytest tests/ --cov=src --cov-report=term-missing
 ```
 
+### The `live` marker
+
+`pytest.ini` sets `addopts = -m "not live"`, so tests that make **real** network calls (LLM,
+Neo4j, Semantic Scholar) are excluded by default. A clean default run currently reports
+380 passed, 51 deselected.
+
+Run the live tier explicitly, with real credentials and a running Neo4j, when you need
+end-to-end verification:
+
+```bash
+pytest tests/ -m live -v
+```
+
+These are slow and can block on a rate-limited or unreachable endpoint — that is expected, and
+is why they are not in the default run. (An earlier "the assistant suite hangs" issue was this:
+live tests running unintentionally. Once you have the marker excluded, `pytest tests/ -v` is
+clean.)
+
 ### Key test files
 
 | File | What it guards |
@@ -189,10 +227,18 @@ pytest tests/ --cov=src --cov-report=term-missing
 | `tests/test_curator_integration.py` | Evaluator, editor, screener — catches `RoccoClient` interface breaks |
 | `tests/test_llm_client.py` | Provider routing, configuration, backwards compat |
 | `tests/test_vector_store.py` | Embedding batch handling, FAISS alignment |
-| `tests/assistant/test_graph_store.py` | Neo4j vector search, structured filter queries |
-| `tests/assistant/test_intent_classifier.py` | Intent classifier prompt against all 6 intents |
+| `tests/assistant/test_graph_store.py` | Neo4j vector/hybrid search, structured filters, profile resolution, fact-sheet ranking |
+| `tests/assistant/test_tools.py` | Tool behavior — routing gates, context building, node caps, embedding stripping, citation grounding |
+| `tests/assistant/test_conversation_manager.py` | Response assembly, result-set tracking across turns, reference resolution, manual dispatch |
+| `tests/assistant/test_fact_sheet_builder.py` | Fact-sheet assembly, truncation caps, character-budget batching |
+| `tests/assistant/test_portal_docs_retrieval.py` | Heading-tree node selection and synthesis |
+| `tests/assistant/test_literature_search.py` | Semantic Scholar wrapper, throttling, 429 backoff |
+| `tests/assistant/test_search_integration.py` | The 20-query acceptance suite (mocked + live-tier) |
+| `tests/assistant/test_prompts.py` | Every prompt YAML loads and renders |
+| `tests/assistant/test_assistant_ui.py` | Badge rendering, DOI/URL linkifying, LaTeX normalization |
+| `tests/assistant/test_intent_classifier.py` | `assistant.yaml` classifier against all 6 intents (offline analysis only — not called at runtime) |
 
-Tests in `tests/assistant/` use fixtures from `tests/assistant/conftest.py` — a mock Neo4j driver and a small in-memory FAISS index so Neo4j is not required to run the assistant test suite.
+Tests in `tests/assistant/` use fixtures from `tests/assistant/conftest.py` — chiefly a mock Neo4j driver, so Neo4j is not required to run the assistant test suite.
 
 ### Before refactoring a public interface
 

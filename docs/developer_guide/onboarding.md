@@ -1,21 +1,28 @@
-# Intern Onboarding Guide
+# Contributor Onboarding Guide
 
-Welcome to the Rocco project. This document covers everything you need to get started: project context, environment setup, a walkthrough of the codebase, and your first-week tasks. Read `CONTRIBUTING.md` alongside this for workflow rules (branching, commit style, PR process).
+Welcome to the Rocco project. This document covers project context, environment setup, a
+walkthrough of the codebase, and a set of orientation exercises. Read `CONTRIBUTING.md` alongside
+this for workflow rules (branching, commit style, PR process).
 
 ---
 
 ## Project Context
 
-**Rocco** is an AI assistant framework for the [Digital Porous Media (DPM) Portal](https://www.digitalrocksportal.org/), a community repository for micro-CT datasets from porous rock samples (sandstones, carbonates, shales, etc.). Two modules are in the codebase:
+**Rocco** is an AI assistant framework for the
+[Digital Porous Media (DPM) Portal](https://digitalporousmedia.org/), a community repository for
+micro-CT and related datasets from porous media samples (sandstones, carbonates, coals, beads,
+fibrous media, soils). Two modules ship as two tabs of the same Streamlit app:
 
-| Module | Status | What it does |
-|--------|--------|--------------|
-| **Description Curator** | Working | Evaluates and enhances dataset descriptions using a rubric + RAG |
-| **General Assistant** | In development | Conversational search, domain Q&A, and workflow guidance over the dataset catalog |
+| Module | What it does |
+|--------|--------------|
+| **Description Curator** | Evaluates and enhances dataset descriptions using a 10-criterion rubric + RAG over uploaded papers |
+| **General Assistant** | Conversational dataset search, relationship reasoning, domain Q&A, workflow guidance, portal-doc and literature search |
 
-You are working on the **General Assistant**. Your primary deliverable is `src/assistant/graph_store.py` and `src/assistant/publication_corpus.py` — the search layer that the assistant's tools call into.
+Both are implemented and running. See `CHANGELOG.md` for what shipped when, and `Tasks.md` for
+what's still open.
 
-**Contact:** Bernie Chang (async OK via Slack or email). Check the [GitHub Project board](https://github.com/orgs/digital-porous-media/projects/3) for your assigned issues and weekly milestones.
+**Contact:** Bernie Chang (async OK via Slack or email). Check the
+[GitHub Project board](https://github.com/orgs/digital-porous-media/projects/3) for open issues.
 
 ---
 
@@ -27,7 +34,8 @@ Before starting, confirm you have:
 - [ ] `git` and access to `github.com/digital-porous-media/dpm_rocco_curator`
 - [ ] Neo4j ≥ 5.x installed locally (Homebrew: `brew install neo4j`)
 - [ ] LLM API credentials from Bernie (added to `.env` — see below)
-- [ ] Semantic Scholar API key from Bernie (free; added to `.env`)
+- [ ] Semantic Scholar API key from Bernie (optional; unauthenticated requests work, just
+      rate-limited)
 
 ---
 
@@ -35,10 +43,16 @@ Before starting, confirm you have:
 
 | Environment | Neo4j location | Notes |
 |-------------|---------------|-------|
-| **Local development** | Your laptop via Homebrew | Default for intern work |
-| **Production (planned)** | TACC VM | Same schema; different `NEO4J_URI` and credentials |
+| **Local development** | Your laptop | Default for contributor work |
+| **Production** | TACC VM | Same schema; different `NEO4J_URI` and credentials. See `DEPLOYMENT.md` |
 
-Never commit credentials. Always use `.env` (gitignored). The `USE_NEO4J=false` flag lets the assistant fall back to FAISS-only search if Neo4j is unavailable.
+Never commit credentials. Always use `.env` (gitignored).
+
+`USE_NEO4J=false` degrades the assistant gracefully rather than breaking it: all dataset search
+(discovery, structured queries, profiles, content reasoning) goes dark and returns empty results
+without even importing the Neo4j driver, while domain Q&A, workflow guidance, portal-doc search,
+and literature search keep working. There is no alternative dataset-search backend — that is
+what "degrade" means here.
 
 ---
 
@@ -50,8 +64,9 @@ git clone git@github.com:digital-porous-media/dpm_rocco_curator.git
 cd dpm_rocco_curator
 
 # 2. Create and activate the conda environment
-conda create -n rocco_ai python=3.11
-conda activate rocco_ai
+#    NOTE: the env on Bernie's machine is named `rocco`. Match it to avoid confusion.
+conda create -n rocco python=3.11
+conda activate rocco
 
 # 3. Install the package with all dependencies
 pip install -e ".[dev,graph]"
@@ -70,16 +85,43 @@ neo4j start
 # Open http://localhost:7474
 # Login: neo4j / neo4j → set a new password → add it to .env
 
-# 6. Verify imports
-python -c "from src.assistant.tools import build_langchain_tools; print('OK')"
+# 6. Populate the graph (see "Loading the Graph" below — this is three steps, not one)
+python scripts/scrape_metadata.py
+python scripts/load_graph.py --mode rebuild
+python scripts/build_dataset_vector_index.py
+
+# 7. Verify imports
+python -c "from src.assistant.tools import build_langchain_tools; print(len(build_langchain_tools()), 'tools')"
 python -c "import os; os.environ['USE_NEO4J']='false'; from src.assistant.graph_store import GraphStore; GraphStore(); print('OK')"
 
-# 7. Run tests — all should pass before you write any code
+# 8. Run tests — expect "380 passed, 51 deselected"
 pytest tests/ -v
 
-# 8. Launch the Streamlit UI (curator tab only until Week 7)
+# 9. Launch the Streamlit UI — both tabs
 streamlit run rocco_ui.py
 ```
+
+> `pytest.ini` sets `addopts = -m "not live"`, so tests making real network calls are excluded
+> by default — a clean run reports 380 passed, 51 deselected. Run the live tier explicitly with
+> `pytest tests/ -m live -v` when you have credentials and a running Neo4j; those are slow and
+> can block on a rate-limited endpoint, which is why they're opt-in.
+
+### Loading the Graph
+
+Three distinct steps, and skipping the third is the most common setup mistake:
+
+| Step | Script | What it does |
+|------|--------|--------------|
+| 1 | `scripts/scrape_metadata.py` | Downloads DRP metadata JSONs from TACC Corral into `data/metadata/` (gitignored) |
+| 2 | `scripts/load_graph.py --mode rebuild` | Loads nodes + relationships into Neo4j. **Nothing else.** |
+| 3 | `scripts/build_dataset_vector_index.py` | Embeddings, fact sheets, and all five vector/fulltext indexes |
+
+A graph loaded without step 3 answers structured Cypher questions but returns nothing from
+semantic search or content reasoning — and does so silently. Use `--mode upsert` for incremental
+loads (it preserves derived properties on unchanged nodes) and
+`scripts/reembed_single_dataset.py --doi ...` to patch one dataset.
+
+Verify with `python scripts/audit_schema.py --folder data/metadata/ --neo4j --verify`.
 
 ---
 
@@ -89,148 +131,231 @@ streamlit run rocco_ui.py
 
 | File | Purpose |
 |------|---------|
-| `rocco_ui.py` | Streamlit entry point — all UI tabs live here |
+| `rocco_ui.py` | Streamlit entry point — page nav + `render_curator_tab()` / `render_assistant_tab()` |
 | `pyproject.toml` | Package dependencies; `[graph]` extra adds Neo4j/LangChain |
-| `.env.example` | Template for all required environment variables |
+| `.env.example` | Template for all environment variables |
 | `CONTRIBUTING.md` | Branching, commit style, code quality, PR process |
-| `Tasks.md` | Pre-sprint task tracker (Bernie's planning doc) |
+| `DEPLOYMENT.md` | TACC VM deployment runbook |
+| `CLAUDE.md` | Implementation patterns, design constraints, hard-won gotchas |
+| `Tasks.md` | Task tracker |
+| `HANDOFF.md` | Detailed handoff notes for the most recent feature work |
 
 ### `src/` Module Map
 
 ```
 src/
-├── llm/           LLM client, schemas, content screening
-├── evaluator/     Rubric evaluation (Curator module)
-├── editor/        Description enhancement with citations (Curator module)
-├── ingestor/      PDF/DOCX → chunked FAISS documents
-├── retriever/     FAISS vector store queries
-├── prompts/       All YAML prompt templates
-└── assistant/     General Assistant — your workspace
+├── llm/           LLM client, embeddings factory, schemas, content screening
+├── evaluator/     Rubric evaluation (Curator)
+├── editor/        Description enhancement with citations (Curator)
+├── ingestor/      PDF/DOCX → chunked documents
+├── retriever/     FAISS vector store queries (Curator RAG)
+└── assistant/     General Assistant
+    ├── conversation_manager.py   orchestrator: gates, routing, response assembly, cross-turn state
+    ├── tools.py                  all 8 callable tools + their routing gates
+    ├── graph_store.py            Neo4j: hybrid search, component search, fact-sheet ranking, Cypher QA, profiles
+    ├── literature_search.py      Semantic Scholar API wrapper
+    ├── portal_docs_retrieval.py  heading-tree retrieval over dpm_docs
+    ├── portal_docs_tree.py       markdown → heading tree
+    ├── llm.py                    RoccoClient + embeddings singletons
+    ├── assistant_ui.py           Streamlit tab
+    └── assistant.py              re-export of ConversationManager (back-compat)
 ```
 
 #### `src/llm/`
 
-`client.py` contains `RoccoClient` — the single LLM call interface used by every module (curator and assistant). It inherits from both `LLMClient` (provider routing) and LangChain's `BaseChatModel` (LangGraph compatibility). Provider is configured via `.env`; you do not need to touch this file.
+`client.py` contains `RoccoClient` — the single LLM call interface used by every module. It
+inherits from both `LLMClient` (provider routing) and LangChain's `BaseChatModel` (LangGraph
+compatibility). Provider is configured via `.env`; you do not need to touch this file.
 
-`schemas.py` defines Pydantic output schemas for structured LLM responses (evaluator, editor, screener).
+`embeddings.py` picks an embedding model/endpoint from `LLM_PROVIDER` unless `EMBEDDING_*` is set
+explicitly. `schemas.py` defines Pydantic output schemas for the curator's structured responses.
 
 #### `src/prompts/`
 
-All LLM prompts are externalized as versioned YAML files and rendered with Jinja2. Never embed prompts in Python code — add a new YAML file and load it with `load_prompt("filename")` from `src/prompts/loader.py`.
+All LLM prompts are externalized as versioned YAML and rendered with Jinja2. Never embed a prompt
+in Python — add a YAML file and load it with `load_prompt("filename")`.
 
 | Prompt file | Used by |
 |-------------|---------|
-| `evaluator.yaml` | Description Curator |
-| `editor.yaml` | Description Curator |
-| `content_screener.yaml` | Description Curator |
-| `assistant.yaml` | Intent classifier (General Assistant) |
-| `query_expander.yaml` | Query expansion (General Assistant) |
-| `educational.yaml` | Domain Q&A + workflow guidance (General Assistant) |
+| `evaluator.yaml` | Curator — rubric scoring |
+| `editor.yaml` | Curator — description enhancement |
+| `content_screener.yaml` | Curator — feedback validation |
+| `query_expander.yaml` | Assistant — query expansion + filter inference |
+| `educational.yaml` | Assistant — domain Q&A **and** workflow guidance (shared) |
+| `dataset_profile.yaml` | Assistant — single-dataset deep dive |
+| `corpus_reasoning.yaml` | Assistant — relationship reasoning over fact sheets (+ batch screening) |
+| `portal_docs.yaml` | Assistant — portal documentation answers |
+| `assistant.yaml` | **Not called at runtime.** Standalone intent classifier, kept for offline analysis and tests |
 
-#### `src/assistant/` — Your Primary Workspace
+Routing is *not* driven by `assistant.yaml`. It is implicit: the ReAct agent matches tool
+descriptions against `SYSTEM_PROMPT` in `conversation_manager.py`. To change routing, edit that
+constant or the tool docstrings in `tools.py`. See
+[the Prompt Reference](https://digital-porous-media.github.io/dpm_rocco_curator/developer_guide/prompts.html).
 
-This is where you spend most of your time.
+#### `src/assistant/`
 
-**`tools.py`** — The shared interface. Every function the LangGraph agent can call is defined here as a LangChain `Tool`. Both interns code to this interface. Do not change a tool's name or signature without coordinating with Bernie — the agent prompt references tool names.
+**`tools.py`** — Every function the agent can call. Eight tools are registered by
+`build_langchain_tools()`: `search_datasets`, `get_dataset_details`, `get_dataset_profile`,
+`reason_about_dataset_content`, `search_portal_docs`, `get_workflow_guidance`,
+`get_educational_context`, `search_literature`. Do not change a tool's name or signature without
+coordinating — the system prompt and the manual-dispatch recovery path both reference them.
 
-**`conversation_manager.py`** — The LangGraph ReAct agent. Receives a user message, classifies intent (via `assistant.yaml`), dispatches to the appropriate tool, synthesizes a response. Bernie builds this; you do not own it, but you need to understand it.
+Note the **deterministic routing gates** in this file (`_needs_content_reasoning`,
+`_is_plain_property_query`, `_mentions_named_person`). These exist because prompt-level routing
+proved unreliable for fine distinctions — "segmented and porosity above 0.3" is a plain field
+query, "segmented and imaged the same way" is relational, and the agent could not be relied on to
+tell them apart. Gating in code makes the split correct regardless of which tool the agent picked.
 
-**`graph_store.py`** — **You own this.** Neo4j vector index + Cypher search. Two methods Bernie already scaffolded:
-- `search(query, top_k)` — semantic search over `Dataset` nodes via `datasetEmbedding` index
-- `component_search(query, top_k)` — fine-grained search over `DatasetComponent` nodes (Sample, DigitalDataset, AnalysisDataset)
+**`conversation_manager.py`** — The orchestrator. Cheap tools-unbound gate calls, then a
+LangGraph ReAct agent, then response assembly that depends on which *kind* of tool ran (verbatim
+splice vs. self-contained passthrough vs. outer-agent synthesis). Also holds the cross-turn
+result-set state that makes "of these…" and "the second one" work.
 
-Your Week 4 task adds `semantic_search()` and `filter_by_metadata()`. Week 5 adds `search_datasets()` (combined query + source labels). Week 6 adds `component_search()` and the `USE_NEO4J=false` fallback.
+**`graph_store.py`** — Two layers. High-level (`search()`, `hybrid_search()`,
+`component_search()`, `cypher_qa()`, `get_dataset_profile()`, `rank_fact_sheets()`,
+`fetch_fact_sheets()`) used by `tools.py`; low-level (`semantic_search()`,
+`filter_by_metadata()`, `search_datasets()`, `execute_cypher()`) over the raw driver. Accepts
+`filters: dict` rather than hardcoded field names, per the Croissant extensibility constraint.
 
-**`publication_corpus.py`** — **You own this.** FAISS index over chunked PDFs from `data/curated_papers/`. Currently a stub. You implement it in Week 3: chunk PDFs with `DocumentIngestor`, tag chunks with dataset IDs from `RelatedPublication` graph nodes, persist as a FAISS index.
+**`literature_search.py`** — Semantic Scholar wrapper with a 1 req/s throttle and 429 backoff.
 
-**`literature_search.py`** — Semantic Scholar API wrapper. Bernie pre-built this. You call it from `tools.py` for the literature routing fallback.
+**`portal_docs_retrieval.py` / `portal_docs_tree.py`** — PageIndex-style heading-tree retrieval
+over `data/portal_docs/docs/`. No chunking, no embeddings; the tree is parsed at import time, so
+re-syncing the markdown and restarting is the whole update procedure.
 
-**`llm.py`** — Returns singletons: `get_llm()` → `RoccoClient`, `get_embeddings()` → `OpenAIEmbeddings`. The embeddings singleton is what `GraphStore` uses for vector search.
+**`llm.py`** — Singletons: `get_llm()` → `RoccoClient`, `get_embeddings()` → `OpenAIEmbeddings`.
 
-**`assistant_ui.py`** — Streamlit tab for the General Assistant. Bernie builds this in Week 6. You connect `graph_store.py` to it in Week 7.
+**`assistant_ui.py`** — Streamlit tab. Session keys are `assistant_`-prefixed; the curator's are
+unprefixed, so that prefix is the only thing keeping the tabs from colliding.
 
 ### Data and Scripts
 
 | Path | What it is |
 |------|-----------|
-| `data/domain_workflows.yaml` | 15 DRP workflows; ground truth for `workflow_guidance` responses. Read-only — do not edit without domain review. |
-| `data/tutorials.yaml` | 20+ portal tutorial notebook paths mapped to user goals. |
-| `data/metadata/` | **Gitignored.** Scraped DRP metadata JSONs (one per dataset). Download with `scripts/scrape_metadata.py`. |
-| `data/curated_papers/` | **Gitignored.** Licensed PDFs. Do not commit. |
-| `data/publication_vector_store/` | **Gitignored.** Generated FAISS index from `scripts/build_publication_index.py`. |
+| `data/domain_workflows.yaml` | 15 DRP workflows; ground truth for workflow/educational responses. Do not edit without domain review. |
+| `data/tutorials.yaml` | Portal tutorial notebook paths mapped to user goals. Treated as strictly as dataset DOIs — never fabricate a path. |
+| `data/portal_docs/docs/` | Synced copy of the [dpm_docs](https://github.com/digital-porous-media/dpm_docs) repo. Update with `scripts/sync_dpm_docs.py`. |
+| `data/metadata/` | **Gitignored.** Scraped DRP metadata JSONs (one per dataset). |
 | `scripts/scrape_metadata.py` | Downloads metadata JSONs from TACC Corral. |
-| `scripts/build_dataset_vector_index.py` | Embeds 176 Dataset nodes + 3273 DatasetComponent nodes into Neo4j vector indexes. |
-| `scripts/audit_schema.py` | Audits Neo4j graph completeness; generates `docs/neo4j_schema.md`. |
-| `docs/neo4j_schema.md` | Your Cypher reference: full schema, coverage stats, starter queries. Read this before writing any Cypher. |
+| `scripts/load_graph.py` | Loads metadata JSONs into Neo4j (nodes + relationships only). |
+| `scripts/build_dataset_vector_index.py` | Embeddings, fact sheets, and all five indexes. |
+| `scripts/reembed_single_dataset.py` | Patches one dataset's embeddings after an upsert. |
+| `scripts/audit_schema.py` | Audits graph completeness; **generates `docs/neo4j_schema.md`**. |
+| `scripts/sync_dpm_docs.py` | Pulls portal documentation updates. `--check` compares against the last-synced SHA. |
+| `scripts/check_embedding_health.py` | Diagnoses embedding-endpoint failures. |
+| `docs/neo4j_schema.md` | Your Cypher reference: schema, coverage stats, starter queries. Read before writing any Cypher. |
+
+> `docs/neo4j_schema.md` is **generated**. Fix inaccuracies in `scripts/audit_schema.py` and
+> regenerate, or your edit disappears on the next run:
+> `python scripts/audit_schema.py --folder data/metadata/ --output docs/neo4j_schema.md`
 
 ### Tests
 
 ```
 tests/
-├── conftest.py                        # Global fixtures (mock Neo4j, in-memory FAISS)
-├── test_curator_integration.py        # Evaluator + editor + screener
-├── test_llm_client.py                 # LLM provider routing
-├── test_vector_store.py               # FAISS embedding and alignment
+├── conftest.py                     # Curator fixtures
+├── test_curator_integration.py     # Evaluator + editor + screener
+├── test_llm_client.py              # LLM provider routing
+├── test_vector_store.py            # FAISS embedding and alignment
 └── assistant/
-    ├── __init__.py
-    └── test_intent_classifier.py      # Intent classifier prompt tests
+    ├── conftest.py                     # mock Neo4j driver, mock GraphStore
+    ├── test_graph_store.py             # search, filters, profiles, fact-sheet ranking
+    ├── test_tools.py                   # tool behavior, routing gates, grounding guards
+    ├── test_conversation_manager.py    # response assembly, cross-turn state, reference resolution
+    ├── test_fact_sheet_builder.py      # fact-sheet assembly, caps, char-budget batching
+    ├── test_portal_docs_retrieval.py   # heading-tree selection and synthesis
+    ├── test_literature_search.py       # Semantic Scholar wrapper, throttle, backoff
+    ├── test_search_integration.py      # the 20-query acceptance suite
+    ├── test_assistant_ui.py            # badges, DOI/URL linkifying, LaTeX normalization
+    ├── test_prompts.py                 # every prompt YAML loads and renders
+    └── test_intent_classifier.py       # assistant.yaml (offline only)
 ```
 
-The `conftest.py` fixtures mock the Neo4j driver and provide a small in-memory FAISS index — you do not need Neo4j running to run unit tests. You will add `tests/assistant/test_graph_store.py` and `tests/assistant/test_publication_corpus.py` as you implement those modules (Week 6).
+`tests/assistant/conftest.py` mocks the Neo4j driver, so Neo4j is not required for unit tests.
 
-**Always run `pytest tests/ -v` before pushing.** The curator integration tests will catch interface regressions even in assistant code.
+**Always run tests before pushing.** The curator integration tests catch interface regressions
+even in assistant code.
 
 ---
 
 ## Neo4j Graph Overview
 
-The DRP Portal catalog is stored as a property graph. Nodes and relationships:
+The DPM catalog is a property graph with **two** relationship types. Both point child → parent:
 
 ```
-(Dataset)-[:HAS_SAMPLE]->(Sample)
-(Dataset)-[:HAS_DIGITAL_DATASET]->(DigitalDataset)
-(Dataset)-[:HAS_ANALYSIS_DATASET]->(AnalysisDataset)
-(Dataset)-[:HAS_PUBLICATION]->(Publication)
-(Sample)-[:HAS_DIGITAL_DATASET]->(DigitalDataset)
-(DigitalDataset)-[:HAS_ANALYSIS_DATASET]->(AnalysisDataset)
+(Sample)-[:PART_OF]->(Dataset)
+(DigitalDataset)-[:PART_OF]->(Dataset)
+(AnalysisDataset)-[:PART_OF]->(Dataset)
+(RelatedPublication)-[:PART_OF]->(Dataset)
+(RelatedSoftware)-[:PART_OF]->(Dataset)
+(RelatedDataset)-[:PART_OF]->(Dataset)
+
+(DigitalDataset)-[:INPUT_FOR]->(Sample)            # this scan was taken of that sample
+(AnalysisDataset)-[:INPUT_FOR]->(DigitalDataset)   # this analysis was computed from that scan
+(AnalysisDataset)-[:INPUT_FOR]->(Sample)           # no intermediate scan
 ```
 
-176 `Dataset` nodes; 3,273 `DatasetComponent` nodes (Samples + DigitalDatasets + AnalysisDatasets).
+> ⚠️ **`INPUT_FOR` means "was derived from" and runs the same direction as `PART_OF`, despite the
+> name.** A scan points *at* its sample. Writing it the intuitive way round —
+> `(s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset)` — matches **zero rows and fails silently**. This
+> was live in production for a while: every dataset profile's organizational-structure section
+> was empty and nobody noticed, because an empty result looks the same as "no data".
 
-Two vector indexes (built by `scripts/build_dataset_vector_index.py`):
-- `datasetEmbedding` on `Dataset` nodes — aggregated metadata blob, dim=4096
-- `componentEmbedding` on `DatasetComponent` nodes — per sub-node blob with parent context, dim=4096
+There are five indexes, all built by `scripts/build_dataset_vector_index.py`:
 
-Read `docs/neo4j_schema.md` for full property coverage, enum values, and starter Cypher queries. Key constraint: **all imaging metadata fields (`imagingCenter`, `imagingEquipmentAndModel`, etc.) are 0% populated** — do not query or assert these exist.
+| Index | Node | Purpose |
+|---|---|---|
+| `datasetEmbedding` | `Dataset` | Dataset-level semantic search |
+| `componentEmbedding` | `DatasetComponent` | Per-sub-node semantic search |
+| `factSheetEmbedding` | `Dataset` | Fact-sheet ranking for content reasoning |
+| `datasetDescriptionFulltext` | `Dataset` | BM25 half of hybrid search |
+| `datasetFactSheetFulltext` | `Dataset` | BM25 half of fact-sheet ranking |
+
+`DatasetComponent` is a secondary label added to sub-nodes at embed time — `load_graph.py` does
+not set it. Vector indexes are 4096-dim (E5-Mistral-7B-Instruct).
+
+**Two things to internalize before writing Cypher:**
+
+1. **"The field exists" ≠ "the field has data."** Several properties are populated on well under
+   10% of nodes. A filter on a 4%-populated field returns a few rows and silently drops the rest
+   of the catalog, which is more dangerous than returning nothing. See the Graceful Degradation
+   Tiers in `docs/neo4j_schema.md`.
+2. **Never `RETURN d` on a `Dataset`.** It carries a 4096-float embedding and the full fact-sheet
+   text; dumping one into an LLM context has already caused a production context-window failure.
+   Use a map projection:
+   `RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null}`.
 
 ---
 
-## Week 2 Orientation Tasks
+## Orientation Exercises
 
-Your first week is onboarding; no deliverable code is expected. Complete these in order:
+1. **Verify your environment** — run the import checks above; confirm 8 tools register.
 
-1. **Verify your environment** — run the import checks above and confirm `pytest tests/ -v` passes.
-
-2. **Start Neo4j and verify the graph:**
-   ```bash
-   neo4j start
-   # Open http://localhost:7474
-   # Run: MATCH (d:Dataset) RETURN count(d)   → expect 176
-   # Run: SHOW INDEXES                         → look for datasetEmbedding, componentEmbedding
+2. **Explore the graph in the browser** (http://localhost:7474):
+   ```cypher
+   MATCH (d:Dataset) RETURN count(d)
+   SHOW INDEXES
+   MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample) RETURN s.title, collect(dd.title) LIMIT 5
    ```
    Then run the schema audit:
    ```bash
-   conda activate rocco_ai
+   conda activate rocco
    python scripts/audit_schema.py --folder data/metadata/ --verify
    ```
 
-3. **Read `docs/neo4j_schema.md` in full.** It is your Cypher reference for the whole project. Try 3–5 of the starter queries in the browser.
+3. **Read `docs/neo4j_schema.md` in full.** Try 3–5 of the starter queries in the browser. Then
+   deliberately run one of them with `INPUT_FOR` reversed and watch it return zero rows without
+   erroring — that failure mode is worth feeling once.
 
-4. **Read `src/assistant/graph_store.py` in full.** Understand `search()` and `component_search()`. Trace how a query flows from `tools.py` → `graph_store.py` → Neo4j → returned result dict.
+4. **Trace one query end to end.** Pick "sandstone datasets with porosity above 0.3" and follow
+   it: `conversation_manager.chat()` → gates → ReAct agent → `tools.get_dataset_details` →
+   `_needs_content_reasoning` (does not fire) → `graph_store.cypher_qa()` → response assembly.
+   Then do the same for "are there paired tomographic and segmented images?" and note where the
+   two paths diverge.
 
-5. **Run `pytest tests/ -v`** — all tests should pass. If one fails, investigate before writing any code.
-
-6. **Open `src/assistant/publication_corpus.py`** — it is a stub. This is what you implement in Week 3. Read the docstring and the imports to understand what it should do.
+5. **Use the app.** `streamlit run rocco_ui.py`, then run a search, ask "tell me more about the
+   second one", and follow up with "of these, which are coal?". Watch the logs to see the
+   result-set restriction fire.
 
 ---
 
@@ -238,14 +363,14 @@ Your first week is onboarding; no deliverable code is expected. Complete these i
 
 | Step | Command |
 |------|---------|
-| Activate env | `conda activate rocco_ai` |
-| Branch from | `feature/general-assistant` (not `main`) |
-| Branch name | `feature/<task-id>` or `fix/<task-id>` |
+| Activate env | `conda activate rocco` |
+| Branch from | `main` |
+| Branch name | `feature/<short-description>` or `fix/<short-description>` |
 | Format code | `black . --line-length 100 && isort .` |
 | Run tests | `pytest tests/ -v` |
-| PR target | `feature/general-assistant` |
+| PR target | `main` |
 
-See `CONTRIBUTING.md` for full details on commit message format, protected branches, and the PR review process.
+See `CONTRIBUTING.md` for commit message format, protected branches, and the PR review process.
 
 ---
 
@@ -253,8 +378,11 @@ See `CONTRIBUTING.md` for full details on commit message format, protected branc
 
 | Resource | Location |
 |----------|---------|
+| Full documentation | https://digital-porous-media.github.io/dpm_rocco_curator/ |
 | Development workflow | `CONTRIBUTING.md` |
+| Implementation patterns and gotchas | `CLAUDE.md` |
 | Neo4j schema + Cypher | `docs/neo4j_schema.md` |
+| Deployment runbook | `DEPLOYMENT.md` |
 | DRP domain knowledge | `data/domain_workflows.yaml` |
 | Portal tutorials | `data/tutorials.yaml` |
 | Task tracker | `Tasks.md` |

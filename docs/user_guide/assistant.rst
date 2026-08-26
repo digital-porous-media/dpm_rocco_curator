@@ -43,7 +43,7 @@ its description against the system prompt — not a lookup table. This is implem
    Greetings, small talk, brainstorming, and self-contained foundational-science questions
    ("What is porosity?") are answered directly, with no tools bound to that call (so the model
    can't hallucinate a tool call it doesn't have).
-3. **ReAct agent** — for everything else, the agent is given all seven tools (see the table
+3. **ReAct agent** — for everything else, the agent is given all eight tools (see the table
    below) and the system prompt's routing rules, and picks one or more based on the query.
    Cross-intent queries ("explain relative permeability and find datasets that measure it"), and
    multi-dataset comparisons ("compare dataset A and dataset B"), trigger multiple sequential
@@ -65,6 +65,10 @@ its description against the system prompt — not a lookup table. This is implem
      model (Llama-4-Maverick via SambaNova): if the backend rejects the model's native tool-call
      syntax, the intended call is parsed out of the error and dispatched directly, following the
      same verbatim/self-contained rules above.
+
+5. **Result-set tracking** — if the turn listed datasets, the titles/DOIs are recorded so your
+   next message can refer back to them ("the second one", "of these, which are coal?"). See
+   :doc:`multi_turn`.
 
 What the Assistant Can Do
 --------------------------
@@ -110,6 +114,11 @@ What the Assistant Can Do
      - ``search_literature``
      - :doc:`literature_search`
 
+Follow-ups cut across all of these: narrowing a result set ("of these, which are coal?"),
+pointing at one entry ("the second one"), or a bare extra constraint ("how about any below
+0.25?") reuse the datasets from the previous turn rather than re-searching the catalog. See
+:doc:`multi_turn`.
+
 Reading Source Badges
 ----------------------
 
@@ -134,6 +143,10 @@ information came from:
    * - ``dataset profile``
      - Deep-dive answer about one already-identified dataset, or one dataset within a
        multi-dataset comparison
+   * - ``content reasoning``
+     - Reasoned candidate from a relationship/content question no database field can settle —
+       each entry carries its own supporting citation. Always framed as unverified; see
+       :doc:`content_reasoning`
    * - ``semantic scholar``
      - Result from the Semantic Scholar literature API
    * - ``portal docs``
@@ -168,9 +181,10 @@ working as intended, not a bug.
 Session State
 -------------
 
-Like the curator tab, the assistant stores conversation history in Streamlit's
-``st.session_state`` (keys prefixed ``assistant_``) — it is **not persisted to disk**. Refreshing
-the browser or restarting the app clears the conversation.
+The assistant stores conversation history in Streamlit's ``st.session_state`` under
+``assistant_``-prefixed keys — it is **not persisted to disk**. Refreshing the browser or
+restarting the app clears the conversation, along with the tracked result set described in
+:doc:`multi_turn`.
 
 Troubleshooting
 ----------------
@@ -202,6 +216,7 @@ See Also
   :doc:`content_reasoning`, :doc:`portal_docs`, :doc:`domain_qa`, :doc:`workflow_guidance`,
   :doc:`literature_search` —
   How each capability is implemented
+- :doc:`multi_turn` — How follow-ups, result-set narrowing, and "the second one" work
 - :doc:`../developer_guide/architecture` — Assistant module reference, including how to add
   datasets to the graph and sync portal documentation updates ("Maintenance" section)
 - ``CLAUDE.md`` — Full assistant architecture and design constraints

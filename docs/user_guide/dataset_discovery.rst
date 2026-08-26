@@ -34,6 +34,13 @@ What It Does
 
 Given a query, ``search_datasets`` (``src/assistant/tools.py``):
 
+0. **Content-reasoning gate** — before anything else, ``_needs_content_reasoning()`` checks
+   whether the question is relational ("paired tomographic and segmented images") or depends on
+   free text only. If so the whole query is handed to ``reason_about_dataset_content`` and that
+   answer is returned. This runs *first* deliberately: such a question trips step 2's
+   ``looks_structured`` check on its literal sub-clause alone ("segmented"), and answering with a
+   bare ``segmented='yes'`` list would present a generic result as if "paired" had been verified.
+   See :doc:`content_reasoning`.
 1. **Expands the query** via ``expand_query()`` — an LLM call using ``src/prompts/query_expander.yaml``.
    This rewrites the query with precise domain terminology (e.g. "tight rock" →
    "tight/ultra-tight formation, micro-porosity, sub-micron pore throats, nano-Darcy
@@ -119,6 +126,7 @@ See Also
 - :doc:`structured_queries` — Numeric/exact-value/named-author dataset queries
 - :doc:`dataset_profiles` — Follow-up detail questions on a dataset you've already found
 - :doc:`content_reasoning` — Relationship/content questions no single field can answer
+- :doc:`multi_turn` — Narrowing these results in a follow-up ("of these, which are coal?")
 - :doc:`assistant` — Overview of how all capabilities fit together
 - :doc:`../developer_guide/architecture` — Maintenance: adding datasets to the graph
 - ``src/prompts/query_expander.yaml`` — The query expansion prompt

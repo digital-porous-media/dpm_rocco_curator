@@ -11,22 +11,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### General Assistant
 - **Conversational research assistant** (`src/assistant/`): a new Streamlit tab alongside the
-  Description Curator, powered by a LangGraph ReAct agent (`ConversationManager`)
-  - **Dataset Discovery**: semantic search over a Neo4j vector index (dataset- and
-    component-level embeddings) combined with structured Cypher filtering for exact/numeric
-    property queries (rock type, porosity, voxel size, named authors, etc.)
+  Description Curator, powered by a LangGraph ReAct agent (`ConversationManager`). Eight tools,
+  routed implicitly by the agent from their descriptions — there is no hardcoded intent
+  dispatcher — behind two cheap tools-unbound classifier gates.
+  - **Dataset Discovery**: hybrid retrieval over a Neo4j vector index — vector similarity plus
+    BM25 full-text combined by reciprocal rank fusion — with a component-level second pass over
+    per-sub-node embeddings, and structured Cypher filtering for exact/numeric property queries
+    (rock type, porosity, voxel size, named authors, etc.)
+  - **Dataset Profiles & Comparisons** (`get_dataset_profile`): deep dive on one already-identified
+    dataset — organizational structure along `PART_OF`/`INPUT_FOR` edges, file-format and
+    data-location reasoning, reuse suitability. Comparisons call it once per dataset and let the
+    outer agent synthesize, rather than adding a separate comparison tool.
+  - **Relationship & Content Reasoning** (`reason_about_dataset_content`): answers questions no
+    literal field can settle ("paired tomographic and segmented images", "the same sample at
+    different resolutions", "imaged on an Xradia scanner") by ranking precomputed per-dataset
+    fact sheets and running one cited reasoning pass. Two grounding guards run in code: a
+    candidate without a citation is dropped, and so is one whose title wasn't in the shortlist
+    actually sent.
+  - **Multi-turn refinement**: result-set tracking across turns — narrow a listing ("of these,
+    which are coal?"), refer back by position or name ("the second one"), or add a bare
+    superseding constraint ("how about any below 0.25?") without re-searching the catalog
+  - **Deterministic routing gates**: `_needs_content_reasoning()` and `_is_plain_property_query()`
+    run in code before a tool commits to a Cypher answer, because prompt-level routing proved
+    unreliable for distinctions this fine
   - **Domain Q&A & Workflow Guidance**: curated digital rock physics workflows
     (`data/domain_workflows.yaml`) and portal tutorials (`data/tutorials.yaml`), with a
     tiered knowledge-source policy (tools-only for dataset facts, tools-first-with-disclaimer
     for domain Q&A, pre-trained knowledge for foundational concepts)
   - **Literature Search**: Semantic Scholar API integration (titles, abstracts, DOIs,
-    citation counts)
+    citation counts), with request throttling and 429 backoff
   - **Portal Documentation Search**: PageIndex-style heading-tree retrieval over the DPM
     Portal's user documentation
-  - **Source-labeled responses**: every answer is tagged with its origin (`[graph match]`,
-    `[cypher match]`, `[semantic scholar]`, `[portal docs]`, etc.), rendered as colored badges
+  - **Source-labeled responses**: every answer is tagged with its origin (`[hybrid match]`,
+    `[cypher match]`, `[dataset profile]`, `[content reasoning]`, `[semantic scholar]`,
+    `[portal docs]`, etc.), rendered as colored badges
   - **Graceful degradation**: `USE_NEO4J=false` disables dataset graph search only; all other
     capabilities keep working without a Neo4j connection
+
+#### Graph and Index Build
+- `scripts/load_graph.py` — loads DRP metadata JSONs into Neo4j (`--mode rebuild` / `--mode upsert`)
+- `scripts/build_dataset_vector_index.py` — dataset, component, and fact-sheet embeddings plus
+  all five vector/fulltext indexes. Batches fact-sheet embedding by character budget and caps
+  per-item length, working around a total-characters-per-request limit on the embedding endpoint
+- `scripts/audit_schema.py` — coverage audit and generator for `docs/neo4j_schema.md`
+- `scripts/sync_dpm_docs.py` — pulls portal documentation updates from the `dpm_docs` repo
+- `Dataset.factSheet` / `factSheetText` — precomputed, edge-preserving per-dataset summaries;
+  the raw material for content reasoning. Derived from published metadata, which is never modified.
+
+### Fixed
+- **`INPUT_FOR` was documented and queried backwards.** The live graph has
+  `(DigitalDataset)-[:INPUT_FOR]->(Sample)` — child → parent, "was derived from" — not the
+  reverse. Every dataset profile's organizational-structure section was silently empty as a
+  result, since the wrong direction matches zero rows without erroring.
+- **`get_dataset_profile()`'s query was pathologically slow** — four chained `OPTIONAL MATCH`es
+  cross-multiplied before `collect()` (28s on the largest dataset, not completing at all once
+  `INPUT_FOR` joins were restored). Decomposed into one flat query per node/edge type: 0.8s.
+- **Context-window overflow** from returning embedding-carrying nodes wholesale; all such queries
+  now use map projections.
+- **Follow-up turns lost the content-reasoning result set** — `reason_about_dataset_content` was
+  missing from `_DATASET_LISTING_TOOLS`, leaving a stale result set from an earlier turn in place
+  looking current, so a refinement silently narrowed the wrong set.
+- **A refinement could dispatch with an empty `restrict_to_titles`**, which `cypher_qa` treats as
+  no restriction at all — running the query over the whole catalog while logging a restricted search.
+- **`[content reasoning]` rendered as literal bracketed text** instead of a colored badge.
+- **`load_graph.py` created a dead vector index** (`datasetDescription`) on a property
+  (`descriptionEmbedding`) that nothing has ever written; `audit_schema.py` audited the same
+  phantom property, propagating it into `docs/neo4j_schema.md`. Index creation now belongs solely
+  to `build_dataset_vector_index.py`, which knows the embedding dimension.
+- **`docs/neo4j_schema.md`'s degradation tiers were hardcoded** and had drifted — still claiming
+  all imaging metadata was 0% populated after several fields gained (sparse) data. Now computed
+  from the same coverage numbers as the rest of the document.
 
 #### Unified LLM/Agent Stack
 - `RoccoClient` now inherits from both `LLMClient` and `BaseChatModel`, giving the curator and
@@ -37,12 +91,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pip install -e ".[graph]"`)
 
 ### Documentation
-- New `docs/user_guide/assistant.rst` — General Assistant user guide (capabilities, source
+- New `docs/user_guide/assistant.rst` — General Assistant overview (request lifecycle, source
   badge reference, knowledge-source policy)
-- New General Assistant sections in `README.md`, `docs/index.rst`,
-  `docs/developer_guide/architecture.rst`, `docs/developer_guide/api_reference.rst`,
-  `docs/user_guide/quickstart.rst`, `docs/user_guide/installation.rst`, and
+- New per-capability pages: `dataset_discovery`, `structured_queries`, `dataset_profiles`,
+  `content_reasoning`, `multi_turn`, `portal_docs`, `domain_qa`, `workflow_guidance`,
+  `literature_search`
+- New `docs/user_guide/quickstart_assistant.rst`; the existing quickstart was renamed to
+  `quickstart_curator.rst`
+- `docs/developer_guide/prompts.rst` extended to cover all six assistant prompts, plus the
+  prompts that live as code constants rather than YAML
+- `docs/developer_guide/onboarding.md` rewritten and added to the toctree
+- New General Assistant sections in `README.md` (including an assistant architecture diagram),
+  `docs/index.rst`, `docs/developer_guide/architecture.rst`,
+  `docs/developer_guide/api_reference.rst`, `docs/user_guide/installation.rst`, and
   `docs/user_guide/configuration.rst`
+- New `DEPLOYMENT.md` — TACC VM deployment and maintenance runbook
 
 ## [1.0.0] - 2026-05-13
 

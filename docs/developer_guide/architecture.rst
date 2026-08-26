@@ -674,13 +674,13 @@ each tool's own internals.
        ];
 
        REACT [
-           label="ReAct agent\ncreate_react_agent()\nSYSTEM_PROMPT + all 7 tools bound\n(model picks tool(s) from descriptions)",
+           label="ReAct agent\ncreate_react_agent()\nSYSTEM_PROMPT + all 8 tools bound\n(model picks tool(s) from descriptions)",
            fillcolor="#fff3e0", width=3.4, height=1.3
        ];
 
        TOOLS [
-           label="search_datasets · get_dataset_details · get_dataset_profile\nsearch_portal_docs\nget_educational_context · get_workflow_guidance\nsearch_literature",
-           fillcolor="#e1f5fe", width=3.8, height=1.5
+           label="search_datasets · get_dataset_details\nget_dataset_profile · reason_about_dataset_content\nsearch_portal_docs\nget_educational_context · get_workflow_guidance\nsearch_literature",
+           fillcolor="#e1f5fe", width=3.8, height=1.7
        ];
 
        ASSEMBLE [
@@ -694,7 +694,7 @@ each tool's own internals.
        ];
 
        SELFCONTAINED [
-           label="Self-contained passthrough\nget_workflow_guidance / get_educational_context\nsearch_portal_docs / get_dataset_profile — already cited, not re-synthesized",
+           label="Self-contained passthrough\nget_workflow_guidance / get_educational_context / search_portal_docs\nget_dataset_profile / reason_about_dataset_content\n— already cited, not re-synthesized",
            fillcolor="#d1c4e9", width=3.6, height=1.3
        ];
 
@@ -736,12 +736,22 @@ node as cross-intent queries: the agent calls ``get_dataset_profile`` once per d
 since that's more than one tool call in the turn, the single-call short-circuit
 (VERBATIM/SELFCONTAINED) never fires — the outer agent's own synthesis combines both profiles.
 
+**Cross-Turn State**
+
+The lifecycle above describes one turn. Across turns, the ``ConversationManager`` instance also
+remembers the datasets the last listing returned, the filter chain built up so far, and the last
+dataset profiled — which is what makes "of these, which are coal?", "the second one", and "how
+about any below 0.25?" resolve against real prior results instead of the model's recollection.
+Every one of ``chat()``'s return paths must funnel through ``_track_dataset_listing()`` or that
+resolution starts working or failing depending on which path a turn happened to take. Full
+mechanism in :doc:`../user_guide/multi_turn`.
+
 **Core Modules**
 
 For what each tool actually does internally (prompts, matching logic, data schemas), see the
 capability pages: :doc:`../user_guide/dataset_discovery`, :doc:`../user_guide/structured_queries`,
 :doc:`../user_guide/dataset_profiles`, :doc:`../user_guide/content_reasoning`,
-:doc:`../user_guide/portal_docs`, :doc:`../user_guide/domain_qa`,
+:doc:`../user_guide/multi_turn`, :doc:`../user_guide/portal_docs`, :doc:`../user_guide/domain_qa`,
 :doc:`../user_guide/workflow_guidance`, :doc:`../user_guide/literature_search`. The dropdowns
 below are the module-level (class/file) reference.
 
@@ -754,14 +764,24 @@ below are the module-level (class/file) reference.
      the tools-unbound gate calls in the Request Lifecycle diagram above
    - ``_build_verbatim_response()`` / ``_run_manual_dispatch()`` — response-assembly and
      400-error manual-dispatch logic
+   - ``_track_dataset_listing()`` / ``_resolve_reference()`` / ``_with_result_set_restriction()``
+     / ``_detect_comparison_references()`` — cross-turn result-set state: what "these" and "the
+     second one" refer to, and when a follow-up is narrowed to the previous result set instead of
+     re-searching the catalog. See :doc:`../user_guide/multi_turn`. Note that
+     ``_DATASET_LISTING_TOOLS`` must include **every** tool that lists datasets — an unregistered
+     one leaves the prior turn's results in place looking current
    - ``SYSTEM_PROMPT`` — implements the tiered knowledge-source policy (tools-only for dataset
      facts, tools-first-with-disclaimer for domain Q&A/workflows, pre-trained knowledge allowed
-     for foundational concepts) and the tool-routing rules the ReAct agent follows
+     for foundational concepts) and the tool-routing rules the ReAct agent follows. Routing
+     changes go here, **not** in ``src/prompts/assistant.yaml`` (see :doc:`prompts`)
 
 .. dropdown:: src/assistant/tools.py — Tool Interface
    :icon: file-directory-fill
 
-   - ``search_datasets`` / ``get_dataset_details`` — dataset discovery (semantic + structured)
+   - ``search_datasets`` / ``get_dataset_details`` — dataset discovery (semantic + structured).
+     ``get_dataset_details`` also takes an internal ``restrict_to_titles`` argument, injected by
+     the conversation manager to bound a refinement to the previously listed set
+     (:doc:`../user_guide/multi_turn`)
    - ``get_dataset_profile`` — single-dataset deep-dive profile, sub-node/``INPUT_FOR`` pipeline
      structure, file-format/data-location and reuse-suitability reasoning (backed by
      ``src/prompts/dataset_profile.yaml``); called once per dataset for comparisons
@@ -838,7 +858,12 @@ below are the module-level (class/file) reference.
      ``rocco_ui.py``
    - Renders colored source-label badges, linkifies DOIs/URLs, and normalizes LaTeX delimiters
      for KaTeX
-   - Session state keys prefixed ``assistant_`` to avoid collisions with the curator tab
+   - ``_SOURCE_LABEL_RE`` / ``_LABEL_COLORS`` must list every label the tools emit. A missing one
+     doesn't fail loudly — it renders as literal ``[bracketed text]`` in the chat
+   - Session state keys are prefixed ``assistant_``. The curator's keys in ``rocco_ui.py`` are
+     currently **unprefixed** (``description_text``, ``evaluation``, ``vector_store_manager``, …),
+     so this prefix is the only thing preventing a collision between the two tabs — don't add an
+     unprefixed key here
 
 **Configuration**
 
@@ -869,7 +894,10 @@ Maintenance
          # Full rebuild — clears and reloads everything. Use after a schema change.
          python scripts/load_graph.py --mode rebuild
 
-      ``load_graph.py`` does **not** generate embeddings or LLM keywords — see step 3.
+      ``load_graph.py`` loads nodes and relationships only. It does **not** generate embeddings,
+      fact sheets, LLM keywords, or any vector/fulltext index — all of that is step 3, which owns
+      index creation because a vector index needs the embedding dimension, and that isn't known
+      until the embedding endpoint has actually been called.
    3. **Re-embed**:
 
       .. code-block:: bash

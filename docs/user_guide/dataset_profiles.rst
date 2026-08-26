@@ -134,6 +134,7 @@ See Also
 - :doc:`dataset_discovery` — Open-ended/suitability dataset search across many candidates
 - :doc:`structured_queries` — Exact/numeric property queries across the catalog
 - :doc:`content_reasoning` — Relationship/content questions no single field can answer
+- :doc:`multi_turn` — How "this dataset" / "the second one" is resolved before this tool runs
 - :doc:`assistant` — Overview of how all capabilities fit together, including response assembly
 - :doc:`../neo4j_schema` — Full graph schema reference and coverage stats
 - :doc:`../developer_guide/architecture` — Request lifecycle and tool registry

@@ -394,35 +394,54 @@ Rocco is being extended with a General Assistant tab — a unified conversationa
 ```
 src/assistant/
 ├── __init__.py
-├── tools.py                  # all callable tools — shared interface both interns code to
-├── conversation_manager.py   # LangGraph ReAct agent (intent → dispatch → synthesize)
+├── tools.py                  # all 8 callable tools + their deterministic routing gates
+├── conversation_manager.py   # orchestrator: gates → ReAct agent → response assembly;
+│                             #   also cross-turn result-set state
 ├── assistant.py              # one-line re-export of ConversationManager (backwards compat)
-├── graph_store.py            # Neo4j vector index + structured Cypher search
-├── literature_search.py      # Semantic Scholar API wrapper (Bernie pre-builds)
+├── graph_store.py            # Neo4j: hybrid/component/fact-sheet search, Cypher QA, profiles
+├── literature_search.py      # Semantic Scholar API wrapper
+├── portal_docs_retrieval.py  # PageIndex-style retrieval over dpm_docs heading tree
+├── portal_docs_tree.py       # markdown → heading tree (parsed at import time)
 ├── llm.py                    # RoccoClient + OpenAIEmbeddings singletons (unified with curator)
-└── assistant_ui.py           # Streamlit UI — added as new tab in rocco_ui.py Week 6
+└── assistant_ui.py           # Streamlit UI — the "General Assistant" page in rocco_ui.py
 
-src/prompts/                  # new prompts alongside existing ones
-├── assistant.yaml            # intent classifier (semantic_search / metadata_filter /
-│                             #   domain_qa / workflow_guidance / query_expansion / literature_search)
+src/prompts/                  # assistant prompts alongside the three curator ones
+├── assistant.yaml            # 6-intent classifier — NOT called at runtime; offline/tests only
 ├── query_expander.yaml       # user query → expanded_query + inferred_filters + rationale
-├── educational.yaml          # domain Q&A + workflow synthesis
-└── corpus_reasoning.yaml     # relationship/content reasoning over ranked dataset fact sheets
+├── educational.yaml          # domain Q&A + workflow synthesis (shared by both tools)
+├── dataset_profile.yaml      # single-dataset deep-dive profile synthesis
+├── corpus_reasoning.yaml     # relationship/content reasoning over ranked fact sheets
+│                             #   (+ batch_screen_* pair for the map-reduce fallback)
+└── portal_docs.yaml          # portal how-to / data-model answer synthesis
 
 data/
 ├── tutorials.yaml                 # 20+ user goals → verified portal tutorial URLs
-├── domain_workflows.yaml          # 15 DRP workflows (Bernie authors; do not edit without domain review)
+├── domain_workflows.yaml          # 15 DRP workflows (do not edit without domain review)
+├── portal_docs/docs/              # synced copy of the dpm_docs repo
 └── metadata/                      # scraped DRP metadata JSONs — GITIGNORED
 
 scripts/
 ├── scrape_metadata.py             # downloads DRP metadata JSONs from TACC Corral
-└── build_dataset_vector_index.py  # embeds dataset nodes → Neo4j vector index
+├── load_graph.py                  # metadata JSONs → Neo4j nodes + relationships ONLY
+├── build_dataset_vector_index.py  # embeddings, fact sheets, and ALL FIVE indexes
+├── reembed_single_dataset.py      # patch one dataset after --mode upsert
+├── audit_schema.py                # coverage audit; GENERATES docs/neo4j_schema.md
+├── sync_dpm_docs.py               # pull portal documentation updates
+├── check_embedding_health.py      # one-call probe of the embedding endpoint
+└── check_neo4j_vector_support.py  # verifies the server supports vector indexes
 
 tests/assistant/
-├── conftest.py                    # fixtures: mock Neo4j driver, small FAISS index
-├── test_graph_store.py
-└── test_search_integration.txt
+├── conftest.py                    # fixtures: mock Neo4j driver, mock GraphStore
+├── test_graph_store.py            test_tools.py
+├── test_conversation_manager.py   test_fact_sheet_builder.py
+├── test_portal_docs_retrieval.py  test_literature_search.py
+├── test_search_integration.py     test_assistant_ui.py
+├── test_prompts.py                test_intent_classifier.py
+└── test_search_integration.txt    # notes, not a test module
 ```
+
+Note: `docs/neo4j_schema.md` is **generated**. Fix `scripts/audit_schema.py` and regenerate —
+a hand-edit is lost on the next run.
 
 ### Search Architecture
 
@@ -477,6 +496,36 @@ to author. The accepted trade-off is recall: a hand-written Cypher condition for
 relationship would have zero recall risk for that one case, and hybrid ranking narrows but does
 not close that gap.
 
+### Cross-Turn Result-Set State
+
+`ConversationManager` remembers, per session: `_last_dataset_mentions` (what "these" / "the
+second one" refer to), `_cumulative_filter_text` (the filter chain so far), and
+`_last_profiled_dataset` (what a bare "that dataset" resolves to). Documented for users in
+`docs/user_guide/multi_turn.rst`.
+
+Three invariants that are easy to break:
+
+1. **Every tool that lists datasets must be in `_DATASET_LISTING_TOOLS`.** Membership is about
+   the *shape* of the output, not the relay path — content reasoning is self-contained rather
+   than verbatim, but it renders the same `- **Title** (DOI: ...)` bullets, so the same parser
+   handles it. An unregistered listing tool doesn't just fail to record its own results; it
+   leaves the *previous* set in place looking current, and a later "of these" refines a set the
+   user has moved on from with nothing in the answer revealing the substitution.
+2. **Every one of `chat()`'s return paths must call `_track_dataset_listing()`** — the
+   single-tool short-circuit, the refinement and comparison dispatches, and the normal
+   end-of-stream path. Miss one and reference resolution works or fails depending on which path
+   a turn happened to take.
+3. **`restrict_to_titles=[]` means *no restriction*** to `cypher_qa`, not "restrict to nothing".
+   Require a non-empty title list *and* a filter chain before dispatching a restricted search,
+   or the query silently runs over the whole catalog while the log says otherwise.
+
+Two narrowing mechanisms, deliberately distinct: `_REFINEMENT_RE` phrasings ("of these") AND the
+new constraint onto the chain; `_ELLIPTICAL_REFINEMENT_RE` phrasings ("how about any below
+0.25?") do **not**, because the new constraint *supersedes* an earlier one on the same property
+and ANDing produces a contradiction. The primary signal is phrasing-independent
+(`_continues_filter_chain`), for the usual reason — recognising refinement from user phrasing was
+another growing-pattern-library problem.
+
 ### Literature Strategy
 
 - **Semantic Scholar** — free API, one `SEMANTIC_SCHOLAR_API_KEY` in server `.env` (no per-user keys); provides titles, abstracts, DOIs, citation counts
@@ -486,7 +535,11 @@ not close that gap.
 
 - `graph_store.py` must accept `filters: dict` (not hardcoded field names) — required for future Croissant file-level metadata extension
 - `USE_NEO4J=false` env flag must allow the assistant to degrade gracefully (Semantic Scholar still works)
-- Session state for the new tab must be namespaced (Bernie adds `curator_` prefix to all existing keys in Week 6)
+- Session state for the assistant tab is namespaced with an `assistant_` prefix. The curator's
+  keys in `rocco_ui.py` were never prefixed (`description_text`, `evaluation`,
+  `vector_store_manager`, …) — the planned `curator_` pass didn't happen and isn't needed, but it
+  does mean the `assistant_` prefix is the *only* thing preventing a collision. Never add an
+  unprefixed session key to the assistant tab.
 - Never assert a dataset property that isn't present in the graph — honest gap responses required
 - **Never modify dataset metadata pulled from the DRP.** All `title`, `description`, `doi`, `authors`, and sub-node properties are published, public data. Do not edit these values in Neo4j or in any data loading/indexing script. Improvements to retrieval must come from the embedding/search layer, not from altering source data.
 
@@ -607,9 +660,15 @@ python scripts/build_dataset_vector_index.py
 # Rebuild only the fact sheets + their indexes (skips the two embedding passes)
 python scripts/build_dataset_vector_index.py --only fact-sheets
 
-# Rebuild publication FAISS
-python scripts/build_publication_index.py
+# Recover fact sheets that failed on a transient endpoint error
+python scripts/build_dataset_vector_index.py --only fact-sheets --retry-missing
 ```
+
+`load_graph.py` does **not** create indexes. It used to create a `datasetDescription` vector
+index on a `descriptionEmbedding` property that nothing has ever written — a dead index plus a
+phantom property that `audit_schema.py` then dutifully audited into `docs/neo4j_schema.md`. All
+index creation belongs to `build_dataset_vector_index.py`, which is the only place that knows
+the embedding dimension.
 
 Re-running is safe — all indexes use `CREATE ... IF NOT EXISTS` and embeddings/fact sheets are
 upserted with `SET`.
@@ -687,8 +746,7 @@ pip install -e ".[graph]"  # Includes neo4j, langchain-neo4j, langchain-openai
 ```
 
 **Conda environment:** `conda activate rocco` on this machine. (`CONTRIBUTING.md` and
-`docs/developer_guide/onboarding.md` still tell new contributors to create the env as
-`rocco_ai` — the local env is named `rocco`, so prefer that when running anything here.)
+`docs/developer_guide/onboarding.md` now say `rocco` too — they previously said `rocco_ai`.)
 
 ### APOC Note
 
@@ -697,6 +755,13 @@ APOC is **not required**. The Cypher generation prompt in `graph_store.py` expli
 `langchain-neo4j` provides vectorstore abstractions for semantic search but does not introduce external dependencies — all Cypher queries remain within the Neo4j driver and are portable.
 
 ### Week-by-Week Plan (Intern Sprint)
+
+> **Historical (May–Aug 2026).** Kept as a record of how the sprint was planned; it is not a
+> current work plan and several rows describe work that was later dropped or reassigned. In
+> particular `publication_corpus.py` / `build_publication_index.py` / `docs/search_layer.md`
+> were **never built** — issues #13, #27 and #32 were closed when the local PDF corpus was
+> dropped over copyright. For what is actually outstanding, see `Tasks.md` §"Remaining Work
+> Before Project Conclusion".
 
 > **Note (May 2026):** Revised for one intern with realistic ramp-up. Week 1 is program orientation (no project work). Bernie is away Weeks 2–3; intern works self-directed. Weeks 3 and 5 are short (4-day). Intern has light capacity in Weeks 8–9 alongside poster/paper.
 
@@ -729,10 +794,10 @@ Actual remaining work:
 - **#42** (Week 6–7) — Run the full 20-query acceptance suite (already written as automated tests
   in `tests/assistant/test_search_integration.py`) through the tabbed `rocco_ui.py`; demo to BCC,
   MP, ME. This is an execution/verification task, not authoring.
-- **Fix hanging test suite** — `pytest tests/assistant/test_graph_store.py` passes in isolation
-  (22/22), but `pytest tests/assistant/` (full directory) hangs indefinitely, likely on an
-  unmocked live network call (Semantic Scholar or Neo4j) somewhere in `test_search_integration.py`
-  or `test_tools.py`. Needs to be fixed before #43 can rely on a clean `pytest tests/ -v` run.
+- ~~**Fix hanging test suite**~~ — **resolved.** The cause was live network tests running
+  unintentionally; they now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`.
+  `pytest tests/ -v` is clean and reproducible: **380 passed, 51 deselected, ~21s** (verified
+  Aug 2026). Run the excluded tier explicitly with `pytest tests/ -m live -v`.
 - **#43** (Week 7) — Final index rebuild + evaluation + `docs/assistant.md`
 - **#45** (Week 7) — README, handoff doc, tag `v2.0.0`, demo video
 - **#46 / #48** (Week 8) — Poster write-up (Intern-A) + review (Bernie)
@@ -813,15 +878,24 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 - Added `scripts/audit_schema.py` — scans `data/metadata/*.json` to compute node counts,
   % non-null coverage, and distinct enum values for all 7 node labels. Run offline (no Neo4j
   required) or with `--neo4j` for live coverage verification.
-- Added `--verify` flag: cross-checks a loaded Neo4j graph for completeness (176 datasets),
+- Added `--verify` flag: cross-checks a loaded Neo4j graph for completeness (176 datasets at the
+  time; 184 as of August 2026 — the expected count is derived from `--folder`, not hardcoded),
   property correctness (title, doi, description, authors, publicationDate), sub-node counts,
   and relationship counts.
 - Generated `docs/neo4j_schema.md` — intern Cypher reference doc with full schema, coverage
   percentages, enum value lists, vector index info, starter Cypher queries, and a
   **Graceful Degradation Tiers** guide (always attempt queries; tier governs response messaging
   when results are empty).
-- Key finding: all imaging metadata fields (`imagingCenter`, `imagingEquipmentAndModel`, etc.)
-  are 0% in current data — assistant must not assume these exist.
+- Key finding: imaging metadata fields (`imagingCenter`, `imagingEquipmentAndModel`,
+  `imageFormat`, `dimensionality`, …) are far too sparse to filter on — measured at 1–11%
+  coverage as of the August 2026 regeneration (they read 0% in the original May run). A tiny
+  non-zero coverage is the more dangerous case: such a filter returns a few rows while dropping
+  the rest of the catalog, so it looks like it worked. The assistant must not assume these exist.
+  Instrument/modality questions belong to `reason_about_dataset_content`, which reads the
+  free-text descriptions where scanner names actually live.
+- The degradation-tier tables in `docs/neo4j_schema.md` are **computed** from the coverage
+  numbers, not hand-maintained — they used to be hardcoded and drifted into asserting 0% long
+  after the data changed.
 - `Tasks.md` updated: `load_graph.py` replaces the old notebook for data loading;
   `audit_schema.py --verify` is now the verification step.
 

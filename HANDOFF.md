@@ -14,11 +14,11 @@ first one"), organizational structure (`Sample -> DigitalDataset -> AnalysisData
 file-type/"how do I read this in Python" reasoning, reuse-suitability reasoning with
 chain-of-thought, and multi-dataset comparison.
 
-**Status: implemented, plus four production bugs found live-tested and fixed across two
-follow-up sessions** (the context-overflow bug below, then three more found from the user's own
-live multi-turn transcripts — see "Follow-up session" below). Everything below is real, done
-work — not a plan. Branch: `feature/dataset-details`. Nothing is committed yet (see "Next
-Steps").
+**Status: implemented, live-verified, and MERGED.** Everything below is real, done work — not a
+plan. Originally developed on `feature/dataset-details`; the work landed in commits `6efdf89`
+through `ae1b95c`, and the follow-on documentation audit is a separate commit on top. The
+"Next Steps" section at the bottom still lists genuinely open verification items — read it as a
+to-do list, not as a description of uncommitted work.
 
 ---
 

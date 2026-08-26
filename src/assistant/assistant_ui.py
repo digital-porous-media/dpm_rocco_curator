@@ -15,21 +15,29 @@ _DOI_RE = re.compile(r'DOI:\s*(10\.[^\s)]+)')
 
 _BARE_URL_RE = re.compile(r'(?<!\]\()(https?://\S+?)(?=[\s)]|$)')
 
+# Keep in sync with the labels the tools actually emit (grep for "source_label" and the
+# literal "[... match]" strings in tools.py / graph_store.py / literature_search.py /
+# portal_docs_retrieval.py). A label missing from here doesn't fail loudly — it just renders
+# as literal "[bracketed text]" in the chat, which is how `content reasoning` went unbadged.
 _SOURCE_LABEL_RE = re.compile(
-    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match|portal docs|dataset profile)\]',
+    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar'
+    r'|cypher match|portal docs|dataset profile|content reasoning)\]',
     re.IGNORECASE,
 )
 
 _LABEL_COLORS = {
-    "graph match":      "#1f77b4",
-    "hybrid match":     "#1f77b4",
-    "semantic match":   "#2ca02c",
-    "component match":  "#17becf",
-    "paper match":      "#9467bd",
-    "semantic scholar": "#9467bd",
-    "cypher match":     "#ff7f0e",
-    "portal docs":      "#d62728",
-    "dataset profile":  "#8c564b",
+    "graph match":       "#1f77b4",
+    "hybrid match":      "#1f77b4",
+    "semantic match":    "#2ca02c",
+    "component match":   "#17becf",
+    "paper match":       "#9467bd",
+    "semantic scholar":  "#9467bd",
+    "cypher match":      "#ff7f0e",
+    "portal docs":       "#d62728",
+    "dataset profile":   "#8c564b",
+    # Deliberately distinct from the grounded-match colors: this label marks a reasoned,
+    # explicitly-unverified candidate, not a database hit.
+    "content reasoning": "#7f7f7f",
 }
 
 

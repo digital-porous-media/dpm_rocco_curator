@@ -59,7 +59,7 @@ testing changes, then syncs a known-good state to the shared deployment path.
    sudo systemctl restart neo4j
    ```
 
-3. **Tail logs** to confirm the new version is actually serving:
+5. **Tail logs** to confirm the new version is actually serving:
 
    ```bash
    journalctl -u dpm-rocco -f
@@ -121,7 +121,7 @@ it doesn't cache dataset data in the running process.
 [dpm_docs](https://github.com/digital-porous-media/dpm_docs) repo — not a live fetch per query.
 
 ```bash
-cd /opt/dpm_rocco
+cd /opt/dpm-rocco
 source .venv/bin/activate
 
 # Check whether the local copy is behind dpm_docs' current HEAD, without fetching
@@ -168,9 +168,9 @@ After=network.target neo4j.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/dpm_rocco
+WorkingDirectory=/opt/dpm-rocco
 EnvironmentFile=/etc/dpm_rocco/app.env
-ExecStart=/opt/dpm_rocco/.venv/bin/streamlit run rocco_ui.py --server.port 8501 --server.address 0.0.0.0
+ExecStart=/opt/dpm-rocco/.venv/bin/streamlit run rocco_ui.py --server.port 8501 --server.address 0.0.0.0
 Restart=on-failure
 User=dpm-rocco
 
