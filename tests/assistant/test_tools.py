@@ -558,6 +558,27 @@ class TestNeedsContentReasoning:
         from src.assistant.tools import _needs_content_reasoning
         assert _needs_content_reasoning(question) is False
 
+    @pytest.mark.parametrize("noun", [
+        "volumes", "stacks", "tomograms", "reconstructions", "segmentations", "files", "data",
+    ])
+    def test_both_x_and_y_fires_regardless_of_the_artifact_noun(self, noun):
+        """Live gap: "both grayscale and segmented VOLUMES" did not fire while the
+        near-identical "...IMAGES" did, so an equally relational question fell through to
+        Cypher and produced a plausible-looking partial answer with nothing signalling that
+        the "both" half was never checked. The head noun must not decide this."""
+        from src.assistant.tools import _needs_content_reasoning
+        assert _needs_content_reasoning(
+            f"List every dataset that has both grayscale and segmented {noun}"
+        ) is True
+
+    def test_the_noun_list_still_brakes_a_plain_two_item_conjunction(self):
+        """The noun list is the only thing stopping "both X and Y" from matching any
+        conjunction at all — widening it must not cost that brake."""
+        from src.assistant.tools import _needs_content_reasoning
+        assert _needs_content_reasoning(
+            "datasets with a voxel size below 5 microns and porosity above 0.2"
+        ) is False
+
 
 class TestReasonAboutDatasetContent:
     def _run(self, question, llm_payload, store=None):

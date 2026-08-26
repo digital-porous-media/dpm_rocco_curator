@@ -278,7 +278,22 @@ def _non_empty(text: str | None, fallback: str = _HONEST_TOOL_FAILURE_MSG) -> st
 # entries — used by _extract_dataset_mentions/_resolve_reference below to let a later
 # ordinal/name-only follow-up ("the first one", "the Gildehauser sandstone sample") resolve
 # deterministically instead of relying solely on the LLM re-deriving it from raw chat history.
-_DATASET_LISTING_TOOLS = _VERBATIM_TOOLS
+#
+# reason_about_dataset_content belongs here even though it is NOT a verbatim tool (it is
+# self-contained — see _SELF_CONTAINED_TOOLS): what makes a tool trackable is the SHAPE of
+# its output, not which relay path it takes. Its answer renders the same
+# "- **Title** (DOI: ...)" bullets as _format_dataset_rows, from graph records rather than
+# retyped by the model, so _extract_dataset_mentions parses it unchanged.
+#
+# Leaving it out was live-observed producing a wrong answer, not merely a missed one: a
+# content-reasoning turn ("datasets with both raw and segmented images", 12 results) went
+# completely untracked, so the very next turn's "What are the lithologies of these?" matched
+# _REFINEMENT_RE and refined the STALE listing still held from several turns earlier
+# ("datasets suitable for training a segmentation model"). "These" silently resolved to a
+# result set the user had already moved on from, with nothing in the answer to reveal the
+# substitution. An untracked dataset-listing turn doesn't just fail to update this state —
+# it leaves the previous turn's state in place looking current.
+_DATASET_LISTING_TOOLS = _VERBATIM_TOOLS | {"reason_about_dataset_content"}
 
 _DATASET_MENTION_PATTERNS = [
     # search_datasets/hybrid_search: "[label] Title — matched via ... (DOI: xxx)"
@@ -1454,6 +1469,20 @@ class ConversationManager:
         mentions = _extract_dataset_mentions(tool_output)
         if mentions:
             self._last_dataset_mentions = mentions
+        elif refinement_text is None:
+            # A FRESH listing turn that named no datasets — a "no results" answer, or an
+            # output shape _extract_dataset_mentions can't parse. Holding on to the previous
+            # turn's mentions here would pair them with THIS turn's brand-new filter text,
+            # so a later "of these" would narrow a set unrelated to the chain it is being
+            # ANDed onto — the same wrong-set substitution described at
+            # _DATASET_LISTING_TOOLS, reached a different way. Clear it: chat()'s refinement
+            # dispatch requires a non-empty listing, so the follow-up falls through to
+            # normal routing instead of silently refining the wrong set.
+            #
+            # A refinement turn (refinement_text is not None) is the one case where holding
+            # on IS right: "of these, which are coal?" coming back empty doesn't change what
+            # "these" refers to, so the user can still narrow the same set a different way.
+            self._last_dataset_mentions = []
         self._cumulative_filter_text = refinement_text if refinement_text is not None else base_text
         logger.warning(
             "_track_dataset_listing(tool=%s): %d mentions parsed; _cumulative_filter_text now %r",
@@ -1580,9 +1609,14 @@ class ConversationManager:
         # restrict_to_titles is passed alongside it — a deterministic, code-level
         # narrowing to the previous turn's actual listed titles that the regenerated
         # Cypher's own (possibly drifting) filtering can't bypass.
-        if self._cumulative_filter_text and _REFINEMENT_RE.search(user_input):
+        #
+        # Both pieces of state are required, not just the filter text: restrict_to_titles is
+        # the half that actually guarantees the narrowing, and cypher_qa treats an EMPTY list
+        # as "no restriction at all" — so dispatching without titles would run the compound
+        # question over the whole catalog while the log claimed a restricted search.
+        restrict_to_titles = [m["title"] for m in self._last_dataset_mentions if m.get("title")]
+        if self._cumulative_filter_text and restrict_to_titles and _REFINEMENT_RE.search(user_input):
             compound_question = f"{self._cumulative_filter_text} AND {user_input}"
-            restrict_to_titles = [m["title"] for m in self._last_dataset_mentions if m.get("title")]
             logger.warning(
                 "Refinement dispatch: get_dataset_details(question=%r, restrict_to_titles=%r)",
                 compound_question, restrict_to_titles,
@@ -1601,14 +1635,17 @@ class ConversationManager:
                 )
                 return dispatched
         elif _REFINEMENT_RE.search(user_input):
-            # Looked like a refinement, but there's no active filter chain to refine
-            # (self._cumulative_filter_text is still None/empty) — e.g. the very first
-            # message of a session, or ConversationManager instance/session state was
-            # reset between turns. Logged so a live report of "refinement isn't working"
-            # can be distinguished from the dispatch path simply never being reached.
+            # Looked like a refinement, but one of the two required pieces of state is
+            # missing — no active filter chain, or no listed datasets to narrow (the very
+            # first message of a session, a previous turn that returned nothing, or
+            # ConversationManager instance/session state reset between turns). Both are
+            # logged individually so a live report of "refinement isn't working" can be
+            # traced to which half was absent, rather than only telling us the dispatch
+            # path wasn't reached.
             logger.warning(
-                "Refinement phrase detected but no active filter chain (_cumulative_filter_text "
-                "is empty) — falling through to normal routing for: %r", user_input,
+                "Refinement phrase detected but not dispatched (filter_chain=%r, "
+                "listed_datasets=%d) — falling through to normal routing for: %r",
+                self._cumulative_filter_text, len(restrict_to_titles), user_input,
             )
 
         # Tool-need gate: a separate, tools-unbound call that decides whether this turn

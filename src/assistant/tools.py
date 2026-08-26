@@ -350,6 +350,25 @@ def _is_plain_property_query(query: str) -> bool:
 # same way" is relational). search_datasets already sets the precedent with
 # _is_plain_property_query — same idea, applied to the other half of the split.
 
+# The nouns a user can put after "both X and Y" when they mean two co-existing forms of the
+# same imaging artifact ("both raw and segmented VOLUMES"). This is the head noun of the
+# "both ... and ..." pattern below, and it is the pattern's ONLY brake: without a fixed noun
+# list, "both X and Y" would match any two-item conjunction at all.
+#
+# Kept as a named list because it is the part that needs extending as real phrasings turn up.
+# Live gap that prompted it: "both grayscale and segmented volumes" did not fire the gate
+# while the near-identical "both raw and segmented images" did, so an equally relational
+# question silently fell through to Cypher and got the partial-answer overclaim this gate
+# exists to prevent. The failure was invisible — a plausible-looking list, no indication the
+# "both" half was never checked.
+#
+# Deliberately over-inclusive: a false positive costs one slower, cited content-reasoning
+# answer, while a false negative is a wrong answer presented as a verified one.
+_IMAGE_ARTIFACT_NOUNS = (
+    r"images?|scans?|versions?|forms?|datasets?|volumes?|stacks?|tomograms?|"
+    r"reconstructions?|segmentations?|files?|data"
+)
+
 _RELATIONAL_PATTERNS = (
     r"\bpair(?:ed|s|ing)?\b",
     r"\bcorrespond(?:s|ing|ence)?\b",
@@ -366,7 +385,7 @@ _RELATIONAL_PATTERNS = (
     r"(?:resolutions?|scales?|voxel\s+sizes?|magnifications?)\b",
     r"\bimaged\s+(?:the\s+same|at\s+(?:different|multiple|two))\b",
     r"\bboth\s+\w+(?:\s+\w+)?\s+and\s+\w+(?:\s+\w+)?\s+"
-    r"(?:images?|scans?|versions?|forms?|datasets?)\b",
+    rf"(?:{_IMAGE_ARTIFACT_NOUNS})\b",
 )
 
 _RELATIONAL_RE = re.compile("|".join(_RELATIONAL_PATTERNS), re.IGNORECASE)

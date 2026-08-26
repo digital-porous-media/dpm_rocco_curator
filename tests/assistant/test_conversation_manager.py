@@ -801,3 +801,130 @@ class TestOffDomainSteerBack:
              patch("src.assistant.conversation_manager._classify_needs_tool", return_value=True):
             manager.chat("How do I upload a dataset?")
         manager._agent.stream.assert_called_once()
+
+
+class TestContentReasoningIsTrackedAsADatasetListing:
+    """Reported live: "are there any datasets where there are both raw and segmented
+    images?" answered correctly via reason_about_dataset_content (12 datasets), then
+    "What are the lithologies of these?" answered about a completely different set.
+
+    Root cause: reason_about_dataset_content was absent from _DATASET_LISTING_TOOLS, so the
+    turn was invisible to _track_dataset_listing. That didn't merely fail to record the 12 —
+    it left the PREVIOUS chain ("datasets suitable for training a segmentation model", 10
+    titles) sitting there looking current, so the follow-up's _REFINEMENT_RE match refined a
+    result set the user had moved on from, with nothing in the answer revealing it."""
+
+    _CONTENT_REASONING_OUTPUT = (
+        "[content reasoning] I can't confirm this from a database field — here's what "
+        "reasoning over the available facts and descriptions suggests.\n"
+        "\n"
+        "- **Estaillades Carbonate #2** (DOI: 10.17612/P7C09J)\n"
+        "  Both raw and segmented images are available.\n"
+        "  *Basis:* Segmented — segmented: yes\n"
+        "- **Mt. Simon Sandstone with Mineral Map** (DOI: 10.17612/sx6n-kn96)\n"
+        "  The dataset includes a segmented image with mineral map.\n"
+        "  *Basis:* Mt Simon Data with Mineral Map — segmented: yes\n"
+    )
+
+    def _stale_manager(self):
+        """A manager holding the tracked state of an earlier, unrelated listing turn."""
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = [
+            {"title": "Grain Packing", "doi": None},
+            {"title": "Trabecular bone in the femoral head of strepsirrhine primates", "doi": None},
+        ]
+        mgr._cumulative_filter_text = "datasets suitable for training a segmentation model"
+        return mgr
+
+    def test_content_reasoning_is_a_tracked_listing_tool(self):
+        from src.assistant.conversation_manager import _DATASET_LISTING_TOOLS
+        assert "reason_about_dataset_content" in _DATASET_LISTING_TOOLS
+
+    def test_content_reasoning_result_replaces_the_prior_listing(self):
+        mgr = self._stale_manager()
+        mgr._track_dataset_listing(
+            "reason_about_dataset_content", self._CONTENT_REASONING_OUTPUT,
+            "datasets with both raw and segmented images",
+        )
+        assert [m["title"] for m in mgr._last_dataset_mentions] == [
+            "Estaillades Carbonate #2", "Mt. Simon Sandstone with Mineral Map",
+        ]
+        assert mgr._cumulative_filter_text == "datasets with both raw and segmented images"
+
+    def test_dois_survive_tracking_for_a_later_reference(self):
+        """Titles alone aren't enough — an ordinal/name follow-up resolves to a DOI."""
+        mgr = self._stale_manager()
+        mgr._track_dataset_listing(
+            "reason_about_dataset_content", self._CONTENT_REASONING_OUTPUT, "q",
+        )
+        assert mgr._last_dataset_mentions[0]["doi"] == "10.17612/P7C09J"
+
+    def test_followup_refines_the_content_reasoning_set_not_the_stale_one(self):
+        """The end-to-end failure: the refinement dispatch must carry the 2 datasets the
+        content-reasoning turn actually named, never the earlier turn's 10."""
+        mgr = self._stale_manager()
+        mgr._track_dataset_listing(
+            "reason_about_dataset_content", self._CONTENT_REASONING_OUTPUT,
+            "datasets with both raw and segmented images",
+        )
+        with patch("src.assistant.conversation_manager._classify_off_domain", return_value=False), \
+             patch("src.assistant.conversation_manager._run_manual_dispatch") as mock_dispatch:
+            mock_dispatch.return_value = "- **Estaillades Carbonate #2** (DOI: 10.17612/P7C09J)"
+            mgr.chat("What are the lithologies of these?")
+
+        calls = mock_dispatch.call_args[0][0]
+        assert [c["name"] for c in calls] == ["get_dataset_details"]
+        args = calls[0]["args"]
+        assert args["restrict_to_titles"] == [
+            "Estaillades Carbonate #2", "Mt. Simon Sandstone with Mineral Map",
+        ]
+        assert "both raw and segmented images" in args["question"]
+        assert "segmentation model" not in args["question"]
+
+
+class TestStaleListingIsNotLeftLookingCurrent:
+    """The other half of the same defect: _track_dataset_listing used to update
+    _cumulative_filter_text unconditionally while only updating _last_dataset_mentions when
+    the turn parsed some, so a fresh turn that named nothing paired NEW filter text with an
+    OLD result set."""
+
+    def test_fresh_listing_turn_with_no_results_clears_the_prior_set(self):
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = [{"title": "Grain Packing", "doi": None}]
+        mgr._cumulative_filter_text = "sandstone datasets"
+        mgr._track_dataset_listing(
+            "search_datasets", "No datasets found matching that query.", "coal datasets",
+        )
+        assert mgr._last_dataset_mentions == []
+
+    def test_empty_refinement_turn_keeps_the_set_being_narrowed(self):
+        """"Of these, which are coal?" coming back empty does not change what "these"
+        refers to — the user can still narrow the same set a different way."""
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = [{"title": "Grain Packing", "doi": None}]
+        mgr._track_dataset_listing(
+            "get_dataset_details", "No datasets found.", "of these which are coal",
+            refinement_text="sandstone datasets AND of these which are coal",
+        )
+        assert [m["title"] for m in mgr._last_dataset_mentions] == ["Grain Packing"]
+
+    def test_refinement_is_not_dispatched_without_titles_to_restrict_to(self):
+        """cypher_qa treats an empty restrict_to_titles as "no restriction at all", so
+        dispatching without titles would run the compound question over the whole catalog
+        while the log claimed a restricted search. Fall through to normal routing instead."""
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = []
+        mgr._cumulative_filter_text = "sandstone datasets"
+        mgr._agent = MagicMock()
+        final_message = MagicMock(content="Here are some datasets...")
+        final_message.tool_calls = []
+        mgr._agent.stream.return_value = iter([
+            {"messages": [_USER_ECHO]},
+            {"messages": [_USER_ECHO, final_message]},
+        ])
+        with patch("src.assistant.conversation_manager._classify_off_domain", return_value=False), \
+             patch("src.assistant.conversation_manager._classify_needs_tool", return_value=True), \
+             patch("src.assistant.conversation_manager._run_manual_dispatch") as mock_dispatch:
+            mgr.chat("Which of these are sandstone?")
+        mock_dispatch.assert_not_called()
+        mgr._agent.stream.assert_called_once()
