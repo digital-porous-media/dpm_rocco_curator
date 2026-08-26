@@ -406,7 +406,8 @@ src/prompts/                  # new prompts alongside existing ones
 ├── assistant.yaml            # intent classifier (semantic_search / metadata_filter /
 │                             #   domain_qa / workflow_guidance / query_expansion / literature_search)
 ├── query_expander.yaml       # user query → expanded_query + inferred_filters + rationale
-└── educational.yaml          # domain Q&A + workflow synthesis
+├── educational.yaml          # domain Q&A + workflow synthesis
+└── corpus_reasoning.yaml     # relationship/content reasoning over ranked dataset fact sheets
 
 data/
 ├── tutorials.yaml                 # 20+ user goals → verified portal tutorial URLs
@@ -432,7 +433,49 @@ Two-layer search — all handled in `graph_store.py`:
 
 Literature search uses the **Semantic Scholar API** only (see `literature_search.py`). A local full-text PDF corpus was considered but dropped due to copyright concerns — publisher PDFs cannot be legally chunked and stored even under institutional access licenses. Semantic Scholar provides titles, abstracts, DOIs, and citation counts, which is sufficient for the assistant's use cases.
 
-Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic scholar]`.
+3. **Fact-sheet reasoning** — for questions no literal field can settle (a relationship, a
+   comparison across one dataset's sub-nodes, or a property that only appears in free text),
+   `rank_fact_sheets()` reuses the same vector+BM25 Reciprocal Rank Fusion as `hybrid_search()`,
+   pointed at the fact-sheet indexes, and `reason_about_dataset_content` runs one cited reasoning
+   pass over the shortlist. See §Content Reasoning below.
+
+Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic scholar]`,
+`[content reasoning]`.
+
+### Content Reasoning (`reason_about_dataset_content`)
+
+The dividing line for routing is **not** "does the field exist" — it is *"is every property in
+the question a plain, literal, structured field?"*
+
+- A plain conjunction of independent literal fields ("sandstone AND porosity > 0.3") stays
+  entirely on `get_dataset_details`/Cypher. Each clause narrows the catalog on its own.
+- Anything relational ("paired", "corresponding", "the same X", "derived from", "at different
+  resolutions") or free-text-only (an instrument named in a description — there is no queryable
+  imaging-modality field) routes **entirely** to `reason_about_dataset_content`, and is **never
+  split**. A literal clause pulled out of a relational claim (`segmented` inside "paired
+  tomographic and segmented images") is not an independently valid partial answer — presenting
+  one is a wrong answer, not a partial one, since nothing tells the reader "paired" was dropped.
+
+**Gated in code, not by routing.** `_needs_content_reasoning()` (`tools.py`) is a deterministic
+check that BOTH `get_dataset_details` and `search_datasets` run before committing to a Cypher
+answer; if it fires they hand the whole question over and return that result. The two sides of
+the line are worded almost identically ("segmented and porosity above 0.3" is plain; "segmented
+and imaged the same way" is relational), and this project has repeatedly found prompt-level
+routing unreliable for calls that fine — same precedent as `search_datasets`'s existing
+`_is_plain_property_query()`. Borderline matches are logged for periodic review.
+
+Query-time sequence: **rank** precomputed fact sheets (no LLM call) → **fetch** them by ID →
+**one** cited LLM reasoning pass → **compose** behind a fixed honesty framing. Exhaustive
+questions ("list every dataset where…") fall back to a batched map-reduce screen instead of
+ranking. Two grounding guards run in code, not in the prompt: a candidate with no citation is
+dropped, and so is one whose title wasn't in the shortlist actually sent. Titles/DOIs come from
+graph records, never retyped by the model.
+
+Adding a new relational phrasing needs **no new code** — if the fact sheet has the relevant
+facts, the same mechanism handles it; if not, that's a fact-sheet content fix, not a new pattern
+to author. The accepted trade-off is recall: a hand-written Cypher condition for one specific
+relationship would have zero recall risk for that one case, and hybrid ranking narrows but does
+not close that gap.
 
 ### Literature Strategy
 
@@ -468,6 +511,8 @@ Follow the existing versioned YAML pattern in `src/prompts/`. New files:
 - `assistant.yaml` — intent classifier
 - `query_expander.yaml` — LLM query expansion
 - `educational.yaml` — domain Q&A and workflow synthesis
+- `corpus_reasoning.yaml` — relationship/content reasoning over fact sheets, with a mandatory
+  per-candidate citation (also carries the map-reduce batch-screening prompt)
 
 ### Equation Rendering
 
@@ -494,34 +539,133 @@ The fix is at the **prompt + rendering layer**:
 
 ### Vector Indexes
 
-Two indexes are built by `scripts/build_dataset_vector_index.py`:
+Built by `scripts/build_dataset_vector_index.py`:
 
 | Index | Node | Property | Purpose |
 |-------|------|----------|---------|
 | `datasetEmbedding` | `Dataset` | `datasetEmbedding` | Aggregated dataset-level vector (title + description + sub-node metadata). Used by `GraphStore.search()` and `GraphCypherQAChain`. |
 | `componentEmbedding` | `DatasetComponent` | `componentEmbedding` | One vector per `Sample`/`DigitalDataset`/`AnalysisDataset` sub-node. Each blob includes the parent Dataset title + description as a context header so sparse sub-nodes inherit parent signal. Used by `GraphStore.component_search()`. |
+| `factSheetEmbedding` | `Dataset` | `factSheetEmbedding` | Vector over the dataset's **fact sheet** — an edge-preserving narration of which `DigitalDataset` belongs to which `Sample`, their resolutions/segmented status, and sub-node descriptions. Used by `GraphStore.rank_fact_sheets()`. |
+
+Plus two fulltext (BM25) indexes: `datasetDescriptionFulltext` (`Dataset.title` + `Dataset.description`,
+the BM25 half of `hybrid_search`) and `datasetFactSheetFulltext` (`Dataset.factSheetText`, the
+BM25 half of `rank_fact_sheets`).
 
 `DatasetComponent` is a secondary label added to sub-nodes at embed time — it is not set by `load_graph.py`.
+
+### Fact Sheets
+
+`Dataset.factSheet` (JSON string) + `Dataset.factSheetText` (rendered prose) hold a precomputed,
+edge-preserving summary per dataset — node titles/descriptions, `porousMediaType`/
+`voxelDimensions`/`segmented`/`type`, related publication abstracts, and the
+`Sample`→`DigitalDataset`→`AnalysisDataset` structure. They are the raw material for
+`reason_about_dataset_content` (see below).
+
+Deliberately **not** built from `_build_embedding_text`: that function flattens sub-node
+properties into aggregated lines (right for embedding similarity), which discards which specific
+`DigitalDataset`s belong to which specific `Sample` — exactly what "does this sample have scans
+at two different resolutions?" needs. Fact sheets cache raw material only, **never a verdict** —
+whether a dataset satisfies a given relationship is query-dependent and always judged live.
+
+These are derived properties computed *from* the published DRP metadata, alongside the
+embeddings; the published metadata itself is never modified (see the Key Design Constraints
+above).
+
+### Embedding Endpoint: Total-Characters-Per-Request Limit
+
+The TACC/SambaNova E5-Mistral-7B-Instruct embedding endpoint limits the **total characters in a
+request**, not the number of items in it. Measured live: ~14k characters per request succeeds,
+~40k fails with a 500 whose body carries per-item
+`{"embedding": null, "error": "unexpected_error"}`. A single large item is fine (a 21k-character
+text embeds on its own); several large ones together are not.
+
+There is **also a per-item limit** — E5-Mistral-7B-Instruct caps at 4096 tokens, and
+`check_embedding_ctx_length=False` is set on `OpenAIEmbeddings` (the TACC/LiteLLM endpoint expects
+raw strings), so LangChain does **not** chunk or truncate oversized inputs for you: an over-long
+single item just 500s. Token density varies a lot between texts, so a character-based cap has to
+be conservative — measured live, the 17 fact sheets that failed at full length ranged from 10.5k
+to 20.9k characters and all 17 embedded successfully at 8k.
+
+Hence the fact-sheet pass does two things the other passes don't:
+- batches by character budget (`_batch_by_char_budget`, `FACT_SHEET_EMBED_CHAR_BUDGET = 12_000`)
+  instead of a fixed `--batch-size`, and
+- caps each item at `FACT_SHEET_EMBED_MAX_CHARS = 8_000` **for embedding only** — the stored
+  `factSheetText` is always complete, so BM25 and the reasoning pass see the whole sheet; only the
+  ranking vector is built from the leading section.
+
+A failed batch retries item-by-item, and an item that still fails is skipped loudly with its fact
+sheet still stored (BM25-only ranking for that dataset). Recover stragglers from transient endpoint
+errors with `--only fact-sheets --retry-missing` rather than a full rebuild. Any new embedding pass
+over large texts needs the same treatment.
 
 ### Index Rebuild
 
 ```bash
-# Rebuild both Neo4j vector indexes (dataset + component)
+# Rebuild everything (dataset + component embeddings, fact sheets, all indexes)
 python scripts/build_dataset_vector_index.py
+
+# Rebuild only the fact sheets + their indexes (skips the two embedding passes)
+python scripts/build_dataset_vector_index.py --only fact-sheets
 
 # Rebuild publication FAISS
 python scripts/build_publication_index.py
 ```
 
-Re-running is safe — both indexes use `CREATE ... IF NOT EXISTS` and embeddings are upserted with `SET`.
-Rebuild required when: new datasets are added, the embedding model changes, or text assembly logic changes.
+Re-running is safe — all indexes use `CREATE ... IF NOT EXISTS` and embeddings/fact sheets are
+upserted with `SET`.
+Rebuild required when: new datasets are added, the embedding model changes, or text/fact-sheet
+assembly logic changes.
 If switching embedding models, drop old indexes first:
 ```cypher
 DROP INDEX datasetEmbedding IF EXISTS;
 DROP INDEX componentEmbedding IF EXISTS;
+DROP INDEX factSheetEmbedding IF EXISTS;
 ```
 
 Both are also triggerable via the stretch-goal index management API (`src/assistant/index_api.py`) once implemented.
+
+### ⚠️ Never `x IS NULL OR <required condition>` in Generated Cypher
+
+The single most common way a generated query silently returns wrong rows. With
+`OPTIONAL MATCH (d)<-[:PART_OF]-(s:Sample)`, the clause `WHERE s IS NULL OR
+toLower(s.porousMediaType) = 'sandstone'` is **true for every dataset that has no Sample at
+all** — the filter looks present but admits almost everything. Observed live in a "find me a
+sandstone dataset" turn.
+
+Use `OPTIONAL MATCH` + a null-tolerant `WHERE` only for a property the question treats as
+optional extra information. When the question *filters* on it, require the node:
+
+```cypher
+MATCH (d:Dataset)<-[:PART_OF]-(s:Sample)
+WHERE toLower(s.porousMediaType) = 'sandstone'
+RETURN DISTINCT d.identifier, d.title, d.doi
+```
+
+A dataset missing the property is **not** a match — returning it is a wrong answer, not a
+lenient one. The rule and a worked example are in `CYPHER_GENERATION_TEMPLATE`
+(`graph_store.py`); the porosity example there was also rewritten to model the plain-`MATCH`
+shape, since teaching the `OPTIONAL MATCH` shape for a required filter is what invited the
+`IS NULL OR` in the first place.
+
+### ⚠️ `INPUT_FOR` Points Child → Parent
+
+`INPUT_FOR` means "was derived from" and runs the **same direction as `PART_OF`**, despite the
+name:
+
+```cypher
+(DigitalDataset)-[:INPUT_FOR]->(Sample)          // 1893 edges — a scan points AT its sample
+(AnalysisDataset)-[:INPUT_FOR]->(DigitalDataset) //  983 edges
+(AnalysisDataset)-[:INPUT_FOR]->(Sample)         //   55 edges — no intermediate scan
+```
+
+Writing it the intuitive way round — `(s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset)` — matches
+**zero rows and fails silently**. Verified against the live graph and against
+`scripts/load_graph.py`'s `_establish_connection`, which writes `MERGE (s)<-[:INPUT_FOR]-(t)`
+with `s` being the parent in the DRP metadata's `links` list.
+
+Also: never `RETURN d` wholesale on a node carrying an embedding or fact sheet — use a map
+projection (`d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null}`). A
+4096-float vector reaching an LLM context has already caused a production context-window failure.
 
 ### LLM / Agent Stack for the Assistant
 
@@ -542,7 +686,9 @@ Both curator and assistant use `RoccoClient` from `src/llm/client.py`.
 pip install -e ".[graph]"  # Includes neo4j, langchain-neo4j, langchain-openai
 ```
 
-**Conda environment:** All development uses `conda activate rocco_ai`.
+**Conda environment:** `conda activate rocco` on this machine. (`CONTRIBUTING.md` and
+`docs/developer_guide/onboarding.md` still tell new contributors to create the env as
+`rocco_ai` — the local env is named `rocco`, so prefer that when running anything here.)
 
 ### APOC Note
 
@@ -597,6 +743,71 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 ---
 
 ## Recent Changes
+
+### Content-Reasoning Gate Missed Non-"image" Artifact Nouns (August 2026)
+- **Fixed: `"both grayscale and segmented volumes"` did not fire `_needs_content_reasoning()`**
+  while the near-identical `"...segmented images"` did. The `both X and Y <noun>` pattern
+  hardcoded `images|scans|versions|forms|datasets`, so an equally relational question fell
+  through to Cypher and produced exactly the partial-answer overclaim the gate exists to
+  prevent — a plausible-looking list, with nothing signalling that the "both" half was never
+  checked.
+- The noun list is now `_IMAGE_ARTIFACT_NOUNS` (adds `volumes`, `stacks`, `tomograms`,
+  `reconstructions`, `segmentations`, `files`, `data`) — named and commented because it is the
+  part that needs extending as real phrasings turn up. It is also the pattern's **only** brake:
+  without a fixed noun list, `both X and Y` would match any two-item conjunction. Deliberately
+  over-inclusive, since a false positive costs one slower cited answer while a false negative
+  is a wrong answer presented as a verified one.
+
+### Follow-Up Turns Lost the Content-Reasoning Result Set (August 2026)
+- **Fixed: `reason_about_dataset_content` was not in `_DATASET_LISTING_TOOLS`**
+  (`conversation_manager.py`), so a content-reasoning turn was invisible to
+  `_track_dataset_listing`. Live symptom: "datasets where there are both raw and segmented
+  images" answered correctly (12 datasets), then "What are the lithologies of these?"
+  answered about a *different* set entirely. The turn didn't just fail to record its 12
+  results — it left the **stale** chain from several turns earlier ("datasets suitable for
+  training a segmentation model", 10 titles) in place looking current, so `_REFINEMENT_RE`
+  fired and refined a result set the user had moved on from, with nothing in the answer
+  revealing the substitution.
+  What makes a tool trackable is the **shape** of its output, not which relay path it takes:
+  content reasoning is self-contained rather than verbatim, but it renders the same
+  `- **Title** (DOI: ...)` bullets from graph records, so `_extract_dataset_mentions` parses
+  it unchanged. Any future tool that lists datasets must be added here too.
+- **Fixed: `_track_dataset_listing` could pair new filter text with an old result set.** It
+  updated `_cumulative_filter_text` unconditionally but `_last_dataset_mentions` only when a
+  turn parsed some, so a *fresh* listing turn naming nothing left the previous set attached to
+  a brand-new chain. A fresh turn with no mentions now clears them; a *refinement* turn still
+  keeps them ("of these, which are coal?" coming back empty doesn't change what "these" means).
+- **Fixed: the refinement dispatch fired with an empty `restrict_to_titles`.** `cypher_qa`
+  treats `[]` as *no restriction at all*, so it ran the compound question over the whole
+  catalog while logging a restricted search. Both the filter chain and a non-empty title list
+  are now required; otherwise the turn falls through to normal routing and logs which half
+  was missing.
+- Regression tests: `tests/assistant/test_conversation_manager.py`
+  (`TestContentReasoningIsTrackedAsADatasetListing`, `TestStaleListingIsNotLeftLookingCurrent`).
+
+### Content Reasoning Tool + `INPUT_FOR` Direction Fix (August 2026)
+- **New `reason_about_dataset_content` tool** (`tools.py`) — one general mechanism for any
+  question a literal field lookup can't settle. Precomputed `Dataset.factSheet`/`factSheetText`
+  + `factSheetEmbedding`/`datasetFactSheetFulltext` indexes (built by
+  `build_dataset_vector_index.py`), ranked by the *existing* `hybrid_search` RRF fusion
+  (extracted into a shared `_rrf_merge`), then one cited reasoning pass
+  (`src/prompts/corpus_reasoning.yaml`). Gated deterministically via
+  `_needs_content_reasoning()` in both `get_dataset_details` and `search_datasets`. See
+  §Content Reasoning above and `docs/user_guide/content_reasoning.rst`.
+- **Fixed: `INPUT_FOR` was documented and queried backwards.** The live graph has
+  `(DigitalDataset)-[:INPUT_FOR]->(Sample)` (child → parent, "was derived from"), not the
+  reverse. `get_dataset_profile()`'s Cypher, `MANUAL_SCHEMA` (which grounds all generated
+  Cypher), and `docs/neo4j_schema.md` all had it inverted, so every profile's organizational
+  structure section was silently empty and every scan was reported as having no sample link.
+  Verified against edge counts and `load_graph.py`. See the ⚠️ section above.
+- **Fixed: `get_dataset_profile()` query was pathologically slow.** Its four chained
+  `OPTIONAL MATCH`es cross-multiplied before `collect()` — measured at 28s on the largest live
+  dataset (961 sub-nodes) with only the `PART_OF` joins, and not completing within 300s once the
+  `INPUT_FOR` joins were restored. Now one small flat query per node/edge type, assembled in
+  Python: **0.8s** for that same dataset. The build script uses the same decomposition in bulk
+  (184 datasets in 1.3s).
+- Fact sheets are capped and truncated at every level, never silently — an uncapped pipeline
+  list took one live dataset's fact sheet to 129k characters before the cap was added.
 
 ### Schema Audit & Reference Doc (May 2026)
 - Added `scripts/audit_schema.py` — scans `data/metadata/*.json` to compute node counts,

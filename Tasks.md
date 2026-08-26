@@ -279,7 +279,25 @@ a dedicated standalone package may be released; migrate then rather than reimple
 
 ---
 
-## Future Feature: Dataset Detail Follow-Up Queries
+## Future Feature: Dataset Detail Follow-Up Queries — IMPLEMENTED
+
+**Status (implemented on `feature/dataset-details`):** Done, with a broader scope than
+originally proposed below. `get_dataset_profile(dataset_reference, question)` was added to
+`src/assistant/tools.py`, backed by a new `GraphStore.get_dataset_profile()` (resolves
+datasetNumber/DOI/title, fetches the full `PART_OF` sub-node graph + `INPUT_FOR` pipeline
+edges). It also handles organizational-structure questions, file-type/"how do I read this in
+Python" reasoning (including a real TACC Corral archive URL derived from `datasetNumber`),
+reuse-suitability reasoning, and multi-dataset comparisons (by calling the tool once per
+dataset). Classified in `_SELF_CONTAINED_TOOLS`, **not** `_VERBATIM_TOOLS` as originally
+proposed below — it needs its own grounded LLM synthesis pass (via new
+`src/prompts/dataset_profile.yaml`) to reason over the data rather than just splice it verbatim,
+and to give a concise high-level overview for general "tell me more" questions instead of an
+exhaustive field dump. Also required two `conversation_manager.py` fixes not anticipated below:
+extending `_TOOL_PARAM_KEYS`/`_extract_tool_calls_from_text`/`_extract_tool_calls_from_error` to
+support a tool with two required args, and extending `_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT` so a
+comparison (same tool, second dataset) isn't short-circuited after the first profile call.
+Documented at `docs/user_guide/dataset_profiles.rst`. See `HANDOFF.md` for the original
+investigation this expanded on.
 
 **Problem:** After `search_datasets` (or `get_dataset_details`) returns results, a natural
 follow-up like *"tell me more about this dataset"* / *"give me more details on the first one"*
@@ -298,24 +316,75 @@ the user is actually asking about.
   assistant's perspective: not registered as a LangChain tool in `tools.py`, and nothing calls
   it today.
 
-**Proposed approach (not yet implemented):**
-- [ ] Add a new tool (e.g. `get_dataset_profile(doi_or_title)`) in `src/assistant/tools.py` that
-  pulls the full `Dataset` node plus its `Sample`/`DigitalDataset`/`AnalysisDataset`/
-  `RelatedPublication` sub-nodes (extend `GraphStore.get_dataset()` or add a sibling method —
-  the existing one only fetches the `Dataset` node itself, not its `PART_OF` sub-nodes) and
-  renders a fuller profile than a search-result summary line.
-- [ ] Update `conversation_manager.py`'s `SYSTEM_PROMPT` tool-selection rules so a follow-up
-  referencing a specific already-shown result ("tell me more about *this*/*the first*/*the
-  sandstone one*") routes here instead of re-running `search_datasets`. This needs the DOI/title
-  to be resolved from conversation history (already passed in as `history`), since the tool
-  itself is stateless per call.
-- [ ] Decide response-assembly classification for the new tool — likely `_VERBATIM_TOOLS` (real
-  dataset metadata that must reach the user unmodified), same as `search_datasets`/
-  `get_dataset_details`.
-- [ ] Add test coverage (`tests/assistant/test_tools.py` and/or
-  `tests/assistant/test_search_integration.py`) for a two-turn "search → tell me more" flow.
-- [ ] Document the new capability — either fold into `docs/user_guide/structured_queries.rst` or
-  give it its own capability page (matches the existing pattern; see e.g. `dataset_discovery.rst`).
+**Original proposed approach (superseded by the broader scope noted above — kept for history):**
+- [x] Add a new tool (`get_dataset_profile`) in `src/assistant/tools.py` that pulls the full
+  `Dataset` node plus its `Sample`/`DigitalDataset`/`AnalysisDataset`/`RelatedPublication`
+  sub-nodes — implemented as a sibling method, `GraphStore.get_dataset_profile()`, also fetching
+  `INPUT_FOR` pipeline edges and (speculatively, pending live-schema verification)
+  `RelatedSoftware`/`RelatedDataset`.
+- [x] Update `conversation_manager.py`'s `SYSTEM_PROMPT` tool-selection rules so follow-ups
+  route here instead of re-running `search_datasets`/`get_dataset_details`, with the reference
+  resolved from conversation history before calling.
+- [x] Decide response-assembly classification — landed on `_SELF_CONTAINED_TOOLS`, not
+  `_VERBATIM_TOOLS` as originally guessed here (see the IMPLEMENTED note above for why).
+- [x] Add test coverage — `tests/assistant/test_tools.py`, `tests/assistant/test_graph_store.py`,
+  `tests/assistant/test_conversation_manager.py`, and a two-turn/comparison flow in
+  `tests/assistant/test_search_integration.py`.
+- [x] Document the new capability — `docs/user_guide/dataset_profiles.rst` (own capability page,
+  not folded into `structured_queries.rst`).
+
+---
+
+## Feature: Honest Content/Relationship Reasoning — IMPLEMENTED
+
+**Status (implemented on `feature/dataset-details`):** Done. Closes the residual honesty gap
+left by Bug 4 in `HANDOFF.md` — that fix stopped "paired tomographic and segmented images" from
+crashing/falling back to weak semantic search, but the resulting answer (a bare
+`segmented='yes'` list) still presented a generic "has some segmented data" result as if it had
+verified "paired", which it never checked.
+
+**What landed:**
+- [x] `reason_about_dataset_content(question)` in `src/assistant/tools.py` — a single general
+  mechanism for any question no literal field can settle (a relationship, a comparison across a
+  dataset's sub-nodes, or a property that only appears in free text). Registered in
+  `build_langchain_tools()` and in `_SELF_CONTAINED_TOOLS`/`_TOOL_PARAM_KEYS`.
+- [x] Precomputed fact sheets — `Dataset.factSheet` (JSON) + `Dataset.factSheetText` (rendered
+  prose), built by a new step in `scripts/build_dataset_vector_index.py`, with its own
+  edge-preserving assembly (NOT `_build_embedding_text`, which flattens away which
+  `DigitalDataset` belongs to which `Sample`). `--only fact-sheets` rebuilds just this stage.
+- [x] `factSheetEmbedding` vector index + `datasetFactSheetFulltext` BM25 index.
+- [x] `GraphStore.rank_fact_sheets()` / `fetch_fact_sheets()` — ranking reuses the *existing*
+  `hybrid_search` RRF fusion, extracted into a shared `_rrf_merge()`; no new fusion mechanism
+  and no per-relationship Cypher pattern to author.
+- [x] `src/prompts/corpus_reasoning.yaml` — the cited reasoning pass, plus the map-reduce
+  batch-screening prompt for exhaustive questions.
+- [x] Deterministic `_needs_content_reasoning()` gate wired into BOTH `get_dataset_details` and
+  `search_datasets`, so the split is correct regardless of which tool the agent picked.
+- [x] Grounding enforced in code, not prompt: uncited candidates dropped; candidates not in the
+  shortlist actually sent dropped; titles/DOIs taken from graph records.
+- [x] Tests — `tests/assistant/test_tools.py` (gate, three worked cases, grounding guards,
+  budget, map-reduce, restrict-to-titles), `test_graph_store.py` (RRF, ranking, fetch),
+  `test_fact_sheet_builder.py` (new file), `test_prompts.py`, `test_conversation_manager.py`.
+- [x] Docs — `docs/user_guide/content_reasoning.rst` (new capability page), plus updates to
+  `assistant.rst`, `architecture.rst`, `neo4j_schema.md`, `index.rst`, and `CLAUDE.md`.
+
+**Two bugs found while implementing, both fixed:**
+1. **`INPUT_FOR` was documented and queried backwards everywhere.** The live graph has
+   `(DigitalDataset)-[:INPUT_FOR]->(Sample)` — child → parent, "was derived from" — confirmed by
+   edge counts (1893 / 983 / 55) and by `load_graph.py`'s `_establish_connection`. Because
+   `get_dataset_profile()` queried it the other way, **every** profile's organizational-structure
+   section was silently empty and every scan was reported as unlinked. `MANUAL_SCHEMA` (which
+   grounds all generated Cypher) and `docs/neo4j_schema.md` were wrong too.
+2. **`get_dataset_profile()`'s Cypher was pathologically slow** — chained `OPTIONAL MATCH`es
+   cross-multiplying before `collect()`: 28s on the largest live dataset with only the `PART_OF`
+   joins, and no completion within 300s once the `INPUT_FOR` joins were restored. Decomposed into
+   one flat query per node/edge type → **0.8s** for the same dataset.
+
+**Remaining:** the fact sheets themselves have not been built against the live Neo4j yet
+(`python scripts/build_dataset_vector_index.py --only fact-sheets`), so end-to-end live
+verification of the three example queries is still outstanding.
+
+---
 
 ## Notes
 
