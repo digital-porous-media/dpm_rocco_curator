@@ -72,3 +72,48 @@ class TestEducationalPrompt:
         system = prompt["system"]
         assert "portal" in system.lower() or "context" in system.lower()
         assert "disclaimer" in system.lower() or "generally" in system.lower()
+
+
+class TestCorpusReasoningPrompt:
+    """The prompt behind reason_about_dataset_content. Its grounding rules are the
+    first line of defence (the second is the code-level citation/shortlist check in
+    tools._render_reasoning_answer), so the pieces the code depends on are pinned here."""
+
+    def test_loads_required_keys(self):
+        prompt = load_prompt("corpus_reasoning")
+        assert "version" in prompt
+        assert "system" in prompt
+        assert "user" in prompt
+
+    def test_system_contains_context_var(self):
+        prompt = load_prompt("corpus_reasoning")
+        assert "{{ context }}" in prompt["system"]
+
+    def test_user_contains_question_var(self):
+        prompt = load_prompt("corpus_reasoning")
+        assert "{{ question }}" in prompt["user"]
+
+    def test_system_demands_a_citation_per_candidate(self):
+        prompt = load_prompt("corpus_reasoning")
+        assert "No citation, no candidate" in prompt["system"]
+
+    def test_system_specifies_the_json_keys_the_code_parses(self):
+        prompt = load_prompt("corpus_reasoning")
+        system = prompt["system"]
+        for key in ("candidates", "title", "reason", "citation", "caveat"):
+            assert f'"{key}"' in system
+
+    def test_system_forbids_inventing_properties(self):
+        prompt = load_prompt("corpus_reasoning")
+        assert "Never invent" in prompt["system"]
+
+    def test_map_reduce_screening_prompt_present_and_renderable(self):
+        prompt = load_prompt("corpus_reasoning")
+        assert "{{ context }}" in prompt["batch_screen_user"]
+        rendered = render(prompt["batch_screen_user"], question="paired scans?", context="a sheet")
+        assert "paired scans?" in rendered and "a sheet" in rendered
+
+    def test_renders_system_with_context(self):
+        prompt = load_prompt("corpus_reasoning")
+        rendered = render(prompt["system"], context="fact sheet text here")
+        assert "fact sheet text here" in rendered

@@ -366,6 +366,137 @@ class TestComponentSearch:
         assert len(results) == 1
 
 
+# Fact sheets — rank_fact_sheets / fetch_fact_sheets / _rrf_merge
+
+class TestRrfMerge:
+    def test_id_ranked_well_by_both_retrievers_wins(self):
+        from src.assistant.graph_store import _rrf_merge
+        vec = {"a": 3, "b": 0}
+        bm25 = {"a": 0, "b": 5}
+        # 'a' is 1st in BM25 and 4th by vector; 'b' is 1st by vector and 6th in BM25 —
+        # RRF should still put them ahead of anything only one retriever saw.
+        merged = _rrf_merge([vec, bm25], penalty=11)
+        assert set(merged[:2]) == {"a", "b"}
+
+    def test_id_absent_from_one_list_still_ranks(self):
+        from src.assistant.graph_store import _rrf_merge
+        merged = _rrf_merge([{"only_vec": 0}, {"only_bm25": 0}], penalty=11)
+        assert set(merged) == {"only_vec", "only_bm25"}
+
+    def test_mixed_id_types_do_not_raise_on_ties(self):
+        """Tie-breaking must never compare the ids themselves — datasetNumber is an int
+        for some datasets and a str for others in practice, and comparing the two raises."""
+        from src.assistant.graph_store import _rrf_merge
+        merged = _rrf_merge([{1: 0, "two": 0}, {}], penalty=11)
+        assert set(merged) == {1, "two"}
+
+
+class TestRankFactSheets:
+    def test_returns_empty_when_disabled(self):
+        store = make_store(use_neo4j=False)
+        assert store.rank_fact_sheets("paired segmented images") == []
+
+    def test_merges_vector_and_fulltext_hits(self):
+        store = make_store()
+
+        def fake_execute(query, params=None):
+            if "db.index.vector.queryNodes" in query:
+                return [{"datasetNumber": 11}, {"datasetNumber": 22}]
+            if "db.index.fulltext.queryNodes" in query:
+                return [{"datasetNumber": 33}, {"datasetNumber": 11}]
+            raise AssertionError(f"Unexpected query: {query}")
+
+        with patch("src.assistant.llm.get_embeddings_model") as mock_emb:
+            mock_emb.return_value.embed_query.return_value = [0.1, 0.2]
+            with patch.object(store, "execute_cypher", side_effect=fake_execute):
+                ranked = store.rank_fact_sheets("paired segmented images", top_k=5)
+
+        assert set(ranked) == {11, 22, 33}
+        assert ranked[0] == 11  # only id ranked by both retrievers
+
+    def test_vector_failure_degrades_to_bm25_only(self):
+        """A missing/unbuilt factSheetEmbedding index must not take the whole tool down."""
+        store = make_store()
+
+        def fake_execute(query, params=None):
+            if "db.index.vector.queryNodes" in query:
+                raise RuntimeError("no such index: factSheetEmbedding")
+            return [{"datasetNumber": 33}]
+
+        with patch("src.assistant.llm.get_embeddings_model") as mock_emb:
+            mock_emb.return_value.embed_query.return_value = [0.1]
+            with patch.object(store, "execute_cypher", side_effect=fake_execute):
+                ranked = store.rank_fact_sheets("paired segmented images")
+
+        assert ranked == [33]
+
+    def test_both_retrievers_failing_returns_empty(self):
+        store = make_store()
+        with patch("src.assistant.llm.get_embeddings_model") as mock_emb:
+            mock_emb.return_value.embed_query.return_value = [0.1]
+            with patch.object(store, "execute_cypher", side_effect=RuntimeError("index missing")):
+                assert store.rank_fact_sheets("paired segmented images") == []
+
+    def test_respects_top_k(self):
+        store = make_store()
+        rows = [{"datasetNumber": n} for n in range(50)]
+        with patch("src.assistant.llm.get_embeddings_model") as mock_emb:
+            mock_emb.return_value.embed_query.return_value = [0.1]
+            with patch.object(store, "execute_cypher", return_value=rows):
+                assert len(store.rank_fact_sheets("q", top_k=10)) == 10
+
+
+class TestFetchFactSheets:
+    def test_returns_empty_when_disabled(self):
+        store = make_store(use_neo4j=False)
+        assert store.fetch_fact_sheets([1, 2]) == []
+
+    def test_preserves_ranked_order(self):
+        """Neo4j returns rows in its own order — the ranking's order is what matters."""
+        store = make_store()
+        rows = [
+            {"datasetNumber": 11, "title": "A", "doi": "10.1/a", "factSheet": "{}", "factSheetText": "a"},
+            {"datasetNumber": 33, "title": "C", "doi": "10.1/c", "factSheet": "{}", "factSheetText": "c"},
+        ]
+        with patch.object(store, "execute_cypher", return_value=rows):
+            result = store.fetch_fact_sheets([33, 11])
+
+        assert [r["datasetNumber"] for r in result] == [33, 11]
+
+    def test_missing_fact_sheet_is_omitted_not_returned_empty(self):
+        store = make_store()
+        rows = [{"datasetNumber": 11, "title": "A", "doi": "10.1/a",
+                 "factSheet": "{}", "factSheetText": "a"}]
+        with patch.object(store, "execute_cypher", return_value=rows):
+            result = store.fetch_fact_sheets([11, 99])
+
+        assert [r["datasetNumber"] for r in result] == [11]
+
+    def test_empty_input_short_circuits_without_a_query(self):
+        store = make_store()
+        with patch.object(store, "execute_cypher") as mock_exec:
+            assert store.fetch_fact_sheets([]) == []
+            assert store.fetch_fact_sheets(titles=[]) == []
+        mock_exec.assert_not_called()
+
+    def test_fetch_by_title_lowercases_for_case_insensitive_match(self):
+        store = make_store()
+        with patch.object(store, "execute_cypher", return_value=[]) as mock_exec:
+            store.fetch_fact_sheets(titles=["Berea Segmentation Benchmark"])
+
+        params = mock_exec.call_args[0][1]
+        assert params["titles"] == ["berea segmentation benchmark"]
+
+    def test_no_arguments_fetches_every_dataset_with_a_fact_sheet(self):
+        store = make_store()
+        with patch.object(store, "execute_cypher", return_value=[]) as mock_exec:
+            store.fetch_fact_sheets()
+
+        query = mock_exec.call_args[0][0]
+        assert "d.factSheet IS NOT NULL" in query
+        assert "$numbers" not in query and "$titles" not in query
+
+
 # get_schema_blueprint
 
 class TestGetSchemaBlueprint:
@@ -386,15 +517,22 @@ class TestGetSchemaBlueprint:
 
 # get_dataset_profile
 
-_FULL_PROFILE_ROW = {
-    "d": {"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"},
-    "samples": [{"identifier": "s1", "title": "Core 1", "porousMediaType": "sandstone"}],
-    "digital_datasets": [{"identifier": "dd1", "title": "Scan 1", "fileTypes": ["tiff"]}],
-    "analysis_datasets": [{"identifier": "ad1", "title": "PNM 1"}],
+# get_dataset_profile issues one small query per node/edge type rather than one query
+# chaining OPTIONAL MATCHes — the chained form cross-multiplied before collect() and was
+# measured at 28s on the live graph's largest dataset (961 sub-nodes) with only the
+# PART_OF joins, and did not complete at all within 300s once the INPUT_FOR joins were
+# added. These fixtures mirror that per-type shape.
+_PROFILE_PARTS = {
+    "dataset": [{"d": {"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}}],
+    "samples": [{"n": {"identifier": "s1", "title": "Core 1", "porousMediaType": "sandstone"}}],
+    "digital_datasets": [{"n": {"identifier": "dd1", "title": "Scan 1", "fileTypes": ["tiff"]}}],
+    "analysis_datasets": [{"n": {"identifier": "ad1", "title": "PNM 1"}}],
     "related_publications": [],
     "related_software": [],
     "related_datasets": [],
-    "sample_to_digital_edges": [{"sample": "s1", "digitalDataset": "dd1"}, {"sample": None, "digitalDataset": None}],
+    # A row with a null identifier on either side must be dropped, not surfaced as an edge.
+    "sample_to_digital_edges": [{"sample": "s1", "digitalDataset": "dd1"},
+                                {"sample": None, "digitalDataset": None}],
     "digital_to_analysis_edges": [{"digitalDataset": "dd1", "analysisDataset": "ad1"}],
 }
 
@@ -402,30 +540,54 @@ _FULL_PROFILE_ROW = {
 def _tier(query: str) -> str:
     """Identifies which of get_dataset_profile's Cypher queries `query` is, by a
     substring unique to each — used by these tests' fake execute_cypher side effects."""
-    if "OPTIONAL MATCH" in query:
-        return "full_profile"
     if "{datasetNumber: $ref}" in query:
         return "dataset_number"
     if "$bare" in query:
         return "doi"
     if "CONTAINS" in query:
         return "title"
+    if "INPUT_FOR]->(s:Sample)" in query and "DigitalDataset" in query.split("INPUT_FOR")[0]:
+        return "sample_to_digital_edges"
+    if "INPUT_FOR]->(dd:DigitalDataset)" in query:
+        return "digital_to_analysis_edges"
+    if "n:Sample" in query:
+        return "samples"
+    if "n:DigitalDataset" in query:
+        return "digital_datasets"
+    if "n:AnalysisDataset" in query:
+        return "analysis_datasets"
+    if "n:RelatedPublication" in query:
+        return "related_publications"
+    if "n:RelatedSoftware" in query:
+        return "related_software"
+    if "n:RelatedDataset" in query:
+        return "related_datasets"
+    if "$datasetNumber" in query and " AS d" in query:
+        return "dataset"
     raise AssertionError(f"Unrecognized query shape: {query}")
+
+
+def _profile_execute(parts: dict | None = None, candidate_tier: str = "dataset_number",
+                     candidates: list | None = None):
+    """Build a fake execute_cypher covering every query get_dataset_profile issues."""
+    parts = {**_PROFILE_PARTS, **(parts or {})}
+    candidates = candidates or [
+        {"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}
+    ]
+
+    def fake_execute(query, params=None):
+        tier = _tier(query)
+        if tier in ("dataset_number", "doi", "title"):
+            return candidates if tier == candidate_tier else []
+        return parts.get(tier, [])
+
+    return fake_execute
 
 
 class TestGetDatasetProfile:
     def test_matches_by_dataset_number_exact(self):
         store = make_store()
-
-        def fake_execute(query, params=None):
-            tier = _tier(query)
-            if tier == "dataset_number":
-                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
-            if tier == "full_profile":
-                return [_FULL_PROFILE_ROW]
-            raise AssertionError(f"Unexpected tier reached: {tier}")
-
-        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+        with patch.object(store, "execute_cypher", side_effect=_profile_execute()):
             result = store.get_dataset_profile("42")
 
         assert isinstance(result, DatasetProfileMatch)
@@ -433,39 +595,41 @@ class TestGetDatasetProfile:
 
     def test_matches_by_doi_exact_when_not_numeric(self):
         store = make_store()
+        captured = {}
+
+        base = _profile_execute(
+            candidate_tier="doi",
+            candidates=[{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/DRP42"}],
+        )
 
         def fake_execute(query, params=None):
-            tier = _tier(query)
-            if tier == "doi":
-                # Case-folding happens inside the Cypher query (toLower), not in Python —
-                # the passed param preserves the reference's original casing.
-                assert params["bare"] == "10.1234/DRP42"
-                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/DRP42"}]
-            if tier == "full_profile":
-                return [_FULL_PROFILE_ROW]
-            return []  # dataset_number tier: not a numeric reference
+            if _tier(query) == "doi":
+                captured["bare"] = params["bare"]
+            return base(query, params)
 
         with patch.object(store, "execute_cypher", side_effect=fake_execute):
             result = store.get_dataset_profile("10.1234/DRP42")
 
         assert isinstance(result, DatasetProfileMatch)
+        # Case-folding happens inside the Cypher query (toLower), not in Python —
+        # the passed param preserves the reference's original casing.
+        assert captured["bare"] == "10.1234/DRP42"
 
     def test_matches_by_title_contains_when_not_number_or_doi(self):
         store = make_store()
+        captured = {}
+        base = _profile_execute(candidate_tier="title")
 
         def fake_execute(query, params=None):
-            tier = _tier(query)
-            if tier == "title":
-                assert params["ref"] == "Bentheimer"
-                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
-            if tier == "full_profile":
-                return [_FULL_PROFILE_ROW]
-            return []  # dataset_number/doi tiers: reference is neither
+            if _tier(query) == "title":
+                captured["ref"] = params["ref"]
+            return base(query, params)
 
         with patch.object(store, "execute_cypher", side_effect=fake_execute):
             result = store.get_dataset_profile("Bentheimer")
 
         assert isinstance(result, DatasetProfileMatch)
+        assert captured["ref"] == "Bentheimer"
 
     def test_zero_matches_returns_none(self):
         store = make_store()
@@ -487,19 +651,15 @@ class TestGetDatasetProfile:
 
         assert isinstance(result, DatasetProfileAmbiguous)
         assert result.candidates == candidates
-        # No full-profile query should have run.
-        assert not any(_tier(c.args[0]) == "full_profile" for c in mock_exec.call_args_list)
+        # No sub-node/profile query should have run — only the three resolution tiers.
+        assert all(
+            _tier(c.args[0]) in ("dataset_number", "doi", "title")
+            for c in mock_exec.call_args_list
+        )
 
     def test_single_match_assembles_subnodes_and_input_for_edges(self):
         store = make_store()
-
-        def fake_execute(query, params=None):
-            tier = _tier(query)
-            if tier == "dataset_number":
-                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
-            return [_FULL_PROFILE_ROW]
-
-        with patch.object(store, "execute_cypher", side_effect=fake_execute):
+        with patch.object(store, "execute_cypher", side_effect=_profile_execute()):
             result = store.get_dataset_profile("42")
 
         assert result.samples == [{"identifier": "s1", "title": "Core 1", "porousMediaType": "sandstone"}]
@@ -509,28 +669,44 @@ class TestGetDatasetProfile:
         assert result.sample_to_digital_edges == [{"sample": "s1", "digitalDataset": "dd1"}]
         assert result.digital_to_analysis_edges == [{"digitalDataset": "dd1", "analysisDataset": "ad1"}]
 
-    def test_related_publication_and_optional_software_dataset_included(self):
+    def test_input_for_edges_are_queried_child_to_parent(self):
+        """INPUT_FOR points CHILD -> PARENT ("was derived from") in the live graph —
+        confirmed both by relationship counts (1893 DigitalDataset->Sample, 983
+        AnalysisDataset->DigitalDataset, zero in the other direction) and by
+        scripts/load_graph.py's _establish_connection. Querying it parent -> child, as
+        this did originally, matched zero rows and silently emptied the
+        organizational-structure section of every single profile."""
         store = make_store()
-        row = dict(_FULL_PROFILE_ROW)
-        row["related_publications"] = [{"identifier": "rp1", "title": "A paper", "doi": "10.9/x"}]
-        # RelatedSoftware/RelatedDataset's PART_OF relationship to Dataset is not confirmed
-        # against the live schema (see get_dataset_profile's docstring) — this test only
-        # checks that whatever the query returns is threaded through unmodified.
-        row["related_software"] = [{"identifier": "rs1", "title": "Some Tool"}]
-        row["related_datasets"] = [{"identifier": "rds1", "title": "Companion Dataset"}]
+        captured = []
 
         def fake_execute(query, params=None):
-            tier = _tier(query)
-            if tier == "dataset_number":
-                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
-            return [row]
+            captured.append(query)
+            return _profile_execute()(query, params)
 
         with patch.object(store, "execute_cypher", side_effect=fake_execute):
+            store.get_dataset_profile("42")
+
+        joined = " ".join(captured)
+        assert "(dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)" in joined
+        assert "(ad:AnalysisDataset)-[:INPUT_FOR]->(dd:DigitalDataset)" in joined
+        assert "(s:Sample)-[:INPUT_FOR]->" not in joined
+
+    def test_related_publication_and_optional_software_dataset_included(self):
+        store = make_store()
+        parts = {
+            "related_publications": [{"n": {"identifier": "rp1", "title": "A paper", "doi": "10.9/x"}}],
+            # RelatedSoftware/RelatedDataset's PART_OF relationship to Dataset is not
+            # confirmed against the live schema (see get_dataset_profile's docstring) —
+            # this only checks that whatever the query returns is threaded through.
+            "related_software": [{"n": {"identifier": "rs1", "title": "Some Tool"}}],
+            "related_datasets": [{"n": {"identifier": "rds1", "title": "Companion Dataset"}}],
+        }
+        with patch.object(store, "execute_cypher", side_effect=_profile_execute(parts)):
             result = store.get_dataset_profile("42")
 
-        assert result.related_publications == row["related_publications"]
-        assert result.related_software == row["related_software"]
-        assert result.related_datasets == row["related_datasets"]
+        assert result.related_publications == [{"identifier": "rp1", "title": "A paper", "doi": "10.9/x"}]
+        assert result.related_software == [{"identifier": "rs1", "title": "Some Tool"}]
+        assert result.related_datasets == [{"identifier": "rds1", "title": "Companion Dataset"}]
 
     def test_disabled_returns_none(self):
         store = make_store(use_neo4j=False)
@@ -538,25 +714,26 @@ class TestGetDatasetProfile:
             assert store.get_dataset_profile("42") is None
         mock_exec.assert_not_called()
 
-    def test_full_profile_query_nulls_embedding_vectors(self):
-        """The full-profile query must never let a real 4096-float datasetEmbedding/
-        componentEmbedding vector cross the wire — this is the wire-level defense layer
-        for the reported context-window-exceeded bug (a real Bentheimer Sandstone-sized
-        dataset, once embedded by build_dataset_vector_index.py, was enough to blow the
-        model's context window on a single call)."""
+    def test_profile_queries_null_embedding_vectors(self):
+        """No profile query may let a real 4096-float datasetEmbedding/componentEmbedding
+        vector cross the wire — this is the wire-level defense layer for the reported
+        context-window-exceeded bug (a real Bentheimer Sandstone-sized dataset, once
+        embedded by build_dataset_vector_index.py, was enough to blow the model's context
+        window on a single call)."""
         store = make_store()
-        captured_queries = []
+        captured = []
 
         def fake_execute(query, params=None):
-            captured_queries.append(query)
-            tier = _tier(query)
-            if tier == "dataset_number":
-                return [{"datasetNumber": 42, "title": "Bentheimer Sandstone", "doi": "10.1234/drp42"}]
-            return [_FULL_PROFILE_ROW]
+            captured.append(query)
+            return _profile_execute()(query, params)
 
         with patch.object(store, "execute_cypher", side_effect=fake_execute):
             store.get_dataset_profile("42")
 
-        full_profile_query = next(q for q in captured_queries if _tier(q) == "full_profile")
-        assert "datasetEmbedding: null" in full_profile_query
-        assert full_profile_query.count("componentEmbedding: null") == 3  # s, dd, ad
+        by_tier = {_tier(q): q for q in captured}
+        assert "datasetEmbedding: null" in by_tier["dataset"]
+        # The fact-sheet properties are large text/vector blobs too — also kept off the wire.
+        assert "factSheetEmbedding: null" in by_tier["dataset"]
+        assert "factSheetText: null" in by_tier["dataset"]
+        for tier in ("samples", "digital_datasets", "analysis_datasets"):
+            assert "componentEmbedding: null" in by_tier[tier]

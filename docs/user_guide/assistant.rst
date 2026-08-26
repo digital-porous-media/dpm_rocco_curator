@@ -55,7 +55,8 @@ its description against the system prompt — not a lookup table. This is implem
      these is discarded; only a short LLM-generated lead-in sentence is added, then the tool's
      output is spliced in byte-for-byte, followed by a fixed verification disclaimer.
    - **Self-contained tools** (``get_workflow_guidance``, ``get_educational_context``,
-     ``search_portal_docs``, ``get_dataset_profile``) already return a complete, synthesized,
+     ``search_portal_docs``, ``get_dataset_profile``, ``reason_about_dataset_content``)
+     already return a complete, synthesized,
      cited answer from their own internal LLM call. That answer is returned directly — it is
      never re-synthesized by the outer agent, which has no grounding in the underlying data.
    - **Cross-intent / multi-tool turns** are synthesized by the outer agent into one coherent
@@ -88,6 +89,10 @@ What the Assistant Can Do
      - "Tell me more about this dataset" / "Compare A and B for two-phase flow simulation"
      - ``get_dataset_profile``
      - :doc:`dataset_profiles`
+   * - Relationship / content questions
+     - "Are there paired tomographic and segmented images?"
+     - ``reason_about_dataset_content``
+     - :doc:`content_reasoning`
    * - Portal how-to / schema
      - "How do I upload a dataset to the portal?"
      - ``search_portal_docs``
@@ -194,7 +199,8 @@ See Also
 - :doc:`configuration` — Neo4j and Semantic Scholar environment variables
 - :doc:`streamlit_app` — The Description Curator tab
 - :doc:`dataset_discovery`, :doc:`structured_queries`, :doc:`dataset_profiles`,
-  :doc:`portal_docs`, :doc:`domain_qa`, :doc:`workflow_guidance`, :doc:`literature_search` —
+  :doc:`content_reasoning`, :doc:`portal_docs`, :doc:`domain_qa`, :doc:`workflow_guidance`,
+  :doc:`literature_search` —
   How each capability is implemented
 - :doc:`../developer_guide/architecture` — Assistant module reference, including how to add
   datasets to the graph and sync portal documentation updates ("Maintenance" section)

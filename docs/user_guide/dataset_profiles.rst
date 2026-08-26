@@ -89,6 +89,13 @@ produce which analysis dataset. ``get_dataset_profile`` renders these as explici
 dataset with no recorded sample/analysis link so the structure doesn't look silently complete
 when it isn't.
 
+.. warning::
+
+   ``INPUT_FOR`` points **child → parent** ("was derived from") — the same direction as
+   ``PART_OF``, despite the name. The correct pattern is
+   ``(dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)``; writing it the intuitive way round matches
+   zero rows and fails silently. See :doc:`../neo4j_schema` for the verified edge counts.
+
 File-Format, Data Location, and Reuse-Suitability Reasoning
 ----------------------------------------------------------------
 
@@ -126,6 +133,7 @@ See Also
 
 - :doc:`dataset_discovery` — Open-ended/suitability dataset search across many candidates
 - :doc:`structured_queries` — Exact/numeric property queries across the catalog
+- :doc:`content_reasoning` — Relationship/content questions no single field can answer
 - :doc:`assistant` — Overview of how all capabilities fit together, including response assembly
 - :doc:`../neo4j_schema` — Full graph schema reference and coverage stats
 - :doc:`../developer_guide/architecture` — Request lifecycle and tool registry

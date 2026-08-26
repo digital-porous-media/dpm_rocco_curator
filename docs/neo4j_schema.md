@@ -140,18 +140,55 @@ External dataset referenced by this project.
 | `PART_OF` | `RelatedPublication → Dataset` | Publication linked to this project |
 | `PART_OF` | `RelatedSoftware → Dataset` | Software linked to this project |
 | `PART_OF` | `RelatedDataset → Dataset` | External dataset linked to this project |
-| `INPUT_FOR` | `Sample → DigitalDataset` | Sample was imaged to produce this digital dataset |
-| `INPUT_FOR` | `DigitalDataset → AnalysisDataset` | Image data was input for this analysis |
+| `INPUT_FOR` | `DigitalDataset → Sample` | This scan was produced by imaging that sample (1,893 edges) |
+| `INPUT_FOR` | `AnalysisDataset → DigitalDataset` | This analysis was computed from that image data (983 edges) |
+| `INPUT_FOR` | `AnalysisDataset → Sample` | This analysis was computed straight from that sample, no intermediate scan (55 edges) |
 
-## Vector Index
+> ⚠️ **`INPUT_FOR` points CHILD → PARENT**, i.e. "was derived from" — the *same* direction as
+> `PART_OF`, despite what the name suggests. A scan points **at** the sample it came from; an
+> analysis points **at** the scan it came from. This is what `scripts/load_graph.py`'s
+> `_establish_connection` writes (`MERGE (s)<-[:INPUT_FOR]-(t)`, where `s` is the parent in the
+> DRP metadata's `links` list), and it is verified against the live graph by the edge counts
+> above. Writing the pattern the intuitive way round —
+> `(s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset)` — matches **zero rows and fails silently**.
+> To find the scans taken of a given sample:
+>
+> ```cypher
+> MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)
+> RETURN s.title, collect(dd.title)
+> ```
 
-| Field | Value |
-|---|---|
-| Name | `datasetDescription` |
-| Node label | `Dataset` |
-| Property | `descriptionEmbedding` |
-| Dimensions | 4096 (E5-Mistral-7B-Instruct) |
-| Built by | `scripts/build_dataset_vector_index.py` |
+## Vector and Fulltext Indexes
+
+| Name | Node label | Property | Purpose |
+|---|---|---|---|
+| `datasetEmbedding` | `Dataset` | `datasetEmbedding` | Dataset-level semantic search (`GraphStore.search`) |
+| `componentEmbedding` | `DatasetComponent` | `componentEmbedding` | Per-sub-node semantic search (`GraphStore.component_search`) |
+| `factSheetEmbedding` | `Dataset` | `factSheetEmbedding` | Fact-sheet semantic search (`GraphStore.rank_fact_sheets`) |
+| `datasetDescriptionFulltext` | `Dataset` | `title`, `description` | BM25 half of `GraphStore.hybrid_search` |
+| `datasetFactSheetFulltext` | `Dataset` | `factSheetText` | BM25 half of `GraphStore.rank_fact_sheets` |
+
+All 4096-dimensional (E5-Mistral-7B-Instruct), all built by
+`scripts/build_dataset_vector_index.py`.
+
+### Derived (non-source) `Dataset` properties
+
+`datasetEmbedding`, `factSheetEmbedding`, `factSheet` (a JSON string), and `factSheetText` are
+**computed from** the published DRP metadata by the index builder. The published metadata
+itself — `title`, `description`, `doi`, `authors`, and all sub-node properties — is never
+modified. Never `RETURN` a whole node (`RETURN d`) that carries one of these: a 4096-float
+vector reaching an LLM context has already caused a production context-window failure. Use a
+map projection instead: `RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null}`.
+
+### Fact sheets
+
+`Dataset.factSheet` / `Dataset.factSheetText` hold a precomputed, edge-preserving summary of
+each dataset — its description, its sub-nodes with their key properties, and, critically, which
+`DigitalDataset` belongs to which `Sample`. This is the raw material the assistant's
+`reason_about_dataset_content` tool reasons over for questions no single literal field can
+answer ("paired tomographic and segmented images", "the same sample at different
+resolutions"). Fact sheets cache raw material only, never a verdict — whether a dataset
+satisfies a given relationship is judged live, per query.
 
 ## Cypher Quick Reference
 

@@ -740,10 +740,10 @@ since that's more than one tool call in the turn, the single-call short-circuit
 
 For what each tool actually does internally (prompts, matching logic, data schemas), see the
 capability pages: :doc:`../user_guide/dataset_discovery`, :doc:`../user_guide/structured_queries`,
-:doc:`../user_guide/dataset_profiles`, :doc:`../user_guide/portal_docs`,
-:doc:`../user_guide/domain_qa`, :doc:`../user_guide/workflow_guidance`,
-:doc:`../user_guide/literature_search`. The dropdowns below are the module-level (class/file)
-reference.
+:doc:`../user_guide/dataset_profiles`, :doc:`../user_guide/content_reasoning`,
+:doc:`../user_guide/portal_docs`, :doc:`../user_guide/domain_qa`,
+:doc:`../user_guide/workflow_guidance`, :doc:`../user_guide/literature_search`. The dropdowns
+below are the module-level (class/file) reference.
 
 .. dropdown:: src/assistant/conversation_manager.py — Orchestrator
    :icon: file-directory-fill
@@ -765,6 +765,12 @@ reference.
    - ``get_dataset_profile`` — single-dataset deep-dive profile, sub-node/``INPUT_FOR`` pipeline
      structure, file-format/data-location and reuse-suitability reasoning (backed by
      ``src/prompts/dataset_profile.yaml``); called once per dataset for comparisons
+   - ``reason_about_dataset_content`` — relationship/content questions no literal field can
+     answer ("paired tomographic and segmented images"). Ranks precomputed ``Dataset.factSheet``
+     summaries, then runs one cited reasoning pass (``src/prompts/corpus_reasoning.yaml``) behind
+     a fixed honesty framing — see :doc:`../user_guide/content_reasoning`. Reached both by agent
+     routing and by the deterministic ``_needs_content_reasoning()`` gate that
+     ``get_dataset_details``/``search_datasets`` run before committing to a Cypher answer
    - ``get_workflow_guidance`` / ``get_educational_context`` — domain Q&A and workflow guidance,
      backed by ``data/domain_workflows.yaml`` and ``data/tutorials.yaml``
    - ``search_portal_docs`` — DPM Portal documentation search
@@ -779,10 +785,14 @@ reference.
    - ``GraphStore`` class — two layers:
 
      - **High-level** (``search()``, ``hybrid_search()``, ``component_search()``,
-       ``cypher_qa()``, ``get_dataset_profile()``) via ``langchain-neo4j``/the raw driver — used
-       by ``tools.py``. ``get_dataset_profile()`` resolves a title/DOI/dataset-number reference
-       to one ``Dataset`` node and fetches its full ``PART_OF``/``INPUT_FOR`` sub-node graph —
-       see :doc:`../user_guide/dataset_profiles`
+       ``cypher_qa()``, ``get_dataset_profile()``, ``rank_fact_sheets()``,
+       ``fetch_fact_sheets()``) via ``langchain-neo4j``/the raw driver — used by ``tools.py``.
+       ``get_dataset_profile()`` resolves a title/DOI/dataset-number reference to one
+       ``Dataset`` node and fetches its full ``PART_OF``/``INPUT_FOR`` sub-node graph with one
+       small query per node/edge type — see :doc:`../user_guide/dataset_profiles`.
+       ``rank_fact_sheets()`` reuses the same vector+BM25 Reciprocal Rank Fusion as
+       ``hybrid_search()``, pointed at the fact-sheet indexes — see
+       :doc:`../user_guide/content_reasoning`
      - **Low-level** (``semantic_search()``, ``filter_by_metadata()``, ``search_datasets()``,
        ``execute_cypher()``) via the raw ``neo4j`` driver, for hybrid structured/semantic queries
    - Accepts a ``filters: dict`` (not hardcoded field names), per the Croissant extensibility

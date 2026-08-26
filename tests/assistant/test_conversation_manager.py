@@ -46,11 +46,261 @@ class TestToolRoutingClassification:
         assert "get_dataset_profile" in _SELF_CONTAINED_TOOLS
         assert "get_dataset_profile" not in _VERBATIM_TOOLS
 
+    def test_reason_about_dataset_content_is_self_contained_not_verbatim(self):
+        """Its output carries a fixed honesty framing plus citation-checked titles/DOIs
+        taken from graph records. Re-synthesizing it through the outer agent would hand
+        the model back the two things the tool exists to guarantee in code."""
+        assert "reason_about_dataset_content" in _SELF_CONTAINED_TOOLS
+        assert "reason_about_dataset_content" not in _VERBATIM_TOOLS
+
+    def test_reason_about_dataset_content_is_recoverable_from_a_400(self):
+        """Without an entry here, a tool-format 400 on this call can't be recovered and
+        the turn degrades to the honest-failure message instead of a real answer."""
+        from src.assistant.conversation_manager import _TOOL_PARAM_KEYS
+        assert _TOOL_PARAM_KEYS["reason_about_dataset_content"] == ["question"]
+
     def test_search_datasets_framing_unchanged(self):
         hit = "DOI: 10.1/x\ntitle: foo"
         result = _build_verbatim_response("find sandstone datasets", hit)
         assert result.startswith("Here are the datasets matching your query:")
         assert "verify these datasets on the DPM Portal" in result
+
+
+class TestCumulativeFilterTracking:
+    """Live report: a 3-turn chain ("find sandstone" -> "porosity above 0.3" -> "how about
+    below 0.25?") lost the sandstone constraint. The agent itself composed the right
+    self-contained question ("sandstone datasets with porosity below 0.25"), but the tracked
+    filter chain was overwritten with the bare user message ("How about any below 0.25?"),
+    so the NEXT refinement built its compound question from a chain that had forgotten two
+    turns of context."""
+
+    def test_prefers_the_tools_own_question_over_the_raw_message(self):
+        from src.assistant.conversation_manager import _tool_filter_text
+        assert _tool_filter_text(
+            {"question": "sandstone datasets with porosity below 0.25"},
+            "How about any below 0.25?",
+        ) == "sandstone datasets with porosity below 0.25"
+
+    def test_prefers_the_tools_own_query_for_search_datasets(self):
+        from src.assistant.conversation_manager import _tool_filter_text
+        assert _tool_filter_text({"query": "sandstone dataset"}, "raw") == "sandstone dataset"
+
+    def test_falls_back_to_the_user_message_when_no_text_arg(self):
+        from src.assistant.conversation_manager import _tool_filter_text
+        assert _tool_filter_text({"top_k": 5}, "find sandstone") == "find sandstone"
+        assert _tool_filter_text(None, "find sandstone") == "find sandstone"
+
+    def test_blank_arg_falls_back_rather_than_wiping_the_chain(self):
+        from src.assistant.conversation_manager import _tool_filter_text
+        assert _tool_filter_text({"question": "   "}, "find sandstone") == "find sandstone"
+
+    def test_tracked_chain_keeps_the_constraint_the_tool_actually_used(self):
+        """End-to-end on the tracker itself: the stored chain must be the tool's question."""
+        from src.assistant.conversation_manager import ConversationManager, _tool_filter_text
+        mgr = object.__new__(ConversationManager)
+        listing = "- **Gildehauser Sandstone** (DOI: 10.17612/P7WW95)"
+        mgr._track_dataset_listing(
+            "get_dataset_details", listing,
+            _tool_filter_text({"question": "sandstone datasets with porosity below 0.25"},
+                              "How about any below 0.25?"),
+        )
+        assert "sandstone" in mgr._cumulative_filter_text
+        assert mgr._cumulative_filter_text != "How about any below 0.25?"
+
+
+class TestEllipticalRefinementRestriction:
+    """Reported live: a 3-turn chain ("find sandstone" -> "which ones have porosity above
+    0.3?" -> "how about any below 0.25?") answered turn 3 across the WHOLE catalog instead of
+    the sandstone datasets found two turns earlier. Turn 2 matched _REFINEMENT_RE ("which
+    ones") and was restricted; turn 3 named the prior set nowhere, so it bypassed that path
+    and reached the agent unrestricted."""
+
+    def _manager(self, titles=("Gildehauser Sandstone", "Bentheimer Sandstone")):
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = [{"title": t, "doi": None} for t in titles]
+        return mgr
+
+    def test_elliptical_followup_gets_restricted_to_the_prior_listing(self):
+        mgr = self._manager()
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details",
+            {"question": "sandstone datasets with porosity below 0.25"},
+            "How about any below 0.25?",
+        )
+        assert args["restrict_to_titles"] == ["Gildehauser Sandstone", "Bentheimer Sandstone"]
+        # The agent's own question is left alone — it supersedes the replaced constraint
+        # correctly, which blind AND-composition cannot.
+        assert args["question"] == "sandstone datasets with porosity below 0.25"
+
+    def test_topic_change_is_not_restricted(self):
+        """"What about carbonate datasets?" names a new subject and must search the whole
+        catalog — restricting it to a prior sandstone listing would return nothing."""
+        mgr = self._manager()
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details", {"question": "carbonate datasets"},
+            "What about carbonate datasets?",
+        )
+        assert "restrict_to_titles" not in args
+
+    def test_fresh_search_is_not_restricted(self):
+        mgr = self._manager()
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details", {"question": "coal datasets"}, "Find me coal datasets",
+        )
+        assert "restrict_to_titles" not in args
+
+    def test_no_prior_listing_means_no_restriction(self):
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = []
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details", {"question": "q"}, "How about any below 0.25?",
+        )
+        assert "restrict_to_titles" not in args
+
+    def test_never_overrides_a_restriction_already_set(self):
+        mgr = self._manager()
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details",
+            {"question": "q", "restrict_to_titles": ["Only This One"]},
+            "How about any below 0.25?",
+        )
+        assert args["restrict_to_titles"] == ["Only This One"]
+
+    def test_only_applies_to_the_tool_that_accepts_the_parameter(self):
+        mgr = self._manager()
+        args = mgr._with_result_set_restriction(
+            "search_datasets", {"query": "sandstone"}, "How about any below 0.25?",
+        )
+        assert "restrict_to_titles" not in args
+
+    def test_does_not_collide_with_the_deterministic_refinement_dispatch(self):
+        """_REFINEMENT_RE phrasings keep taking the compound-question path (which composes
+        AND restricts); these two mechanisms must not both claim the same message."""
+        from src.assistant.conversation_manager import (
+            _REFINEMENT_RE, _ELLIPTICAL_REFINEMENT_RE,
+        )
+        assert _REFINEMENT_RE.search("of these, which are segmented?")
+        assert not _ELLIPTICAL_REFINEMENT_RE.search("of these, which are segmented?")
+        assert _ELLIPTICAL_REFINEMENT_RE.search("How about any below 0.25?")
+        assert not _REFINEMENT_RE.search("How about any below 0.25?")
+
+
+class TestContinuesFilterChain:
+    """The phrasing-independent refinement signal. Recognising refinement from the USER's
+    wording failed repeatedly — "of these", "which ones", "any below 0.25", "are there any
+    with porosity > 0.3", "how about with porosity > 0.2" are one intent worded five ways,
+    and each new transcript brought a phrasing the pattern list lacked. The agent's own
+    composed question carries the accumulated constraints on every turn, so compare that."""
+
+    def _c(self, new_q, prior):
+        from src.assistant.conversation_manager import _continues_filter_chain
+        return _continues_filter_chain(new_q, prior)
+
+    def test_narrowing_the_same_subject_continues(self):
+        assert self._c("sandstone datasets with porosity > 0.3", "sandstone dataset")
+
+    def test_changing_only_the_threshold_continues(self):
+        """The number is what changes between refinement turns, so it must not count."""
+        assert self._c("sandstone datasets with porosity > 0.2",
+                       "sandstone datasets with porosity > 0.3")
+
+    def test_changing_the_comparison_direction_continues(self):
+        """"above 0.3" -> "below 0.25" is still the same chain."""
+        assert self._c("sandstone datasets with porosity below 0.25",
+                       "sandstone datasets with porosity above 0.3")
+
+    def test_symbolic_and_worded_comparisons_are_equivalent(self):
+        assert self._c("sandstone datasets with porosity > 0.2",
+                       "sandstone datasets with porosity above 0.3")
+
+    def test_topic_change_does_not_continue(self):
+        assert not self._c("carbonate datasets", "sandstone datasets with porosity > 0.3")
+
+    def test_unrelated_search_does_not_continue(self):
+        assert not self._c("coal datasets", "sandstone dataset")
+
+    def test_dropping_a_prior_constraint_does_not_continue(self):
+        """Losing the subject means no restriction — the safe direction, since a wrongly
+        narrowed answer is worse than a catalog-wide one."""
+        assert not self._c("datasets with porosity > 0.2",
+                           "sandstone datasets with porosity > 0.3")
+
+    def test_plural_forms_match(self):
+        assert self._c("sandstone datasets", "sandstones dataset")
+
+    def test_no_prior_chain_does_not_continue(self):
+        assert not self._c("sandstone datasets", None)
+        assert not self._c("sandstone datasets", "")
+
+    def test_generic_chain_with_no_subject_does_not_continue(self):
+        """A chain of nothing but stopwords must not make everything a refinement."""
+        assert not self._c("carbonate datasets", "the datasets")
+
+
+class TestRefinementRestrictionEndToEnd:
+    """Both reported transcripts, replayed through the real decision function."""
+
+    TURN1 = ["Bentheimer Sandstone", "Gildehauser Sandstone",
+             "Digital Rendering of Sedimentary Relief Peels"]
+
+    def _mgr(self, mentions, chain):
+        mgr = object.__new__(ConversationManager)
+        mgr._last_dataset_mentions = [{"title": t, "doi": None} for t in mentions]
+        mgr._cumulative_filter_text = chain
+        return mgr
+
+    @pytest.mark.parametrize("user_msg,agent_question,prior_chain", [
+        # Transcript 2
+        ("Are there any with porosity > 0.3?", "sandstone datasets with porosity > 0.3",
+         "sandstone dataset"),
+        ("How about with porosity > 0.2?", "sandstone datasets with porosity > 0.2",
+         "sandstone datasets with porosity > 0.3"),
+        # Transcript 1
+        ("Which ones have porosity above 0.3?", "sandstone datasets with porosity above 0.3",
+         "sandstone dataset"),
+        ("How about any below 0.25?", "sandstone datasets with porosity below 0.25",
+         "sandstone datasets with porosity above 0.3"),
+    ])
+    def test_reported_refinements_are_restricted(self, user_msg, agent_question, prior_chain):
+        mgr = self._mgr(self.TURN1, prior_chain)
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details", {"question": agent_question}, user_msg
+        )
+        assert args.get("restrict_to_titles") == self.TURN1, f"not restricted: {user_msg!r}"
+        assert args["question"] == agent_question  # agent keeps ownership of the question
+
+    @pytest.mark.parametrize("user_msg,agent_question", [
+        ("What about carbonate datasets?", "carbonate datasets"),
+        ("Find me coal datasets", "coal datasets"),
+        ("Show me datasets by Jane Doe", "datasets authored by Jane Doe"),
+    ])
+    def test_topic_changes_stay_catalog_wide(self, user_msg, agent_question):
+        mgr = self._mgr(self.TURN1, "sandstone datasets with porosity > 0.3")
+        args = mgr._with_result_set_restriction(
+            "get_dataset_details", {"question": agent_question}, user_msg
+        )
+        assert "restrict_to_titles" not in args, f"wrongly restricted: {user_msg!r}"
+
+
+class TestToolArgsByCallId:
+    def test_maps_tool_call_ids_to_their_args(self):
+        from src.assistant.conversation_manager import _tool_args_by_call_id
+
+        class _AI:
+            tool_calls = [{"id": "call_1", "name": "get_dataset_details",
+                           "args": {"question": "sandstone with porosity below 0.25"}}]
+
+        assert _tool_args_by_call_id([_AI()])["call_1"]["question"] == (
+            "sandstone with porosity below 0.25"
+        )
+
+    def test_ignores_messages_without_tool_calls(self):
+        from src.assistant.conversation_manager import _tool_args_by_call_id
+
+        class _Plain:
+            content = "hello"
+
+        assert _tool_args_by_call_id([_Plain()]) == {}
 
 
 class TestStripReasoningScaffold:

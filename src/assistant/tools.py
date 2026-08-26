@@ -328,6 +328,90 @@ def _is_plain_property_query(query: str) -> bool:
     return any(term in lowered for term in _PLAIN_PROPERTY_TERMS)
 
 
+# ---------------------------------------------------------------------------
+# Content-reasoning gate
+# ---------------------------------------------------------------------------
+#
+# The dividing line is NOT "missing field" vs. "hopeless" — it is "is every property in
+# the question a plain, literal, structured field?" A conjunction of independent literal
+# properties ("sandstone AND porosity > 0.3") stays on Cypher, because each clause
+# genuinely narrows the space on its own. A question containing relational language
+# ("paired", "corresponding", "same X", "derived from") must route ENTIRELY to
+# reason_about_dataset_content and is never split: a literal sub-condition inside a
+# relational claim ("segmented" inside "paired ... and segmented") is not an
+# independently valid partial answer, and displaying it as one produces exactly the
+# overclaim this tool exists to remove — a generic "has some segmented data" list
+# presented as if it had verified "paired".
+#
+# This is a deterministic code-level gate, not a tool-description hint, for the reason
+# this codebase keeps rediscovering (see HANDOFF.md, conversation_manager.py): prompting
+# is not reliable for nuanced binary calls, and the two sides here are worded almost
+# identically ("segmented and porosity above 0.3" is plain; "segmented and imaged the
+# same way" is relational). search_datasets already sets the precedent with
+# _is_plain_property_query — same idea, applied to the other half of the split.
+
+_RELATIONAL_PATTERNS = (
+    r"\bpair(?:ed|s|ing)?\b",
+    r"\bcorrespond(?:s|ing|ence)?\b",
+    r"\bcounterparts?\b",
+    r"\bequivalents?\s+(?:of|to)\b",
+    r"\bsame\s+\w+",
+    r"\bderived\s+from\b",
+    r"\bcomes?\s+from\s+the\s+\w+",
+    r"\bversions?\s+of\b",
+    r"\bbefore\s+and\s+after\b",
+    r"\bmatched\s+(?:pairs?|sets?|scans?|images?)\b",
+    r"\baccompan(?:y|ies|ied|ying)\b",
+    r"\b(?:different|differing|varying|multiple|several|two)\s+"
+    r"(?:resolutions?|scales?|voxel\s+sizes?|magnifications?)\b",
+    r"\bimaged\s+(?:the\s+same|at\s+(?:different|multiple|two))\b",
+    r"\bboth\s+\w+(?:\s+\w+)?\s+and\s+\w+(?:\s+\w+)?\s+"
+    r"(?:images?|scans?|versions?|forms?|datasets?)\b",
+)
+
+_RELATIONAL_RE = re.compile("|".join(_RELATIONAL_PATTERNS), re.IGNORECASE)
+
+# Questions that ask for an exhaustive sweep of the catalog rather than "find me some" —
+# these are the ones ranking can't legitimately narrow, so they take the map-reduce path.
+_EXHAUSTIVE_RE = re.compile(
+    r"\b(?:all|every|each|complete list|exhaustive|how many|count of|"
+    r"list (?:all|every)|are there any)\b",
+    re.IGNORECASE,
+)
+
+
+def _content_reasoning_signal(question: str) -> str | None:
+    """Return the relational phrase that makes this question un-answerable by a plain
+    field lookup, or None. Split out from _needs_content_reasoning so the matched phrase
+    can be logged — the same detector does double duty as a live gate and as the
+    monitoring signal for tuning it as false positives/negatives turn up."""
+    m = _RELATIONAL_RE.search(question or "")
+    return m.group(0) if m else None
+
+
+def _needs_content_reasoning(question: str) -> bool:
+    """True if `question` describes a relationship, a comparison across a dataset's
+    sub-nodes, or a pattern implied by methodology/content — rather than being a plain,
+    literal, structured-field question (including a plain conjunction of several such
+    fields, which stays on Cypher).
+
+    Borderline cases — a relational phrase alongside a genuinely literal property, e.g.
+    "paired tomographic and segmented images" — still route here (the whole question
+    goes to content reasoning, never split), but are logged so the heuristic can be
+    reviewed periodically against real usage."""
+    signal = _content_reasoning_signal(question)
+    if not signal:
+        return False
+    if _is_plain_property_query(question):
+        logger.warning(
+            "Content-reasoning gate fired on a question that ALSO names a literal property "
+            "(borderline — logged for review): signal=%r question=%r", signal, question,
+        )
+    else:
+        logger.warning("Content-reasoning gate fired: signal=%r question=%r", signal, question)
+    return True
+
+
 def _extract_query_topic_terms(query: str, inferred_filters: dict) -> list[str]:
     """Pull out the concrete topic term(s) a query is actually asking about, from the
     known schema/imaging vocabularies plus any filter values expand_query inferred.
@@ -353,6 +437,17 @@ def _results_mention_any(results: list[dict], terms: list[str]) -> bool:
 @tool
 def search_datasets(query: str, top_k: int = 5) -> str:
     """Find datasets by semantic similarity to a natural language query. Use for open-ended dataset discovery and suitability/purpose queries with no precise checkable property named, like 'sandstone datasets suitable for LBM simulation' or 'something good for a teaching demo'. Do NOT use this for queries that name a concrete, checkable property — a numeric threshold or range (e.g. 'porosity above 0.3', 'voxel size smaller than 2 microns', 'resolution finer than 5 micrometers'), a specific metadata value, a named person/author, or multiple values/fields (e.g. 'sandstone or carbonate', 'segmented and porosity above 0.3') — even if a rock type or imaging method is also mentioned; those belong to get_dataset_details, which generates real Cypher and can express comparisons and combinations this tool's filters cannot. This tool's own voxelDimensions filter is a coarse micrometer/millimeter/nanometer bucket only — it cannot express a numeric cutoff like "< 2 microns". Do NOT use for how-to or workflow questions (e.g. 'how to compute permeability') — those belong to get_workflow_guidance. Note: this tool also attempts a structured Cypher lookup first for property-shaped queries (including named authors) as a safety net in case routing missed it — but call get_dataset_details directly when you recognize the property, since it's the more reliable path."""
+    # Content-reasoning gate, checked before anything else — including before the
+    # structured-first attempt below. A relational question ("paired tomographic and
+    # segmented images") trips that attempt's `looks_structured` check on its literal
+    # sub-clause alone ("segmented"), and answering it with a bare segmented='yes' list
+    # presents a generic "has some segmented data" result as if "paired" had been
+    # verified, which it never was. Route the WHOLE question to content reasoning
+    # instead — same gate get_dataset_details applies, so the split is correct no matter
+    # which of the two tools the agent happened to call.
+    if _needs_content_reasoning(query):
+        return _reason_about_dataset_content(query)
+
     expansion = expand_query(query)
     expanded = expansion.get("expanded_query", query)
     filters = expansion.get("inferred_filters", {})
@@ -450,6 +545,14 @@ def get_dataset_details(question: str, restrict_to_titles: list[str] | None = No
     these are segmented?"), pass the exact titles from that earlier listing here so
     the answer is deterministically narrowed to that set instead of re-running the
     new filter over the entire graph."""
+    # Deterministic gate BEFORE committing to a plain Cypher answer: if the question
+    # isn't purely literal-field-shaped, Cypher can only answer part of it, and a
+    # partial answer to a relational question is a misleading answer (see
+    # _needs_content_reasoning). Hand the whole question to content reasoning instead.
+    # Applied here rather than left to the agent's tool choice for the same reason
+    # search_datasets checks _is_plain_property_query internally.
+    if _needs_content_reasoning(question):
+        return _reason_about_dataset_content(question, restrict_to_titles=restrict_to_titles)
     return _get_graph_store().cypher_qa(question, restrict_to_titles=restrict_to_titles)
 
 
@@ -732,6 +835,543 @@ def get_dataset_profile(dataset_reference: str, question: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Content/relationship reasoning over precomputed fact sheets
+# ---------------------------------------------------------------------------
+
+# Fixed, never-LLM-authored framing prepended to every answer this tool produces,
+# regardless of which underlying case (structural inference, a fact buried in free text,
+# a cross-sub-node comparison) produced it. The whole point of the tool is to turn "no
+# path to an answer" into a cited, honestly-labelled shortlist — not to manufacture
+# certainty — so the caveat is not optional and not the model's to phrase.
+_CONTENT_REASONING_FRAMING = (
+    "I can't confirm this from a database field — here's what reasoning over the available "
+    "facts and descriptions suggests. Verify before relying on it."
+)
+
+# How many fact sheets the ranking step shortlists, and the hard ceiling on the context
+# they assemble into. Recall matters more than precision here (the reasoning pass discards
+# non-matches anyway), so this wants to be generous — but not unbounded, since large
+# candidate sets measurably degrade reasoning quality ("lost in the middle") on top of the
+# token cost.
+#
+# Sized against the real corpus rather than guessed: measured over all 184 live datasets,
+# a rendered fact sheet is a median of ~4.5k characters (p90 ~11k, max ~21k). A 40-sheet
+# shortlist — the band originally sketched for this feature, before fact-sheet sizes were
+# known — would therefore be ~180k characters, roughly 45k tokens, a third of the model's
+# whole context window on every relational question. 25 sheets lands at ~113k characters
+# (~28k tokens), which typically fits inside the budget below in full, so the shortlist
+# size is a real number rather than one that gets silently cut down to a third of itself
+# on every call. Re-measure both if the fact-sheet content or the corpus size changes
+# substantially.
+_FACT_SHEET_SHORTLIST_K = 25
+_FACT_SHEET_CONTEXT_CHAR_BUDGET = 120_000
+
+# Map-reduce fallback sizing (exhaustive questions only — see _is_exhaustive_question).
+# Batched by CHARACTER budget rather than item count: fact-sheet sizes vary ~30x across the
+# corpus (measured median ~4.5k, max ~21k characters), so a fixed item count would make some
+# batches overflow _build_fact_sheet_context's budget and drop sheets. On an exhaustive
+# question ("list EVERY dataset where...") a silently dropped dataset is precisely the wrong
+# failure — the budget here is small enough that a batch never overflows the context builder.
+_MAP_REDUCE_BATCH_CHAR_BUDGET = 40_000
+_MAP_REDUCE_MAX_WORKERS = 4
+_MAP_REDUCE_MAX_SURVIVORS = 40
+
+
+def _batch_records_by_chars(records: list[dict], budget: int) -> list[list[dict]]:
+    """Pack fact-sheet records into batches whose combined text stays under `budget`.
+    A single record larger than the budget gets a batch to itself rather than being
+    dropped."""
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    used = 0
+    for record in records:
+        size = len(_fact_sheet_text(record))
+        if current and used + size > budget:
+            batches.append(current)
+            current, used = [], 0
+        current.append(record)
+        used += size
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _is_exhaustive_question(question: str) -> bool:
+    """True for a question demanding a complete sweep of the catalog ("list every dataset
+    where...", "how many datasets have...") rather than "find me some". Only these take
+    the map-reduce path: ranking legitimately narrows an ordinary discovery question, but
+    silently ranking away 130 datasets when the user asked for *all* of them would be a
+    wrong answer dressed as a shortlist."""
+    return bool(_EXHAUSTIVE_RE.search(question or ""))
+
+
+def _fact_sheet_text(record: dict) -> str:
+    """The rendered fact-sheet text for one dataset. Prefers the precomputed
+    `factSheetText` (the exact text the ranking indexes were built over, so the model
+    reasons over what the ranker matched on); falls back to a plain dump of the JSON
+    `factSheet` for a dataset embedded before factSheetText existed."""
+    text = (record.get("factSheetText") or "").strip()
+    if text:
+        return text
+    raw = record.get("factSheet")
+    if not raw:
+        return ""
+    try:
+        return json.dumps(json.loads(raw), indent=1, default=str)
+    except (json.JSONDecodeError, TypeError):
+        return str(raw)
+
+
+def _build_fact_sheet_context(records: list[dict]) -> tuple[str, list[dict]]:
+    """Assemble the shortlist's fact sheets into one context block, within the character
+    budget. Returns (context, included_records) — the caller validates the LLM's cited
+    titles against `included_records`, so a dataset dropped by the budget here can never
+    be "found" downstream."""
+    blocks = []
+    included = []
+    used = 0
+    for record in records:
+        text = _fact_sheet_text(record)
+        if not text:
+            continue
+        block = f"--- Dataset fact sheet ---\n{text}"
+        if used + len(block) > _FACT_SHEET_CONTEXT_CHAR_BUDGET and included:
+            break
+        blocks.append(block)
+        included.append(record)
+        used += len(block)
+
+    omitted = len(records) - len(included)
+    if omitted > 0:
+        blocks.append(
+            f"--- NOTE: {omitted} further shortlisted dataset(s) did not fit in this "
+            "context and were NOT considered. ---"
+        )
+    return "\n\n".join(blocks), included
+
+
+def _screen_fact_sheet_batches(question: str, records: list[dict]) -> list[dict]:
+    """Map step of the exhaustive fallback: batch the corpus, ask one cheap
+    "does this batch contain a plausible candidate?" screening call per batch in
+    parallel, and return the survivors for the single careful reasoning pass.
+
+    Bounds token cost per call and scales as the catalog grows, instead of hitting a hard
+    context wall later. A batch whose screening call fails is kept whole rather than
+    dropped — a false positive costs a little context in the reduce step, a false negative
+    silently loses a real answer."""
+    from concurrent.futures import ThreadPoolExecutor
+    from src.prompts.loader import load_prompt, render
+    from src.assistant.llm import get_chat_model
+
+    prompt = load_prompt("corpus_reasoning")
+    batches = _batch_records_by_chars(records, _MAP_REDUCE_BATCH_CHAR_BUDGET)
+
+    def _screen(batch: list[dict]) -> list[dict]:
+        context, included = _build_fact_sheet_context(batch)
+        if not included:
+            return []
+        try:
+            raw = get_chat_model().send_prompt(
+                render(prompt["batch_screen_user"], question=question, context=context),
+                context=prompt["batch_screen_system"],
+                params={"temperature": 0, "max_tokens": 300},
+            )
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+            kept_titles = {str(t).strip().lower() for t in json.loads(cleaned.strip())}
+        except Exception as e:
+            logger.warning("Fact-sheet batch screening failed (%s); keeping whole batch", e)
+            return included
+        return [r for r in included if str(r.get("title", "")).strip().lower() in kept_titles]
+
+    with ThreadPoolExecutor(max_workers=_MAP_REDUCE_MAX_WORKERS) as pool:
+        survivors = [r for batch in pool.map(_screen, batches) for r in batch]
+
+    if len(survivors) > _MAP_REDUCE_MAX_SURVIVORS:
+        logger.warning(
+            "Exhaustive screening kept %d datasets; capping the reasoning pass at %d.",
+            len(survivors), _MAP_REDUCE_MAX_SURVIVORS,
+        )
+        survivors = survivors[:_MAP_REDUCE_MAX_SURVIVORS]
+    return survivors
+
+
+def _parse_reasoning_response(raw: str) -> dict | None:
+    """Parse the reasoning pass's JSON, tolerating markdown fences and surrounding prose.
+
+    Returns None — not {} — when nothing parseable came back. The caller must be able to
+    tell "the model judged the shortlist and found nothing" from "we couldn't read the
+    model's answer": reporting the second as the first states a negative finding that was
+    never actually established, which is exactly the class of overclaim this whole tool
+    exists to remove."""
+    cleaned = (raw or "").strip()
+    if cleaned.startswith("```"):
+        parts = cleaned.split("```")
+        cleaned = parts[1] if len(parts) > 1 else cleaned
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    cleaned = cleaned.strip()
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start != -1 and end > start:
+            try:
+                parsed = json.loads(cleaned[start: end + 1])
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+    return _salvage_truncated_candidates(cleaned)
+
+
+def _salvage_truncated_candidates(text: str) -> dict | None:
+    """Recover the complete candidate objects from a response cut off mid-array.
+
+    A long shortlist with long citations can exhaust max_tokens partway through the JSON.
+    The candidates already emitted are complete, well-formed, and cited — discarding all of
+    them because a later one was truncated throws away a real answer. Each salvaged object
+    still goes through the same citation and shortlist-membership checks downstream, so this
+    loosens parsing, never grounding.
+
+    Returns None if nothing complete can be recovered.
+    """
+    start = text.find('"candidates"')
+    if start == -1:
+        return None
+    array_start = text.find("[", start)
+    if array_start == -1:
+        return None
+
+    candidates = []
+    depth = 0
+    obj_start = None
+    in_string = False
+    escaped = False
+    for i in range(array_start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start is not None:
+                try:
+                    obj = json.loads(text[obj_start: i + 1])
+                    if isinstance(obj, dict):
+                        candidates.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                obj_start = None
+        elif ch == "]" and depth == 0:
+            break
+
+    if not candidates:
+        return None
+    logger.warning(
+        "Content-reasoning response was truncated; salvaged %d complete candidate(s).",
+        len(candidates),
+    )
+    return {"candidates": candidates, "_truncated": True}
+
+
+_DOI_IN_TITLE_RE = re.compile(r"10\.\d{4,9}/[^\s)\]]+")
+_TRAILING_DOI_RE = re.compile(r"\s*\((?:doi|DOI)[:\s][^)]*\)\s*$")
+
+
+def _match_shortlisted_record(claimed_title: str, records: list[dict]) -> dict | None:
+    """Resolve the title the model returned to one of the fact sheets actually sent, or
+    None if it can't be resolved to exactly one.
+
+    Matching has to tolerate formatting drift without ever loosening into "close enough":
+    the model reliably echoes the fact sheet's own header line, which is
+    `Dataset <n>: <title> (DOI: <doi>)`, so it commonly returns the title with the DOI
+    appended. Matching that literally against the bare title dropped EVERY otherwise-valid,
+    correctly-cited candidate — the guard was doing its job, the key was just wrong.
+
+    Resolution order, each requiring an unambiguous hit:
+      1. a DOI appearing anywhere in the claimed title (the strongest possible key),
+      2. exact case-insensitive title match after stripping a trailing "(DOI: ...)",
+      3. a unique containment match either direction (handles a truncated or prefixed title).
+    Anything ambiguous returns None and the candidate is dropped, preserving the guarantee
+    that the model cannot introduce a dataset it was never shown.
+    """
+    claimed = (claimed_title or "").strip()
+    if not claimed:
+        return None
+
+    doi_match = _DOI_IN_TITLE_RE.search(claimed)
+    if doi_match:
+        wanted = _strip_doi_prefix(doi_match.group(0)).lower().rstrip(".,;")
+        for record in records:
+            if _strip_doi_prefix(record.get("doi") or "").lower() == wanted:
+                return record
+
+    bare = _TRAILING_DOI_RE.sub("", claimed).strip().lower()
+    if not bare:
+        return None
+    exact = [r for r in records if str(r.get("title", "")).strip().lower() == bare]
+    if len(exact) == 1:
+        return exact[0]
+
+    partial = [
+        r for r in records
+        if (t := str(r.get("title", "")).strip().lower()) and (t in bare or bare in t)
+    ]
+    return partial[0] if len(partial) == 1 else None
+
+
+# A citation is copied out of the fact sheet, so it arrives carrying that sheet's rendering:
+# the section header it sat under, the verbose stored voxelDimensions phrasing, and often real
+# newlines. Newlines matter beyond looks — a bullet's continuation lines must be single lines or
+# markdown ends the list item and renders the remainder as a separate paragraph, which reads as
+# the last dataset's rationale having escaped its bullet.
+_CITATION_SECTION_PREFIX_RE = re.compile(
+    r"^(?:Samples|Digital datasets(?:\s*\(images/scans\))?|Analysis datasets|"
+    r"Related publications|Structure[^:]*)\s*(?:\(\d+\))?\s*:\s*",
+    re.IGNORECASE,
+)
+
+# "X, Y, Z units (in micrometers): 4.54, 4.54, 4.54" -> "4.54 x 4.54 x 4.54 micrometers".
+# A faithful reformatting of the same recorded numbers and unit — not a paraphrase: the values
+# are the grounding, so they are never rounded, reordered, or dropped.
+# The unit is parenthesised in most sheets but absent in some ("X, Y, Z units: 1024.0, 943.0,
+# None. Unit type not provided"), so it's optional here.
+_VOXEL_DIMS_RE = re.compile(
+    r"X,\s*Y,\s*Z\s*units?\s*(?:\(in\s+(\w+)\))?\s*:\s*"
+    r"([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+|None))?",
+    re.IGNORECASE,
+)
+
+_MAX_CITATION_CHARS = 400
+
+
+def _one_line(text: str) -> str:
+    """Collapse any run of whitespace (including newlines) to single spaces."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _tidy_citation(citation: str) -> str:
+    """Make a fact-sheet-derived citation readable on one line, without changing what it
+    asserts. Only presentation is touched: whitespace is collapsed, the fact sheet's own
+    section header is dropped (it names a section, not evidence), the stored voxel-dimension
+    phrasing is compacted, and stray wrapping quotes are removed. Values are never altered.
+    Over-long citations are cut with an explicit ellipsis rather than silently."""
+    text = _one_line(citation)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    text = _CITATION_SECTION_PREFIX_RE.sub("", text)
+
+    def _compact_voxels(m: re.Match) -> str:
+        unit = m.group(1)
+        dims = [d for d in (m.group(2), m.group(3), m.group(4)) if d and d.lower() != "none"]
+        compacted = " x ".join(dims)
+        return f"{compacted} {unit}" if unit else compacted
+
+    text = _VOXEL_DIMS_RE.sub(_compact_voxels, text)
+    text = re.sub(r"\s+;", ";", text).strip()
+    if len(text) > _MAX_CITATION_CHARS:
+        text = text[:_MAX_CITATION_CHARS].rstrip() + " … (citation truncated)"
+    return text
+
+
+def _render_reasoning_answer(question: str, parsed: dict, records: list[dict]) -> str:
+    """Compose the final answer: the fixed honest framing, then the cited shortlist.
+
+    Two deterministic grounding guards run here rather than being left to the prompt
+    (the project's standing lesson that a "always cite" instruction alone isn't reliable
+    for this model):
+      1. A candidate with no citation is dropped — no citation, no candidate.
+      2. A candidate whose title isn't one of the fact sheets actually sent is dropped,
+         so the model cannot introduce a dataset it was never shown.
+    Titles and DOIs in the output come from the graph records, never retyped by the LLM.
+    """
+    lines = [f"[content reasoning] {_CONTENT_REASONING_FRAMING}", ""]
+
+    kept = []
+    seen_numbers = set()
+    for candidate in parsed.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        title = str(candidate.get("title", "")).strip()
+        citation = str(candidate.get("citation", "")).strip()
+        if not citation:
+            logger.warning("Dropping uncited content-reasoning candidate: %r", title)
+            continue
+        record = _match_shortlisted_record(title, records)
+        if record is None:
+            logger.warning(
+                "Dropping content-reasoning candidate not present in the shortlist "
+                "(possible fabrication): %r", title,
+            )
+            continue
+        number = record.get("datasetNumber")
+        if number in seen_numbers:
+            continue  # same dataset named twice — show it once
+        seen_numbers.add(number)
+        kept.append((record, candidate, citation))
+
+    if not kept:
+        return (
+            f"[content reasoning] {_CONTENT_REASONING_FRAMING}\n\n"
+            "Reasoning over the available dataset facts and descriptions, I couldn't find a "
+            "dataset that plausibly matches this — either no dataset does, or the evidence "
+            "for it isn't recorded in the portal metadata. Try naming a concrete property "
+            "(rock type, segmented status, voxel size, porosity) if one applies."
+        )
+
+    for record, candidate, citation in kept:
+        doi = _strip_doi_prefix(record.get("doi")) or "not available"
+        lines.append(f"- **{record.get('title')}** (DOI: {doi})")
+        # Both continuation lines MUST be single lines — see _one_line/_tidy_citation.
+        reason = _one_line(candidate.get("reason", ""))
+        if reason:
+            lines.append(f"  {reason}")
+        lines.append(f"  *Basis:* {_tidy_citation(citation)}")
+
+    caveat = _one_line(parsed.get("caveat", ""))
+    if caveat:
+        # Labelled and separated: an unlabelled trailing paragraph sitting directly under the
+        # last bullet reads as that dataset's own rationale rather than a caveat on the whole list.
+        lines.append("")
+        lines.append(f"*Note: {caveat}*")
+    if parsed.get("_truncated"):
+        # Never let a truncated list read as a complete one.
+        lines.append("")
+        lines.append(
+            "(This list was cut off before it finished — there may be further matching "
+            "datasets not shown. Ask again to see more.)"
+        )
+    return "\n".join(lines)
+
+
+def _reason_about_dataset_content(question: str, restrict_to_titles: list[str] | None = None) -> str:
+    """Implementation behind the reason_about_dataset_content tool, callable directly by
+    get_dataset_details/search_datasets' internal gates (a @tool-decorated function isn't
+    ordinarily callable as a plain function).
+
+    Query-time sequence:
+      1. Narrow — rank the precomputed fact sheets with the same vector+BM25 RRF fusion
+         hybrid_search already runs (GraphStore.rank_fact_sheets), or, for an exhaustive
+         question, screen the whole corpus map-reduce style. No LLM call in the ranking
+         step. If the caller already knows the exact set (a refinement of a previously
+         listed result), skip narrowing entirely and reason over exactly those datasets.
+      2. Fetch — a plain, generic, ID-based read of Dataset.factSheet for the shortlist.
+      3. Reason — ONE LLM call over the shortlist's fact sheets, which must cite the
+         specific fact it relied on per candidate.
+      4. Compose — fixed honest framing, then the cited shortlist.
+    """
+    from src.prompts.loader import load_prompt, render
+    from src.assistant.llm import get_chat_model
+
+    store = _get_graph_store()
+
+    try:
+        if restrict_to_titles:
+            # The caller already knows the exact set to consider (a refinement of a
+            # previously listed result). Reason over exactly those — ranking could only
+            # lose members of a set that is already correct and small.
+            records = store.fetch_fact_sheets(titles=restrict_to_titles)
+        elif _is_exhaustive_question(question):
+            all_records = store.fetch_fact_sheets()
+            logger.warning(
+                "Exhaustive content question — map-reduce over %d fact sheets: %r",
+                len(all_records), question,
+            )
+            records = _screen_fact_sheet_batches(question, all_records) if all_records else []
+        else:
+            ranked = store.rank_fact_sheets(question, top_k=_FACT_SHEET_SHORTLIST_K)
+            records = store.fetch_fact_sheets(ranked)
+    except Exception as e:
+        logger.error("Fact-sheet retrieval failed: %s", e)
+        return (
+            "I couldn't reason about that right now — the dataset fact-sheet lookup failed. "
+            "Please try again, or ask using a concrete property (rock type, segmented "
+            "status, voxel size, porosity) so it can be answered by a direct query."
+        )
+
+    if not records:
+        return (
+            f"[content reasoning] {_CONTENT_REASONING_FRAMING}\n\n"
+            "I don't have the precomputed dataset fact sheets needed to reason about this "
+            "question — they may not have been built for this deployment yet (see "
+            "scripts/build_dataset_vector_index.py). I'd rather tell you that than answer "
+            "from a partial field lookup that wouldn't actually check what you asked."
+        )
+
+    context, included = _build_fact_sheet_context(records)
+    prompt = load_prompt("corpus_reasoning")
+    system = render(prompt["system"], context=context)
+    user = render(prompt["user"], question=question)
+
+    try:
+        raw = get_chat_model().send_prompt(
+            user, context=system, params={"temperature": 0.2, "max_tokens": 3000}
+        )
+    except Exception as e:
+        logger.error("Content-reasoning LLM call failed: %s", e)
+        return (
+            "I couldn't complete that reasoning step due to an internal error. Could you "
+            "try rephrasing the question?"
+        )
+
+    parsed = _parse_reasoning_response(raw)
+    if parsed is None:
+        logger.error("Could not parse content-reasoning response: %r", (raw or "")[:300])
+        return (
+            "I reasoned over the relevant datasets but couldn't read back a usable result — "
+            "this is an internal formatting failure on my side, not a finding that nothing "
+            "matches. Could you try asking again?"
+        )
+    return _render_reasoning_answer(question, parsed, included)
+
+
+@tool
+def reason_about_dataset_content(question: str) -> str:
+    """Answer a question about datasets that CANNOT be settled by looking up a single literal
+    field — use it for a relationship between datasets or between one dataset's parts, a
+    comparison across a dataset's sub-nodes, or a pattern implied by methodology or content
+    rather than by a stored property value.
+
+    Use this when the question contains relational language — "paired", "corresponding", "the
+    same sample/rock/resolution", "derived from", "before and after", "imaged at different
+    resolutions", "both X and Y images" — or otherwise asks about something that would only
+    show up in a description's free text (e.g. the instrument a scan was taken on, which the
+    portal has no queryable field for). Pass the WHOLE question, including any literal
+    property it also names: a literal clause inside a relational claim ("segmented" inside
+    "paired tomographic and segmented images") is not a valid partial answer on its own, and
+    must not be split off to get_dataset_details.
+
+    Do NOT use this for a plain conjunction of independent literal properties ("sandstone
+    datasets with porosity above 0.3", "segmented carbonate datasets") — each of those clauses
+    narrows the catalog on its own and belongs to get_dataset_details, which generates real
+    Cypher. Do NOT use it for open-ended discovery or suitability with no checkable property
+    ("datasets suitable for LBM simulation") — that's search_datasets.
+
+    The answer is always framed honestly as reasoning rather than a verified database result,
+    and every dataset it names cites the specific recorded fact or quoted sentence it was
+    inferred from. Source label: [content reasoning]
+    """
+    return _reason_about_dataset_content(question)
+
+
+# ---------------------------------------------------------------------------
 # Educational and workflow tools (Bernie)
 # ---------------------------------------------------------------------------
 
@@ -936,6 +1576,7 @@ def build_langchain_tools() -> list:
         search_datasets,
         get_dataset_details,
         get_dataset_profile,
+        reason_about_dataset_content,
         search_portal_docs,
         get_workflow_guidance,
         get_educational_context,

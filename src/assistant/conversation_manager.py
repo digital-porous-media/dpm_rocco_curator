@@ -24,6 +24,13 @@ The agent performs routing implicitly. The mapping is:
   profile / comparison                           dataset: org structure, file types/data
                                                   location, reuse-suitability reasoning;
                                                   called once per dataset for comparisons)
+  Relationship / content  reason_about_dataset_content
+  questions                                      (anything not answerable by a literal
+                                                  field: "paired ... images", "the same
+                                                  sample at different resolutions",
+                                                  instrument named only in free text —
+                                                  ranked fact sheets + one cited
+                                                  reasoning pass, honestly framed)
   Portal how-to / schema  search_portal_docs     (dpm_docs markdown parsed into a heading
                                                   tree at runtime, LLM-selected sections —
                                                   see src/assistant/portal_docs_tree.py)
@@ -77,8 +84,14 @@ _VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
 # than reproduce a fixed data shape verbatim — its own LLM call (dataset_profile.yaml) is
 # grounded in the real fetched profile and prepends a code-generated, never-retyped
 # [dataset profile] title/DOI header, same as the other self-contained tools' own citations.
+# reason_about_dataset_content belongs here for the same reason: it composes a fixed,
+# non-negotiable honesty framing plus a citation-checked shortlist whose titles/DOIs come
+# from graph records, never from the model. Letting the outer agent retype that would put
+# the framing sentence and the citations back in the model's hands — exactly the two
+# things the tool exists to guarantee in code.
 _SELF_CONTAINED_TOOLS = {
     "get_workflow_guidance", "get_educational_context", "search_portal_docs", "get_dataset_profile",
+    "reason_about_dataset_content",
 }
 
 # Tags search_datasets prepends for the narrator's benefit only — never meant to
@@ -235,6 +248,7 @@ _TOOL_PARAM_KEYS: dict[str, list[str]] = {
     "search_datasets": ["query"],
     "get_dataset_details": ["question"],
     "get_dataset_profile": ["dataset_reference", "question"],
+    "reason_about_dataset_content": ["question"],
     "search_literature": ["query"],
     "search_portal_docs": ["question"],
 }
@@ -386,6 +400,44 @@ _DOI_IN_TEXT_RE = re.compile(r'10\.\d{4,9}/[^\s,).]+', re.IGNORECASE)
 _DATASET_ANAPHORA_RE = re.compile(r'\b(that|this|the other) (dataset|one)\b', re.IGNORECASE)
 
 
+# The argument each dataset-listing tool carries its actual search text in.
+_FILTER_TEXT_ARG_KEYS = ("question", "query")
+
+
+def _tool_filter_text(tool_args: dict | None, fallback: str) -> str:
+    """The text that should become _cumulative_filter_text after a dataset-listing tool ran.
+
+    Prefer the tool's OWN argument over the raw user message. The two diverge exactly when it
+    matters: on a follow-up turn like "How about any below 0.25?", the raw message carries no
+    trace of the constraints established earlier, while the agent (following SYSTEM_PROMPT's
+    instruction to compose one self-contained question) actually calls the tool with
+    "sandstone datasets with porosity below 0.25". Storing the raw message discarded the
+    accumulated "sandstone" constraint, so the NEXT refinement composed its compound question
+    from a filter chain that had silently forgotten two turns of context — observed live.
+
+    Falls back to `fallback` (the user's message) when the call carries no usable text
+    argument, which keeps behavior unchanged for the deterministic dispatch paths that pass
+    their own composed text explicitly.
+    """
+    for key in _FILTER_TEXT_ARG_KEYS:
+        value = (tool_args or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+def _tool_args_by_call_id(messages: list) -> dict:
+    """Map tool_call_id -> args for every tool call requested in `messages`, so a ToolMessage
+    result can be traced back to the arguments it was produced from."""
+    args_by_id: dict = {}
+    for m in messages:
+        for call in getattr(m, "tool_calls", None) or []:
+            call_id = call.get("id")
+            if call_id:
+                args_by_id[call_id] = call.get("args") or {}
+    return args_by_id
+
+
 def _detect_comparison_references(
     user_input: str, mentions: list[dict], last_profiled: dict | None = None
 ) -> list[str] | None:
@@ -470,6 +522,94 @@ _REFINEMENT_RE = re.compile(
     r'now (filter|narrow)|filter (further|again)|narrow (it |them )?(down|further))',
     re.IGNORECASE,
 )
+
+
+# Elliptical follow-ups: a bare constraint carrying no subject of its own ("how about any
+# below 0.25?", "any with porosity under 0.2", "just the ones above 5 microns"). These refine
+# the current result set just as much as _REFINEMENT_RE's phrasings do, but they deliberately
+# do NOT take the same deterministic compound-question dispatch, because that path ANDs the
+# new text onto the entire prior chain. That is right for a genuine narrowing ("of these,
+# which are segmented") and wrong here, where the new constraint SUPERSEDES an earlier one on
+# the same property: "porosity above 0.3" AND "any below 0.25" composes to a contradiction and
+# returns nothing.
+#
+# The agent handles supersession correctly on its own — live-observed calling
+# get_dataset_details with "sandstone datasets with porosity below 0.25" after exactly that
+# exchange. What it does not do is keep the answer inside the previously listed set. So for
+# these phrasings the agent composes the question and chat() injects restrict_to_titles into
+# its call (see _with_result_set_restriction), combining the agent's phrasing with the
+# deterministic scope guarantee.
+#
+# "How about"/"what about" alone is NOT enough to match: it must be followed by a comparison
+# word. That is what keeps a topic change ("What about carbonate datasets?") — which names a
+# new subject and should search the whole catalog — out of this path.
+_ELLIPTICAL_REFINEMENT_RE = re.compile(
+    r'\b(?:how|what)\s+about\b[^?]*\b(?:below|above|under|over|less\s+than|greater\s+than|'
+    r'more\s+than|fewer\s+than|between|higher|lower|smaller|larger|finer|coarser)\b'
+    r'|^\s*(?:and\s+|or\s+)?any\s+(?:with|below|above|under|over|less|greater|more|fewer|'
+    r'smaller|larger|higher|lower|finer|coarser)\b'
+    r'|\b(?:just|only)\s+(?:the\s+)?(?:ones|those)\b'
+    r'|\bnarrow\s+(?:it|them|that|this)\b|\brestrict\b',
+    re.IGNORECASE,
+)
+
+
+# Words that carry no subject information, so they can't distinguish "still talking about
+# sandstone" from "now asking about carbonate". Comparison words and the generic
+# dataset/data nouns are deliberately included: the comparison is exactly what CHANGES
+# between refinement turns ("above 0.3" -> "below 0.25"), and every question in this domain
+# says "dataset".
+_CHAIN_STOPWORDS = frozenset("""
+a an the and or of for in on to with within from by as at any all some each every both
+are there is be been being was were do does did done has have had having
+find show give list get me my i you your we can could would please
+what which who whose that this these those it its them they how about when where why
+dataset datasets data datum set sets
+above below over under greater less than more fewer between higher lower smaller larger
+finer coarser most least equal exactly around approximately only just also still other
+containing contains include includes including using used based
+""".split())
+
+
+def _chain_terms(text: str) -> set[str]:
+    """The subject-bearing words of a query, normalized for comparison.
+
+    Numbers are dropped entirely (they are the part that changes between refinement turns),
+    as are stopwords and simple plurals.
+    """
+    words = re.findall(r"[a-zA-Z]+", (text or "").lower())
+    terms = set()
+    for w in words:
+        if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        if w and w not in _CHAIN_STOPWORDS and len(w) > 2:
+            terms.add(w)
+    return terms
+
+
+def _continues_filter_chain(new_question: str, prior_chain: str | None) -> bool:
+    """True if a freshly composed tool question still carries every subject term of the
+    filter chain built up so far — i.e. it narrows that chain rather than starting over.
+
+    This replaces trying to recognise refinement from the USER's phrasing, which failed
+    repeatedly: "of these", "which ones", "any below 0.25", "are there any with porosity >
+    0.3", "how about with porosity > 0.2" are all the same intent worded five ways, and each
+    new transcript brought a phrasing the pattern list didn't have — the growing-pattern-library
+    problem this codebase keeps rediscovering.
+
+    The agent's own composed question is a far better signal, and it is available on every
+    turn: live logs show it reliably restating the accumulated constraints ("sandstone datasets
+    with porosity > 0.2" two turns after the user last said "sandstone"). A genuine topic change
+    drops them instead ("carbonate datasets"), which is exactly what this detects.
+
+    Conservative by construction: it requires the prior chain's terms to SURVIVE, so a dropped
+    subject means no restriction and today's catalog-wide behavior — never a wrongly narrowed
+    answer.
+    """
+    prior_terms = _chain_terms(prior_chain)
+    if not prior_terms:
+        return False
+    return prior_terms.issubset(_chain_terms(new_question))
 
 
 # Trailing paragraphs that just restate bulleted dataset results in prose instead of
@@ -854,6 +994,17 @@ dataset — keep using get_dataset_profile with the same resolved reference.
 "which of these two is better for X") → call get_dataset_profile once per dataset, each with \
 its own resolved reference and the comparison question, then synthesize the comparison \
 yourself from both results — do not look for or invent a separate comparison tool.
+- **A question that no single literal field can settle — a RELATIONSHIP between \
+datasets or between one dataset's own parts, a comparison across its sub-nodes, or a \
+pattern implied by methodology/content** ("paired tomographic and segmented images", \
+"the same sample imaged at different resolutions", "datasets with a segmented version \
+of the same scan", "imaged on the same instrument") → reason_about_dataset_content. \
+Pass the WHOLE question, including any literal property it also names — do NOT split a \
+literal clause out of a relational claim and send it to get_dataset_details on its own \
+("segmented" inside "paired ... and segmented" is not an independently valid partial \
+answer, and presenting one as if it answered the question is a wrong answer, not a \
+partial one). A plain conjunction of independent literal properties ("sandstone AND \
+porosity above 0.3") is NOT this case and stays on get_dataset_details.
 - Dataset discovery by topic, suitability, or purpose with no precise checkable \
 property named (e.g. "datasets suitable for LBM simulation", "something good for a \
 teaching demo") → search_datasets. (search_datasets also attempts a structured lookup \
@@ -889,7 +1040,7 @@ Just answer the question directly, using headers/bullets only where they genuine
 readability.
 - Relay source labels from tool output exactly as returned: [graph match], [semantic match], \
 [semantic scholar], [cypher match], [component match], [hybrid match], [portal docs], \
-[dataset profile]. Do not strip or rename them.
+[dataset profile], [content reasoning]. Do not strip or rename them.
 - When presenting dataset search results, always include the DOI for each entry. \
 The tool output includes it as "DOI: xxx" — preserve it verbatim in your response.
 - Always use LaTeX delimiters for mathematical expressions: inline `$...$`, block `$$...$$` \
@@ -1309,6 +1460,56 @@ class ConversationManager:
             tool_name, len(mentions), self._cumulative_filter_text,
         )
 
+    def _with_result_set_restriction(
+        self, tool_name: str, tool_args: dict, user_input: str
+    ) -> dict:
+        """Add restrict_to_titles to a get_dataset_details call that is an elliptical
+        refinement of the datasets already listed this session.
+
+        Closes the gap between the two existing mechanisms. The deterministic refinement
+        dispatch (see _REFINEMENT_RE in chat()) both composes the question AND restricts the
+        scope, but only fires for phrasings that name the prior set ("of these", "which
+        ones"). A bare constraint like "how about any below 0.25?" names nothing, so it fell
+        through to the agent — which composed a good self-contained question but searched the
+        entire catalog, silently leaving the result set the user was working through.
+
+        Here the agent keeps ownership of the question (it supersedes a replaced constraint
+        correctly, which blind AND-composition cannot) and this adds the scope guarantee
+        on top.
+
+        A turn counts as a refinement when EITHER signal fires:
+          1. the agent's composed question still carries every subject term of the filter
+             chain so far (see _continues_filter_chain) — the primary, phrasing-independent
+             signal, and
+          2. the user's message is an elliptical bare constraint (_ELLIPTICAL_REFINEMENT_RE),
+             which covers the case where the agent drops the subject from its question.
+
+        Deliberately narrow otherwise: only get_dataset_details (the only dataset tool that
+        accepts the parameter), only when a prior listing exists, and never overriding a
+        restriction the caller already set.
+        """
+        if tool_name != "get_dataset_details" or tool_args.get("restrict_to_titles"):
+            return tool_args
+        if not self._last_dataset_mentions:
+            return tool_args
+
+        question = tool_args.get("question") or ""
+        continues = _continues_filter_chain(question, self._cumulative_filter_text)
+        elliptical = bool(_ELLIPTICAL_REFINEMENT_RE.search(user_input))
+        if not (continues or elliptical):
+            return tool_args
+
+        titles = [m["title"] for m in self._last_dataset_mentions if m.get("title")]
+        if not titles:
+            return tool_args
+        logger.warning(
+            "Refinement of the current result set (continues_chain=%s elliptical=%s) — "
+            "restricting to the %d previously listed dataset(s); prior chain %r, "
+            "agent's question %r",
+            continues, elliptical, len(titles), self._cumulative_filter_text, question,
+        )
+        return {**tool_args, "restrict_to_titles": titles}
+
     def chat(self, user_input: str, history: list[dict] | None = None) -> str:
         """
         Send a message and get a response.
@@ -1464,14 +1665,22 @@ class ConversationManager:
                 and first_turn_tool_calls[0]["name"] in (_SELF_CONTAINED_TOOLS | _VERBATIM_TOOLS)
                 and not _needs_followup_tool_call(user_input, first_turn_tool_calls[0]["name"])
             ):
+                first_tool_name = first_turn_tool_calls[0]["name"]
+                # The agent composes the question; this adds the "stay inside the datasets
+                # already listed" guarantee for an elliptical follow-up that the
+                # deterministic refinement dispatch above doesn't recognise.
+                first_tool_args = self._with_result_set_restriction(
+                    first_tool_name, dict(first_turn_tool_calls[0].get("args") or {}), user_input
+                )
                 dispatched = _run_manual_dispatch(
-                    [{"name": first_turn_tool_calls[0]["name"], "args": first_turn_tool_calls[0]["args"]}],
+                    [{"name": first_tool_name, "args": first_tool_args}],
                     effective_user_input,
                     prior,
                 )
                 if dispatched is not None:
                     self._track_dataset_listing(
-                        first_turn_tool_calls[0]["name"], dispatched, effective_user_input
+                        first_tool_name, dispatched,
+                        _tool_filter_text(first_tool_args, effective_user_input),
                     )
                     return dispatched
                 # The tool itself failed inside manual dispatch — fall through to the
@@ -1503,9 +1712,16 @@ class ConversationManager:
             # does that dataset compare with X"). Left unchanged for tools that produced
             # neither, so a get_dataset_profile turn doesn't wipe out the prior listing and
             # vice versa.
+            tool_args_by_id = _tool_args_by_call_id(new_messages)
             for m in new_messages:
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in (_DATASET_LISTING_TOOLS | {"get_dataset_profile"}):
-                    self._track_dataset_listing(m.name, m.content, effective_user_input)
+                    self._track_dataset_listing(
+                        m.name, m.content,
+                        _tool_filter_text(
+                            tool_args_by_id.get(getattr(m, "tool_call_id", None)),
+                            effective_user_input,
+                        ),
+                    )
 
             verbatim_tool_msgs = [
                 m for m in new_messages
@@ -1534,7 +1750,10 @@ class ConversationManager:
                     dispatched = _run_manual_dispatch(tool_calls, effective_user_input, prior)
                     if dispatched is not None:
                         for tc in tool_calls:
-                            self._track_dataset_listing(tc["name"], dispatched, effective_user_input)
+                            self._track_dataset_listing(
+                                tc["name"], dispatched,
+                                _tool_filter_text(tc.get("args"), effective_user_input),
+                            )
                         return dispatched
             return _non_empty(_clean_response(raw))
         except Exception as e:
@@ -1549,7 +1768,10 @@ class ConversationManager:
                     dispatched = _run_manual_dispatch(tool_calls, effective_user_input, prior)
                     if dispatched is not None:
                         for tc in tool_calls:
-                            self._track_dataset_listing(tc["name"], dispatched, effective_user_input)
+                            self._track_dataset_listing(
+                                tc["name"], dispatched,
+                                _tool_filter_text(tc.get("args"), effective_user_input),
+                            )
                         return dispatched
                     # A tool call WAS identified and dispatch was attempted — real,
                     # grounded tool output may or may not exist depending on whether the

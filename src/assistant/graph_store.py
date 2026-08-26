@@ -24,7 +24,15 @@ Node labels:
 
 Relationships:
     PART_OF   (Sample|DigitalDataset|AnalysisDataset → Dataset)
-    INPUT_FOR (Dataset → Dataset)
+    INPUT_FOR (DigitalDataset → Sample, AnalysisDataset → DigitalDataset,
+               AnalysisDataset → Sample)
+               Points CHILD → PARENT ("was derived from"), the same direction as
+               PART_OF — NOT parent → child. Verified against the live graph
+               (1893 DigitalDataset→Sample, 983 AnalysisDataset→DigitalDataset,
+               55 AnalysisDataset→Sample) and against scripts/load_graph.py's
+               _establish_connection, which writes `(source)<-[:INPUT_FOR]-(target)`
+               with `source` being the parent node in the DRP metadata's links list.
+               Querying it the other way round silently matches zero rows.
 
 Vector indexes:
     datasetEmbedding  — node: Dataset, property: datasetEmbedding
@@ -34,7 +42,21 @@ Vector indexes:
                          property: componentEmbedding
                          Each sub-node embedded individually with parent Dataset context injected.
                          Used by component_search() for fine-grained retrieval.
-    Both built by: scripts/build_dataset_vector_index.py
+    factSheetEmbedding — node: Dataset, property: factSheetEmbedding
+                         Embedding of the dataset's fact sheet (Dataset.factSheetText) — an
+                         edge-preserving narration of which DigitalDatasets belong to which
+                         Sample, their resolutions/segmented status, and sub-node descriptions.
+                         Used by rank_fact_sheets() to narrow before content reasoning.
+    All built by: scripts/build_dataset_vector_index.py
+
+Fulltext indexes:
+    datasetDescriptionFulltext — Dataset.title + Dataset.description (BM25 half of hybrid_search)
+    datasetFactSheetFulltext   — Dataset.factSheetText (BM25 half of rank_fact_sheets)
+
+Derived (non-source) Dataset properties, all written by build_dataset_vector_index.py:
+    datasetEmbedding, factSheetEmbedding, factSheet (JSON string), factSheetText.
+    These are computed FROM the published DRP metadata; the published metadata itself
+    (title, description, doi, authors, sub-node properties) is never modified.
 
 Alternative approach (not implemented):
     Chunking strategy stores Description + Chunk nodes instead of embedding on Dataset.
@@ -214,6 +236,37 @@ def _format_dataset_rows(rows: list) -> str | None:
     return "\n".join(lines)
 
 
+def _rrf_merge(rank_lists: list[dict], penalty: int, k_rrf: int = 60) -> list:
+    """
+    Reciprocal Rank Fusion over N independent rank lookups.
+
+    Each rank_lists entry is {id: 0-based rank} from one retriever. An id missing
+    from a list is scored at `penalty` (conventionally candidate_k + 1) rather than
+    dropped, so a strong hit in one retriever still ranks even when the other never
+    saw it. Returns all ids, best first.
+
+    Shared by hybrid_search (description vector + description BM25) and
+    rank_fact_sheets (fact-sheet vector + fact-sheet BM25) — the fusion mechanism is
+    identical in both cases and only the underlying indexes differ, so there is one
+    implementation rather than a second, drifting copy. Ties break on first-seen order
+    (never on the id itself, which may be int for one dataset and str for another).
+    """
+    order: list = []
+    seen: set = set()
+    for ranks in rank_lists:
+        for key in ranks:
+            if key not in seen:
+                seen.add(key)
+                order.append(key)
+
+    scored = []
+    for position, key in enumerate(order):
+        rrf = sum(1.0 / (ranks.get(key, penalty) + k_rrf) for ranks in rank_lists)
+        scored.append((-rrf, position, key))
+    scored.sort()
+    return [key for _, _, key in scored]
+
+
 def _validate_keys(properties: dict) -> None:
     """
     Raises ValueError if any property key contains characters that could
@@ -284,8 +337,15 @@ Relationships (all use PART_OF or INPUT_FOR — no other relationship types exis
   (DigitalDataset)-[:PART_OF]->(Dataset)
   (AnalysisDataset)-[:PART_OF]->(Dataset)
   (RelatedPublication)-[:PART_OF]->(Dataset)
-  (Sample)-[:INPUT_FOR]->(DigitalDataset)
-  (DigitalDataset)-[:INPUT_FOR]->(AnalysisDataset)
+  (DigitalDataset)-[:INPUT_FOR]->(Sample)
+  (AnalysisDataset)-[:INPUT_FOR]->(DigitalDataset)
+  (AnalysisDataset)-[:INPUT_FOR]->(Sample)
+  IMPORTANT — INPUT_FOR points CHILD -> PARENT ("was derived from"), the SAME direction
+  as PART_OF, despite what its name suggests. A scan points AT the sample it was imaged
+  from; an analysis points AT the scan it was computed from. Writing it the other way
+  round — (s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset) — matches ZERO rows and silently
+  returns nothing. To find which scans came from a given sample, use:
+    MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)
 
 Important:
   - porosity is on Sample nodes, NOT on Dataset nodes. Always join via PART_OF.
@@ -406,14 +466,32 @@ Fine Tuning:
     WITH d, dd, ad
     WHERE dd.segmented = 'yes' AND ad.type = 'simulation'
     RETURN DISTINCT d.identifier, d.title
+- NEVER write `x IS NULL OR <condition>` for a condition the question actually REQUIRES.
+  That clause is true for every row where the OPTIONAL MATCH found nothing, so it admits
+  every dataset that simply has no Sample/DigitalDataset/AnalysisDataset attached — the
+  filter looks present but matches almost everything, and the user gets datasets that
+  plainly do not meet what they asked for. This is the single most common way a generated
+  query silently returns wrong rows.
+    WRONG (returns unrelated datasets that have no Sample at all):
+      OPTIONAL MATCH (d)<-[:PART_OF]-(s:Sample)
+      WITH d, s
+      WHERE s IS NULL OR toLower(s.porousMediaType) = 'sandstone'
+    RIGHT (the condition is required, so require the node too):
+      MATCH (d:Dataset)<-[:PART_OF]-(s:Sample)
+      WHERE toLower(s.porousMediaType) = 'sandstone'
+      RETURN DISTINCT d.identifier, d.title, d.doi
+  Use OPTIONAL MATCH + a null-tolerant WHERE only for a property the question treats as
+  optional/extra information, never for one it is filtering on. A dataset missing the
+  property is NOT a match — returning it is a wrong answer, not a lenient one.
 - If you do use UNION, all branches must return the same column names.
 - porosity is stored on Sample nodes with an inconsistent scale (see Schema below) —
-  always normalize with a CASE expression before filtering, e.g. for "porosity above 0.3":
-    MATCH (d:Dataset)
-    OPTIONAL MATCH (d)<-[:PART_OF]-(s:Sample)
-    WITH d, s
-    WHERE CASE WHEN s.porosity > 1 THEN s.porosity / 100 ELSE s.porosity END > 0.3
-    RETURN DISTINCT d.identifier, d.title
+  always normalize with a CASE expression before filtering. Note this filter REQUIRES a
+  Sample, so it uses a plain MATCH (see the "IS NULL OR" rule above), e.g. for
+  "sandstone datasets with porosity above 0.3":
+    MATCH (d:Dataset)<-[:PART_OF]-(s:Sample)
+    WHERE toLower(s.porousMediaType) = 'sandstone'
+      AND CASE WHEN s.porosity > 1 THEN s.porosity / 100 ELSE s.porosity END > 0.3
+    RETURN DISTINCT d.identifier, d.title, d.doi
 - voxelDimensions on DigitalDataset is free text with an embedded unit and no 'x' delimiter
   between the three numbers (see Schema below) — to filter on a numeric voxel size threshold,
   extract the first number after the colon, then convert to a common unit (micrometers) before
@@ -732,22 +810,12 @@ RETURN
                 "hybrid_search: BM25 query failed (%s); falling back to vector only", e
             )
 
-        # --- RRF merge ---
-        all_ids = set(vec_rank) | set(bm25_rank)
-        penalty = candidate_k + 1  # rank assigned to a datasetNumber absent from one list
-        k_rrf = 60  # standard RRF constant
-
-        scored: list[tuple[float, str]] = []
-        for dataset_number in all_ids:
-            r_vec = vec_rank.get(dataset_number, penalty)
-            r_bm25 = bm25_rank.get(dataset_number, penalty)
-            rrf = 1.0 / (r_vec + k_rrf) + 1.0 / (r_bm25 + k_rrf)
-            scored.append((rrf, dataset_number))
-        scored.sort(reverse=True)
+        # --- RRF merge (shared with rank_fact_sheets — see _rrf_merge) ---
+        merged = _rrf_merge([vec_rank, bm25_rank], penalty=candidate_k + 1)
 
         # --- Apply filters and assemble results ---
         results = []
-        for _, dataset_number in scored:
+        for dataset_number in merged:
             if len(results) >= top_k:
                 break
             entry = vec_meta.get(dataset_number) or bm25_meta.get(dataset_number)
@@ -796,6 +864,153 @@ RETURN
             })
         return results
 
+    # ---------------------------------------------------------------------------
+    # Fact sheets — raw material for reason_about_dataset_content
+    # ---------------------------------------------------------------------------
+
+    def rank_fact_sheets(self, query: str, top_k: int = 40) -> list:
+        """
+        Rank datasets by how well their precomputed fact sheet matches `query`, using
+        the SAME Reciprocal Rank Fusion hybrid_search already runs — just pointed at the
+        fact-sheet indexes (`factSheetEmbedding` + `datasetFactSheetFulltext`) instead of
+        the plain-description ones. Returns datasetNumbers, best first, no LLM call.
+
+        This is the narrowing step in front of reason_about_dataset_content: one general
+        mechanism for any relational question, rather than a hand-written Cypher
+        co-occurrence condition per relational phrasing ("different resolutions",
+        "segmented pairing", and whatever someone asks next). Because a fact sheet
+        already narrates structural relationships in prose — a sample's child digital
+        datasets, their resolutions, their segmented status — a query like "paired
+        tomographic and segmented images" has a real chance of landing near the right
+        fact sheets in embedding space, and BM25 catches what vector similarity
+        underweights: literal keyword overlap when the sheet's overall phrasing isn't
+        semantically close.
+
+        Trade-off worth naming: a hand-written exact Cypher condition for one
+        relationship would have zero recall risk for that one case. Hybrid vector+BM25
+        ranking narrows that gap considerably but doesn't eliminate it — accepted in
+        exchange for not needing new code per future relational phrasing. Note the
+        *ranking* is approximate; what the reasoning pass then asserts is not, since the
+        fact sheet carries the literal recorded properties.
+
+        Returns [] when graph search is disabled or neither fact-sheet index is
+        queryable (e.g. the fact sheets have not been built yet — see
+        scripts/build_dataset_vector_index.py); callers degrade honestly rather than
+        silently reasoning over nothing.
+        """
+        if not self._enabled or not self._driver:
+            return []
+
+        candidate_k = top_k * 2  # fetch extra candidates so RRF has room to rerank
+
+        vec_rank: dict = {}
+        try:
+            from src.assistant.llm import get_embeddings_model
+            embedding = get_embeddings_model().embed_query(query)
+            rows = self.execute_cypher(
+                """
+                CALL db.index.vector.queryNodes('factSheetEmbedding', $k, $embedding)
+                YIELD node, score
+                RETURN node.datasetNumber AS datasetNumber
+                """,
+                {"k": candidate_k, "embedding": embedding},
+            )
+            for rank, row in enumerate(rows):
+                number = row.get("datasetNumber")
+                if number is not None and number not in vec_rank:
+                    vec_rank[number] = rank
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "rank_fact_sheets: fact-sheet vector search failed (%s); using BM25 only", e
+            )
+
+        bm25_rank: dict = {}
+        try:
+            rows = self.execute_cypher(
+                """
+                CALL db.index.fulltext.queryNodes('datasetFactSheetFulltext', $search_query,
+                    {limit: $limit})
+                YIELD node, score
+                RETURN node.datasetNumber AS datasetNumber
+                """,
+                {"search_query": query, "limit": candidate_k},
+            )
+            for rank, row in enumerate(rows):
+                number = row.get("datasetNumber")
+                if number is not None and number not in bm25_rank:
+                    bm25_rank[number] = rank
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "rank_fact_sheets: fact-sheet BM25 search failed (%s); using vector only", e
+            )
+
+        merged = _rrf_merge([vec_rank, bm25_rank], penalty=candidate_k + 1)
+        return merged[:top_k]
+
+    def fetch_fact_sheets(
+        self,
+        dataset_numbers: list | None = None,
+        titles: list[str] | None = None,
+    ) -> list[dict]:
+        """
+        Plain, generic, ID-based read of the precomputed `Dataset.factSheet` /
+        `Dataset.factSheetText` properties — nothing is computed here and nothing about
+        this query is pattern-specific: it is literally "give me these datasets' fact
+        sheets".
+
+        ``dataset_numbers`` fetches these, preserving the given (ranked) order.
+        ``titles`` fetches by exact case-insensitive title instead — used when a caller
+        already knows the exact set to reason over (a refinement of a previously listed
+        result set), so no ranking is needed.
+        Passing neither fetches every dataset that has a fact sheet (the exhaustive
+        map-reduce fallback path).
+
+        Datasets with no fact sheet built yet are omitted rather than returned empty.
+        """
+        if not self._enabled or not self._driver:
+            return []
+
+        if dataset_numbers is not None:
+            if not dataset_numbers:
+                return []
+            rows = self.execute_cypher(
+                """
+                MATCH (d:Dataset)
+                WHERE d.datasetNumber IN $numbers AND d.factSheet IS NOT NULL
+                RETURN d.datasetNumber AS datasetNumber, d.title AS title, d.doi AS doi,
+                       d.factSheet AS factSheet, d.factSheetText AS factSheetText
+                """,
+                {"numbers": list(dataset_numbers)},
+            )
+            by_number = {r["datasetNumber"]: r for r in rows}
+            return [by_number[n] for n in dataset_numbers if n in by_number]
+
+        if titles is not None:
+            if not titles:
+                return []
+            rows = self.execute_cypher(
+                """
+                MATCH (d:Dataset)
+                WHERE toLower(d.title) IN $titles AND d.factSheet IS NOT NULL
+                RETURN d.datasetNumber AS datasetNumber, d.title AS title, d.doi AS doi,
+                       d.factSheet AS factSheet, d.factSheetText AS factSheetText
+                """,
+                {"titles": [t.lower() for t in titles if t]},
+            )
+            return rows
+
+        return self.execute_cypher(
+            """
+            MATCH (d:Dataset)
+            WHERE d.factSheet IS NOT NULL
+            RETURN d.datasetNumber AS datasetNumber, d.title AS title, d.doi AS doi,
+                   d.factSheet AS factSheet, d.factSheetText AS factSheetText
+            ORDER BY d.datasetNumber
+            """
+        )
+
     def get_dataset(self, dataset_id: str) -> dict | None:
         """Fetch full Dataset node properties by datasetNumber."""
         if not self._enabled or not self._graph:
@@ -834,8 +1049,16 @@ RETURN
         PART_OF in the live schema (MANUAL_SCHEMA above only documents this for Sample/
         DigitalDataset/AnalysisDataset/RelatedPublication) — verify empirically
         (e.g. MATCH (n:RelatedSoftware)-[r]->() RETURN type(r), count(*)) and update the
-        relationship type below if it differs. OPTIONAL MATCH degrades safely (empty list) if
-        the guessed relationship type is wrong, so this is safe to ship speculatively.
+        relationship type below if it differs. A missing relationship type degrades safely
+        (empty list), so this is safe to ship speculatively.
+
+        The sub-node graph is fetched with one small query per node/edge type rather than a
+        single query chaining several OPTIONAL MATCHes. That earlier shape cross-multiplied
+        before collect() — samples x digital x analysis x publications — and was measured at
+        28s on the live graph for the largest dataset (961 sub-nodes) with only the PART_OF
+        joins present; adding the two INPUT_FOR joins back on top of it did not complete at
+        all within 300s. Each query below is a flat relationship scan instead, and the
+        assembly happens in Python.
         """
         if not self._enabled or not self._driver:
             return None
@@ -874,55 +1097,77 @@ RETURN
             return DatasetProfileAmbiguous(candidates=candidates)
 
         matched_number = candidates[0]["datasetNumber"]
-        rows = self.execute_cypher(
-            """
-            MATCH (d:Dataset {datasetNumber: $datasetNumber})
-            OPTIONAL MATCH (s:Sample)-[:PART_OF]->(d)
-            OPTIONAL MATCH (dd:DigitalDataset)-[:PART_OF]->(d)
-            OPTIONAL MATCH (ad:AnalysisDataset)-[:PART_OF]->(d)
-            OPTIONAL MATCH (rp:RelatedPublication)-[:PART_OF]->(d)
-            OPTIONAL MATCH (rs:RelatedSoftware)-[:PART_OF]->(d)
-            OPTIONAL MATCH (rds:RelatedDataset)-[:PART_OF]->(d)
-            OPTIONAL MATCH (s)-[:INPUT_FOR]->(dd)
-            OPTIONAL MATCH (dd)-[:INPUT_FOR]->(ad)
-            RETURN d{.*, datasetEmbedding: null} AS d,
-                   collect(DISTINCT s{.*, componentEmbedding: null})   AS samples,
-                   collect(DISTINCT dd{.*, componentEmbedding: null})  AS digital_datasets,
-                   collect(DISTINCT ad{.*, componentEmbedding: null})  AS analysis_datasets,
-                   collect(DISTINCT rp)  AS related_publications,
-                   collect(DISTINCT rs)  AS related_software,
-                   collect(DISTINCT rds) AS related_datasets,
-                   collect(DISTINCT {sample: s.identifier, digitalDataset: dd.identifier}) AS sample_to_digital_edges,
-                   collect(DISTINCT {digitalDataset: dd.identifier, analysisDataset: ad.identifier}) AS digital_to_analysis_edges
-            """,
-            {"datasetNumber": matched_number},
+        params = {"datasetNumber": matched_number}
+
+        dataset_rows = self.execute_cypher(
+            "MATCH (d:Dataset {datasetNumber: $datasetNumber}) "
+            "RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null, "
+            "         factSheet: null, factSheetText: null} AS d",
+            params,
         )
-        if not rows:
+        if not dataset_rows:
             return None
-        row = rows[0]
 
-        def _drop_nulls(nodes: list) -> list[dict]:
-            # d{.*, componentEmbedding: null} above nulls out the embedding vector rather
-            # than omitting the key entirely (Cypher map projection can't drop a key), and a
-            # node with ALL properties null (an OPTIONAL MATCH that found nothing at all,
-            # not even an identifier) collapses to an empty/all-null map here — both cases
-            # are filtered out downstream by _strip_embedding_fields/_build_profile_context's
-            # "drop falsy values" pass in tools.py, not here.
-            return [dict(n) for n in nodes if n is not None and any(v is not None for v in dict(n).values())]
+        def _nodes(query: str) -> list[dict]:
+            # A map projection nulls a key rather than dropping it (Cypher can't drop keys),
+            # so a node whose only property was an embedding collapses to an all-null map —
+            # drop those rather than pass an empty node downstream.
+            return [
+                dict(r["n"])
+                for r in self.execute_cypher(query, params)
+                if r.get("n") is not None and any(v is not None for v in dict(r["n"]).values())
+            ]
 
-        def _drop_edgeless(edges: list, left: str, right: str) -> list[dict]:
-            return [e for e in edges if e.get(left) is not None and e.get(right) is not None]
+        def _edges(query: str, left: str, right: str) -> list[dict]:
+            return [
+                {left: r[left], right: r[right]}
+                for r in self.execute_cypher(query, params)
+                if r.get(left) is not None and r.get(right) is not None
+            ]
 
         return DatasetProfileMatch(
-            dataset=dict(row["d"]),
-            samples=_drop_nulls(row["samples"]),
-            digital_datasets=_drop_nulls(row["digital_datasets"]),
-            analysis_datasets=_drop_nulls(row["analysis_datasets"]),
-            related_publications=_drop_nulls(row["related_publications"]),
-            related_software=_drop_nulls(row["related_software"]),
-            related_datasets=_drop_nulls(row["related_datasets"]),
-            sample_to_digital_edges=_drop_edgeless(row["sample_to_digital_edges"], "sample", "digitalDataset"),
-            digital_to_analysis_edges=_drop_edgeless(row["digital_to_analysis_edges"], "digitalDataset", "analysisDataset"),
+            dataset=dict(dataset_rows[0]["d"]),
+            samples=_nodes(
+                "MATCH (n:Sample)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN n{.*, componentEmbedding: null} AS n"
+            ),
+            digital_datasets=_nodes(
+                "MATCH (n:DigitalDataset)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN n{.*, componentEmbedding: null} AS n"
+            ),
+            analysis_datasets=_nodes(
+                "MATCH (n:AnalysisDataset)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN n{.*, componentEmbedding: null} AS n"
+            ),
+            related_publications=_nodes(
+                "MATCH (n:RelatedPublication)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN n{.*} AS n"
+            ),
+            related_software=_nodes(
+                "MATCH (n:RelatedSoftware)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN n{.*} AS n"
+            ),
+            related_datasets=_nodes(
+                "MATCH (n:RelatedDataset)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN n{.*} AS n"
+            ),
+            # INPUT_FOR points CHILD -> PARENT ("was derived from") — see this module's
+            # schema docstring. Querying it parent -> child, as this did until the direction
+            # was verified against the live graph and scripts/load_graph.py, matched zero
+            # rows, which silently emptied the organizational-structure section of every
+            # profile and reported every scan as having no recorded sample link.
+            sample_to_digital_edges=_edges(
+                "MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample) "
+                "MATCH (dd)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN s.identifier AS sample, dd.identifier AS digitalDataset",
+                "sample", "digitalDataset",
+            ),
+            digital_to_analysis_edges=_edges(
+                "MATCH (ad:AnalysisDataset)-[:INPUT_FOR]->(dd:DigitalDataset) "
+                "MATCH (ad)-[:PART_OF]->(:Dataset {datasetNumber: $datasetNumber}) "
+                "RETURN dd.identifier AS digitalDataset, ad.identifier AS analysisDataset",
+                "digitalDataset", "analysisDataset",
+            ),
         )
 
     def cypher_qa(self, question: str, restrict_to_titles: list[str] | None = None) -> str:
