@@ -24,6 +24,7 @@ from src.assistant.conversation_manager import (
     _extract_tool_calls_from_text,
     _needs_followup_tool_call,
     _run_manual_dispatch,
+    _strip_reasoning_scaffold,
     _strip_recap_paragraph,
 )
 
@@ -50,6 +51,51 @@ class TestToolRoutingClassification:
         result = _build_verbatim_response("find sandstone datasets", hit)
         assert result.startswith("Here are the datasets matching your query:")
         assert "verify these datasets on the DPM Portal" in result
+
+
+class TestStripReasoningScaffold:
+    """Llama-4-Maverick intermittently answers a synthesis prompt by emitting its own
+    chain-of-thought ("Step 1: ... Step 8: ... The final answer is: <answer>") instead
+    of just the answer — live-observed leaking into a user-facing multi-dataset
+    comparison response. Stripping requires BOTH the step scaffold and the final-answer
+    marker, so legitimately numbered answers (workflow guidance) survive untouched."""
+
+    LEAKED = (
+        "Step 1: Identify the key characteristics of DRP-137.\n"
+        "The downscaling dataset involves X-ray CT scans of two sandstone samples.\n\n"
+        "Step 2: Identify the key characteristics of Gildehauser.\n"
+        "It is based on a synchrotron beamline fast micro-CT flow experiment.\n\n"
+        "The final answer is: DRP-137 and Gildehauser differ in imaging technique."
+    )
+
+    def test_strips_scaffold_keeping_only_final_answer(self):
+        assert _strip_reasoning_scaffold(self.LEAKED) == (
+            "DRP-137 and Gildehauser differ in imaging technique."
+        )
+
+    def test_leaves_legitimate_numbered_workflow_untouched(self):
+        # A get_workflow_guidance answer legitimately has "Step N:" lines but never
+        # announces a final answer — the conjunction guard must protect it.
+        workflow = (
+            "To compute absolute permeability:\n\n"
+            "Step 1: Segment the image into pore and solid phases.\n"
+            "Step 2: Extract the pore network.\n"
+            "Step 3: Solve Stokes flow and apply Darcy's law."
+        )
+        assert _strip_reasoning_scaffold(workflow) == workflow
+
+    def test_leaves_plain_answer_untouched(self):
+        plain = "The Gildehauser Sandstone dataset has a porosity of 0.2."
+        assert _strip_reasoning_scaffold(plain) == plain
+
+    def test_bold_markdown_scaffold_variant_is_stripped(self):
+        text = "**Step 1:** Look at both.\n\n**The final answer is:** They differ."
+        assert _strip_reasoning_scaffold(text) == "They differ."
+
+    def test_empty_final_answer_falls_back_to_original(self):
+        # Never return "" — an empty response poisons replayed history downstream.
+        text = "Step 1: Think about it.\n\nThe final answer is:"
+        assert _strip_reasoning_scaffold(text) == text
 
 
 class TestStripRecapParagraph:

@@ -500,8 +500,47 @@ def _strip_recap_paragraph(text: str) -> str:
     return (head + ('\n\n' + tail if tail else '')).strip()
 
 
+# Chain-of-thought scaffolding this model sometimes emits as its user-facing answer:
+# a numbered "Step 1: ... Step 8: ..." reasoning trace followed by a "The final answer
+# is:" marker introducing the actual response. Both halves must be present to strip —
+# see _strip_reasoning_scaffold for why that conjunction is the safety guard.
+_STEP_SCAFFOLD_RE = re.compile(r'^\s*(?:\*\*|#{1,6}\s*)?Step\s+\d+\s*[:.]', re.MULTILINE | re.IGNORECASE)
+_FINAL_ANSWER_RE = re.compile(
+    r'^\s*(?:\*\*|#{1,6}\s*)?(?:The\s+)?final answer(?:\s+is)?\s*[:.]?\s*(?:\*\*)?\s*',
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _strip_reasoning_scaffold(text: str) -> str:
+    """Strip a leaked chain-of-thought scaffold, keeping only the model's own designated
+    final answer. Llama-4-Maverick intermittently answers a synthesis prompt by emitting
+    its reasoning verbatim ("Step 1: Identify... Step 8: ... The final answer is: <answer>")
+    instead of just the answer — live-observed on the multi-dataset comparison path.
+
+    Deliberately requires BOTH a "Step N:" scaffold AND a "final answer is:" marker before
+    removing anything. A legitimate answer can absolutely contain numbered steps — a
+    get_workflow_guidance response ("Step 1: Segment the image...") is exactly that shape —
+    but such an answer never also announces "The final answer is:". Requiring the
+    conjunction is what makes this safe to run over every response rather than only the
+    comparison path, so the same leak is caught wherever it surfaces.
+
+    This is a backstop, not the primary fix: the synthesis prompts also instruct the model
+    not to emit a scaffold. Consistent with this project's repeated finding that prompt-only
+    reliability fixes for this model are inconsistent, the guarantee lives in code."""
+    if not _STEP_SCAFFOLD_RE.search(text):
+        return text
+    matches = list(_FINAL_ANSWER_RE.finditer(text))
+    if not matches:
+        return text
+    answer = text[matches[-1].end():].strip()
+    if not answer:
+        return text
+    logger.warning("Stripped leaked chain-of-thought scaffold (%d chars -> %d chars)", len(text), len(answer))
+    return answer
+
+
 def _clean_response(text: str) -> str:
-    return _strip_recap_paragraph(_TOOL_CALL_RE.sub('', text).strip())
+    return _strip_recap_paragraph(_strip_reasoning_scaffold(_TOOL_CALL_RE.sub('', text).strip()))
 
 
 def _extract_tool_calls_from_text(text: str) -> list[dict]:
@@ -617,6 +656,11 @@ not just the first difference you happen to notice.
 - Preserve any [dataset profile] source labels, DOIs, and LaTeX math verbatim.
 - If a property is genuinely absent from BOTH write-ups, it's fine to say so — but only after \
 checking both carefully, not as a default hedge.
+- Output ONLY the finished comparison, addressed to the researcher. Do not narrate your own \
+reasoning process, do not emit numbered "Step 1: / Step 2:" analysis stages, and do not \
+introduce your response with "The final answer is:" — the user sees your output verbatim, so \
+any such scaffolding reads as a malfunction. Write the comparison directly, using headings \
+and/or bullets to organize it.
 """
 
 
