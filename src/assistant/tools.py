@@ -15,8 +15,6 @@ from pathlib import Path
 
 import yaml
 from langchain_core.tools import tool
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 
 # Pure helpers/dataclasses only — safe at module level (no neo4j/langchain_neo4j import,
 # those stay deferred to GraphStore.__init__ so USE_NEO4J=false stays fast/dependency-free).
@@ -76,7 +74,7 @@ def _load_tutorials() -> dict:
 
 def _match_workflows(query: str, max_results: int = 3) -> list[dict]:
     """Return up to max_results workflows semantically relevant to query."""
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     data = _load_workflows()
     all_workflows = data.get("workflows", [])
@@ -97,13 +95,7 @@ def _match_workflows(query: str, max_results: int = 3) -> list[dict]:
 
     try:
         raw = get_chat_model().send_prompt(user_msg, context=system, params={"temperature": 0, "max_tokens": 100})
-        # Strip markdown code fences if present
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("```")[1]
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:]
-        ids = json.loads(cleaned.strip())
+        ids = json.loads(strip_code_fences(raw))
         if not isinstance(ids, list):
             raise ValueError("not a list")
     except Exception as e:
@@ -188,6 +180,14 @@ def _literature_fallback_context(query: str, max_results: int = 3) -> str:
     return "\n".join(lines)
 
 
+def _notebook_display_name(nb_path: str) -> str:
+    """Readable name for a tutorial notebook path: basename, extension and leading
+    chapter number stripped, underscores as spaces
+    (e.g. "5-2-1_lbm_d2q9_bgk.ipynb" -> "lbm d2q9 bgk")."""
+    name_part = nb_path.split("/")[-1].replace(".ipynb", "")
+    return re.sub(r"^\d[\d\-]*_", "", name_part).replace("_", " ")
+
+
 def _workflow_context_str(workflows: list[dict], tutorials: list[dict]) -> str:
     """Assemble a readable context block from matched workflows and tutorials."""
     parts = []
@@ -229,13 +229,7 @@ def _workflow_context_str(workflows: list[dict], tutorials: list[dict]) -> str:
         ]
         for t in tutorials:
             nb_path = t["notebook"]
-            # Derive a readable name: strip chapter prefix and extension
-            nb_filename = nb_path.split("/")[-1]
-            # e.g. "5-2-1_lbm_d2q9_bgk.ipynb" → "lbm_d2q9_bgk"
-            name_part = nb_filename.replace(".ipynb", "")
-            # Strip leading chapter number like "5-2-1_"
-            name_clean = re.sub(r"^\d[\d\-]*_", "", name_part).replace("_", " ")
-            tut_lines.append(f'  - **{name_clean}** — {t["goal"]}')
+            tut_lines.append(f'  - **{_notebook_display_name(nb_path)}** — {t["goal"]}')
             tut_lines.append(f'    Path in Community Data: `{nb_path}`')
         parts.append("\n".join(tut_lines))
 
@@ -284,7 +278,7 @@ def _summarize_dataset_results(query: str, results: list[dict]) -> list[str]:
     """One sentence per result describing what the dataset is and how it relates to
     the query. Batched into a single LLM call. Title/DOI stay verbatim from metadata —
     only this prose summary is LLM-authored, same pattern as the search lead-in."""
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     texts = [re.sub(r"\s+", " ", r.get("text", "")).strip() for r in results]
     fallback = [t[:200].rstrip() + ("…" if len(t) > 200 else "") for t in texts]
@@ -307,12 +301,7 @@ def _summarize_dataset_results(query: str, results: list[dict]) -> list[str]:
         raw = get_chat_model().send_prompt(
             user_msg, context=system, params={"temperature": 0.2, "max_tokens": 60 * len(results)}
         )
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("```")[1]
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:]
-        summaries = json.loads(cleaned.strip())
+        summaries = json.loads(strip_code_fences(raw))
         if not isinstance(summaries, list) or len(summaries) != len(results):
             raise ValueError("summary count mismatch")
         return [str(s).strip() for s in summaries]
@@ -980,7 +969,7 @@ def _screen_fact_sheet_batches(question: str, records: list[dict]) -> list[dict]
     silently loses a real answer."""
     from concurrent.futures import ThreadPoolExecutor
     from src.prompts.loader import load_prompt, render
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     prompt = load_prompt("corpus_reasoning")
     batches = _batch_records_by_chars(records, _MAP_REDUCE_BATCH_CHAR_BUDGET)
@@ -995,12 +984,7 @@ def _screen_fact_sheet_batches(question: str, records: list[dict]) -> list[dict]
                 context=prompt["batch_screen_system"],
                 params={"temperature": 0, "max_tokens": 300},
             )
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            kept_titles = {str(t).strip().lower() for t in json.loads(cleaned.strip())}
+            kept_titles = {str(t).strip().lower() for t in json.loads(strip_code_fences(raw))}
         except Exception as e:
             logger.warning("Fact-sheet batch screening failed (%s); keeping whole batch", e)
             return included
@@ -1026,13 +1010,9 @@ def _parse_reasoning_response(raw: str) -> dict | None:
     model's answer": reporting the second as the first states a negative finding that was
     never actually established, which is exactly the class of overclaim this whole tool
     exists to remove."""
-    cleaned = (raw or "").strip()
-    if cleaned.startswith("```"):
-        parts = cleaned.split("```")
-        cleaned = parts[1] if len(parts) > 1 else cleaned
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:]
-    cleaned = cleaned.strip()
+    from src.assistant.llm import strip_code_fences
+
+    cleaned = strip_code_fences(raw)
     try:
         parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
@@ -1497,10 +1477,7 @@ def _ensure_all_tutorials_mentioned(response: str, tutorials: list[dict]) -> str
     lines = []
     for t in missing:
         nb_path = t["notebook"]
-        nb_filename = nb_path.split("/")[-1]
-        name_part = nb_filename.replace(".ipynb", "")
-        name_clean = re.sub(r"^\d[\d\-]*_", "", name_part).replace("_", " ")
-        lines.append(f'  - **{name_clean}** — {t["goal"]}')
+        lines.append(f'  - **{_notebook_display_name(nb_path)}** — {t["goal"]}')
         lines.append(f'    Path in Community Data: `{nb_path}`')
     return response.rstrip() + "\n\n" + "\n".join(lines)
 

@@ -175,23 +175,6 @@ class TestComponentSearch:
         assert isinstance(results, list)
 
 
-@pytest.mark.search_layer
-class TestCombinedSearch:
-    """
-    Coverage for GraphStore.search_datasets() — the low-level method that combines
-    vector similarity and metadata filters in a single Cypher query (see CLAUDE.md
-    Search Architecture). Distinct from the search_datasets *tool* in tools.py, which
-    uses hybrid_search() + component_search() instead.
-    """
-
-    def test_search_datasets_combined_structural(self, mock_graph_store):
-        fake_embedding = [0.0] * 8
-        results = mock_graph_store.search_datasets(
-            fake_embedding, filters={"porousMediaType": "sandstone"}, k=5
-        )
-        assert isinstance(results, list)
-
-
 # ---------------------------------------------------------------------------
 # M — metadata_filter
 # ---------------------------------------------------------------------------

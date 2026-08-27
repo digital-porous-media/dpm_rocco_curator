@@ -3,10 +3,9 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from .base import BaseIngestor
 
 
-class DocumentIngestor(BaseIngestor):
+class DocumentIngestor:
     """Ingests documents (PDF, DOCX) for RAG pipeline"""
 
     def __init__(

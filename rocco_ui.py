@@ -4,7 +4,6 @@ import os
 import json
 from pathlib import Path
 import uuid
-from datetime import datetime
 
 from src.llm.client import RoccoClient
 from src.evaluator.evaluator import DescriptionEvaluator
@@ -21,10 +20,7 @@ import logging
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
-# --- Constants and Page Config ---
-ROCCO_AVATAR = "assets/rocco_avatar.jpg"
-USER_AVATAR = "assets/user_avatar.jpg"
-
+# --- Page Config ---
 st.set_page_config(page_title="Rocco - DPM Research Assistant", layout="wide")
 st.title("Rocco - Your Digital Porous Media AI Assistant")
 
@@ -43,6 +39,62 @@ def get_session_id():
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
     return st.session_state.session_id
+
+
+def _history_pairs(history):
+    """Group a flat conversation history into (user_turn, assistant_turn) pairs.
+
+    An assistant turn with no preceding user turn (the initial enhancement, which runs
+    on uploaded documents alone) pairs with None.
+    """
+    pairs = []
+    i = 0
+    while i < len(history):
+        if history[i]["role"] == "user" and i + 1 < len(history):
+            pairs.append((history[i], history[i + 1]))
+            i += 2
+        else:
+            pairs.append((None, history[i]))
+            i += 1
+    return pairs
+
+
+def _selected_prior_turns():
+    """The prior turns the user has left checked in the "Manage Context" panel, as the
+    history_override list for the next enhance() call.
+
+    Read from session_state rather than accumulated while the panel renders: the panel
+    is laid out full-width *below* the enhance controls, so on the rerun that performs
+    an enhancement its widgets have not executed yet. Building the list during that
+    later render meant enhance() always received an empty override — and since an empty
+    list is not None, build_prompt() read it as "an explicit empty history" and dropped
+    the editor's own conversation_history too, silently discarding all multi-turn
+    context. Streamlit retains each widget's value in session_state under its key across
+    reruns, so the last-rendered selection is available here.
+
+    An empty return is meaningful and must stay distinct from None: it means the user
+    unchecked every turn, and build_prompt() is expected to suppress history in that case.
+    """
+    selected = []
+    for turn_idx, (user_turn, asst_turn) in enumerate(
+        _history_pairs(st.session_state.conversation_history)
+    ):
+        if not st.session_state.get(f"ctx_include_{turn_idx}", True):
+            continue
+        if user_turn:
+            selected.append({
+                "role": "user",
+                "content": st.session_state.context_manager_edits.get(
+                    turn_idx, user_turn["content"]
+                ),
+            })
+        if asst_turn:
+            selected.append({
+                "role": "assistant",
+                "content": asst_turn["content"],
+                "rationale": asst_turn.get("rationale", ""),
+            })
+    return selected
 
 
 # --- Session State Initialization ---
@@ -98,13 +150,11 @@ def load_resources():
         chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", ".", " ", ""]
     )
     screener = ContentScreener(model=client)
-    return rubric, examples, client, grader, editor, embedder, ingestor, screener
+    return grader, editor, embedder, ingestor, screener
 
 
 if api_key or provider == "ollama":
-    rubric, examples, client, grader, editor, embedder, ingestor, screener = (
-        load_resources()
-    )
+    grader, editor, embedder, ingestor, screener = load_resources()
     if st.session_state.vector_store_manager:
         editor.vector_store_manager = st.session_state.vector_store_manager
 else:
@@ -179,7 +229,6 @@ def render_curator_tab():
                 ),
             )
             st.session_state.edited_enhanced_description = edited_text
-            # st.text_area("Enhanced", value=st.session_state.enhanced_description, height=300, key="enhanced_desc_readonly", disabled=True)
 
         # --- Action buttons for the new description ---
         accept_col, reject_col = st.columns(2)
@@ -256,7 +305,7 @@ def render_curator_tab():
 
     # Display evaluation results and enhancement tools if an evaluation is present
     if st.session_state.evaluation:
-        selected_history = []
+        selected_history = _selected_prior_turns()
 
         eval_col, enhance_col = st.columns(2)
 
@@ -280,10 +329,6 @@ def render_curator_tab():
                             f"✅ **{item.criterion}** - Score: {item.score}/1.0"
                         ):
                             st.write(item.explanation)
-                    # with st.expander(f"**{item.criterion}** - Score: {item.score}/1.0"):
-                    #     st.write(item.explanation)
-                # grader.print_evaluation_result(st.session_state.evaluation)
-                # st.json(st.session_state.evaluation.model_dump())
 
         with enhance_col:
             with st.container(border=True):
@@ -483,17 +528,7 @@ def render_curator_tab():
                 st.caption(
                     "Select which prior turns to include in the next enhancement. Uncheck to exclude, edit feedback inline."
                 )
-                history = st.session_state.conversation_history
-                # Group into (user_turn, assistant_turn) pairs
-                pairs = []
-                i = 0
-                while i < len(history):
-                    if history[i]["role"] == "user" and i + 1 < len(history):
-                        pairs.append((history[i], history[i + 1]))
-                        i += 2
-                    else:
-                        pairs.append((None, history[i]))
-                        i += 1
+                pairs = _history_pairs(st.session_state.conversation_history)
 
                 # Clear history button
                 col_clear, col_space = st.columns([1, 4])
@@ -501,12 +536,21 @@ def render_curator_tab():
                     if st.button("Clear history", key="ctx_clear", type="secondary"):
                         st.session_state.conversation_history = []
                         st.session_state.context_manager_edits = {}
+                        # Drop the per-turn checkbox state too, or a turn unchecked
+                        # before the clear would still read as excluded once history
+                        # grows back into that index.
+                        for key in [
+                            k for k in st.session_state if k.startswith("ctx_include_")
+                        ]:
+                            del st.session_state[key]
                         st.rerun()
 
+                # The checkbox values are read back in _selected_prior_turns() on the
+                # next rerun, via their session_state keys — nothing is accumulated here.
                 for turn_idx, (user_turn, asst_turn) in enumerate(pairs):
                     col_check, col_card = st.columns([0.05, 0.95])
                     with col_check:
-                        include = st.checkbox(
+                        st.checkbox(
                             "",
                             value=True,
                             key=f"ctx_include_{turn_idx}",
@@ -553,24 +597,6 @@ def render_curator_tab():
                                 )
                                 st.markdown("**Result preview:**")
                                 st.text(snippet)
-                    if include:
-                        if user_turn:
-                            selected_history.append(
-                                {
-                                    "role": "user",
-                                    "content": st.session_state.context_manager_edits.get(
-                                        turn_idx, user_turn["content"]
-                                    ),
-                                }
-                            )
-                        if asst_turn:
-                            selected_history.append(
-                                {
-                                    "role": "assistant",
-                                    "content": asst_turn["content"],
-                                    "rationale": asst_turn.get("rationale", ""),
-                                }
-                            )
 
     elif not st.session_state.enhanced_description:
         st.info("Click 'Evaluate Description' to get started.")

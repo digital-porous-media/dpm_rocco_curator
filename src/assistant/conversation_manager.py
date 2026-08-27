@@ -171,7 +171,7 @@ def _generate_lead_in(user_input: str, tool_output: str) -> str:
     the LLM to add; a plain confident match uses _DEFAULT_LEAD_IN directly without an
     LLM call at all, since the model isn't reliably steerable away from inventing
     "no results" framing even when tool_output contains none (see history below)."""
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -179,11 +179,8 @@ def _generate_lead_in(user_input: str, tool_output: str) -> str:
             {"role": "system", "content": _WRAPPER_SYSTEM_PROMPT},
             {"role": "user", "content": f"User query: {user_input}\n\nTool context:\n{tool_output}"},
         ])
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        lead_in = (json.loads(raw.strip()).get("lead_in") or _DEFAULT_LEAD_IN).strip()
+        raw = strip_code_fences(response.content)
+        lead_in = (json.loads(raw).get("lead_in") or _DEFAULT_LEAD_IN).strip()
     except Exception as e:
         logger.warning("Lead-in generation failed (%s); using default.", e)
         return _DEFAULT_LEAD_IN
@@ -1157,7 +1154,7 @@ def _classify_off_domain(user_input: str, prior: list[dict]) -> bool:
     block a real research question, the strictly worse failure mode for a broad
     research-assistant domain.
     """
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -1166,11 +1163,8 @@ def _classify_off_domain(user_input: str, prior: list[dict]) -> bool:
             + prior[-6:]
             + [{"role": "user", "content": user_input}]
         )
-        raw = llm.invoke(messages).content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        route = str(json.loads(raw.strip()).get("route", "in_domain")).strip().lower()
+        raw = strip_code_fences(llm.invoke(messages).content)
+        route = str(json.loads(raw).get("route", "in_domain")).strip().lower()
         return route == "off_domain"
     except Exception as e:
         logger.warning("Off-domain gate failed (%s); defaulting to in-domain.", e)
@@ -1252,7 +1246,7 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
     costs one wasted lookup, while a wrong "direct" guess would silently skip a real
     dataset/literature/workflow request — the more expensive mistake of the two.
     """
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -1261,11 +1255,8 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
             + prior[-6:]
             + [{"role": "user", "content": user_input}]
         )
-        raw = llm.invoke(messages).content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        route = str(json.loads(raw.strip()).get("route", "tool")).strip().lower()
+        raw = strip_code_fences(llm.invoke(messages).content)
+        route = str(json.loads(raw).get("route", "tool")).strip().lower()
         return route != "direct"
     except Exception as e:
         logger.warning("Tool-need gate failed (%s); defaulting to tool-bound agent.", e)
@@ -1319,7 +1310,7 @@ def _needs_followup_tool_call(user_input: str, tool_name: str) -> bool:
     of a wrong "no follow-up needed" guess is a dropped second tool call, not a
     fabricated or ungrounded answer.
     """
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -1327,11 +1318,8 @@ def _needs_followup_tool_call(user_input: str, tool_name: str) -> bool:
             {"role": "system", "content": _FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT},
             {"role": "user", "content": f"question: {user_input!r}, tool_called: {tool_name!r}"},
         ]
-        raw = llm.invoke(messages).content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        return bool(json.loads(raw.strip()).get("needs_followup", False))
+        raw = strip_code_fences(llm.invoke(messages).content)
+        return bool(json.loads(raw).get("needs_followup", False))
     except Exception as e:
         logger.warning("Follow-up tool gate failed (%s); proceeding with short-circuit.", e)
         return False

@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 
 @dataclass
 class RubricItem:
@@ -62,13 +61,5 @@ class EditingSession(BaseModel):
             summary += f"Current description length: {len(self.current_description)} chars\n"
         
         summary += f"RAG enabled: {self.config.get('use_rag', False)}\n"
-        
+
         return summary
-    
-@dataclass
-class PDFChunk:
-    """A single text chunk extracted from a PDF, optionally with its embedding vector."""
-    chunk_id: str
-    text: str
-    embedding: Optional[List[float]] = None
-    source_pdf: Optional[str] = None

@@ -32,7 +32,6 @@ class ContentScreener:
         )
 
         response = self.model.send_prompt(prompt=screening_prompt)
-        # print(response)
         try:
             result = json.loads(response)
             return result

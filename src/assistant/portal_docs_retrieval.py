@@ -83,7 +83,7 @@ def select_nodes_for_query(question: str, nodes: list, max_nodes: int = 4) -> li
     Falls back to a keyword/title-substring match on JSON-parse failure — never
     raises, never returns an empty list just because this one LLM call hiccuped.
     """
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     index_str = "\n".join(_index_line(n) for n in nodes)
     system = (
@@ -107,12 +107,7 @@ def select_nodes_for_query(question: str, nodes: list, max_nodes: int = 4) -> li
         raw = get_chat_model().send_prompt(
             user_msg, context=system, params={"temperature": 0, "max_tokens": 150}
         )
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("```")[1]
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:]
-        ids = json.loads(cleaned.strip())
+        ids = json.loads(strip_code_fences(raw))
         if not isinstance(ids, list):
             raise ValueError("not a list")
     except Exception as e:

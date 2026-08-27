@@ -34,6 +34,28 @@ def get_embeddings_model():
     return _embeddings
 
 
+def strip_code_fences(text: str | None) -> str:
+    """Strip a leading markdown code fence (and its ``json`` language tag) from an LLM
+    response, so the body can be handed to ``json.loads``.
+
+    Every prompt in this module's callers asks for "JSON only, no markdown fences" and
+    this model intermittently emits them anyway. Only a response that *starts* with a
+    fence is unwrapped — a fence appearing mid-response is left alone, since that is
+    prose the caller's own parse-failure fallback should handle rather than something to
+    guess at.
+
+    Note ``RoccoClient.send_prompt`` already applies an equivalent strip to its own
+    return value, so calling this on a ``send_prompt`` result is a no-op kept for
+    defence in depth; results from ``llm.invoke(...).content`` genuinely need it.
+    """
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[len("json"):]
+    return cleaned.strip()
+
+
 class _LazyEmbeddings:
     """Proxy that initializes the embeddings model on first use."""
 
