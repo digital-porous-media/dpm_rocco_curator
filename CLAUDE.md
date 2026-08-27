@@ -186,12 +186,6 @@ streamlit run rocco_ui.py
 ```
 Starts the web interface for evaluating and editing descriptions with document upload and RAG support.
 
-### CLI Evaluation
-```bash
-python evaluate_description.py <description_text>
-```
-Example: `python evaluate_description.py "This is a porous media dataset..."`
-
 ### Testing
 
 **IMPORTANT: Always run tests before committing changes.** This catches refactoring regressions early.
@@ -221,11 +215,16 @@ pytest tests/ --cov=src --cov-report=term-missing
 
 ### Manual Testing
 ```bash
-# Test RAG pipeline
-python test_rag_pipeline.py
-
-# Test evaluation without Streamlit
-python -c "from src.evaluator import DescriptionEvaluator; eval = DescriptionEvaluator(); print(eval.evaluate('test description'))"
+# Test evaluation without Streamlit (rubric/examples/client are all required, no defaults)
+python -c "
+import json
+from src.llm.client import RoccoClient
+from src.evaluator.evaluator import DescriptionEvaluator
+rubric = json.load(open('src/evaluator/rubric.json'))
+examples = json.load(open('src/evaluator/examples_v3.json'))
+evaluator = DescriptionEvaluator(RoccoClient(), rubric, examples)
+print(evaluator.evaluate('test description'))
+"
 ```
 
 ## Output Formats
@@ -304,12 +303,10 @@ All LLM calls go through `RoccoClient` (`src/llm/client.py`). This is a thin wra
 from src.llm.client import RoccoClient
 
 client = RoccoClient()
-response = client.call(
-    system="You are an evaluator",
-    user="Evaluate this description: ...",
-    temperature=0.7,
-    max_tokens=500,
-    model="Qwen3-32B"  # Optional, defaults to config
+response = client.send_prompt(
+    prompt="Evaluate this description: ...",
+    context="You are an evaluator",
+    params={"temperature": 0.7, "max_tokens": 500},
 )
 ```
 
@@ -436,8 +433,7 @@ tests/assistant/
 ├── test_conversation_manager.py   test_fact_sheet_builder.py
 ├── test_portal_docs_retrieval.py  test_literature_search.py
 ├── test_search_integration.py     test_assistant_ui.py
-├── test_prompts.py                test_intent_classifier.py
-└── test_search_integration.txt    # notes, not a test module
+└── test_prompts.py                test_intent_classifier.py
 ```
 
 Note: `docs/neo4j_schema.md` is **generated**. Fix `scripts/audit_schema.py` and regenerate —
@@ -791,13 +787,14 @@ issues #37, #38, #39, #41, #52 show Open/In Progress but their code is merged; t
 closed before #42 is treated as unblocked in the tracker.
 
 Actual remaining work:
-- **#42** (Week 6–7) — Run the full 20-query acceptance suite (already written as automated tests
-  in `tests/assistant/test_search_integration.py`) through the tabbed `rocco_ui.py`; demo to BCC,
-  MP, ME. This is an execution/verification task, not authoring.
+- **#42** (Week 6–7) — Run the full acceptance suite (25 queries, already written as automated
+  tests in `tests/assistant/test_search_integration.py`) through the tabbed `rocco_ui.py`; demo to
+  BCC, MP, ME. This is an execution/verification task, not authoring.
 - ~~**Fix hanging test suite**~~ — **resolved.** The cause was live network tests running
   unintentionally; they now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`.
-  `pytest tests/ -v` is clean and reproducible: **380 passed, 51 deselected, ~21s** (verified
-  Aug 2026). Run the excluded tier explicitly with `pytest tests/ -m live -v`.
+  `pytest tests/ -v` is clean and reproducible: **358 passed, 51 deselected** (verified Aug 2026;
+  wall-clock varies by machine, typically under a minute). Run the excluded tier explicitly with
+  `pytest tests/ -m live -v`.
 - **#43** (Week 7) — Final index rebuild + evaluation + `docs/assistant.md`
 - **#45** (Week 7) — README, handoff doc, tag `v2.0.0`, demo video
 - **#46 / #48** (Week 8) — Poster write-up (Intern-A) + review (Bernie)

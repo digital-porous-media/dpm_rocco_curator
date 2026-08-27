@@ -163,7 +163,7 @@ Core Modules
    - ``content_screener.py`` — ``ContentScreener`` class
 
      - Validates user feedback for relevance, accuracy, tone, coherence
-     - Returns recommendation (accept/reject/flag)
+     - Returns recommendation (accept/reject/flag_for_review)
 
    - ``schemas.py`` — Pydantic models
 
@@ -442,7 +442,7 @@ Data Flow
               label=<
                   <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
                       <TR><TD><B><FONT POINT-SIZE="15">ContentScreener</FONT></B></TD></TR>
-                      <TR><TD><FONT FACE="monospace" POINT-SIZE="12">.screen(feedback)</FONT></TD></TR>
+                      <TR><TD><FONT FACE="monospace" POINT-SIZE="12">.screen_user_content(content)</FONT></TD></TR>
                       <TR><TD><FONT POINT-SIZE="13">Validate feedback</FONT></TD></TR>
                   </TABLE>
               >,
@@ -804,7 +804,7 @@ below are the module-level (class/file) reference.
 
    - ``GraphStore`` class — two layers:
 
-     - **High-level** (``search()``, ``hybrid_search()``, ``component_search()``,
+     - **Search methods** (``search()``, ``hybrid_search()``, ``component_search()``,
        ``cypher_qa()``, ``get_dataset_profile()``, ``rank_fact_sheets()``,
        ``fetch_fact_sheets()``) via ``langchain-neo4j``/the raw driver — used by ``tools.py``.
        ``get_dataset_profile()`` resolves a title/DOI/dataset-number reference to one
@@ -813,8 +813,9 @@ below are the module-level (class/file) reference.
        ``rank_fact_sheets()`` reuses the same vector+BM25 Reciprocal Rank Fusion as
        ``hybrid_search()``, pointed at the fact-sheet indexes — see
        :doc:`../user_guide/content_reasoning`
-     - **Low-level** (``semantic_search()``, ``filter_by_metadata()``, ``search_datasets()``,
-       ``execute_cypher()``) via the raw ``neo4j`` driver, for hybrid structured/semantic queries
+     - **``execute_cypher()``** runs raw parameterized Cypher over the ``neo4j`` driver;
+       it backs ``hybrid_search()``'s BM25 half, the two fact-sheet methods, and
+       ``get_dataset_profile()``
    - Accepts a ``filters: dict`` (not hardcoded field names), per the Croissant extensibility
      constraint in ``CLAUDE.md``
    - Degrades gracefully: all search methods return empty results immediately if

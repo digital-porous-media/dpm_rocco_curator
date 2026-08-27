@@ -206,7 +206,7 @@ pytest tests/ --cov=src --cov-report=term-missing
 
 `pytest.ini` sets `addopts = -m "not live"`, so tests that make **real** network calls (LLM,
 Neo4j, Semantic Scholar) are excluded by default. A clean default run currently reports
-380 passed, 51 deselected.
+358 passed, 51 deselected.
 
 Run the live tier explicitly, with real credentials and a running Neo4j, when you need
 end-to-end verification:
@@ -338,7 +338,7 @@ All LLM calls go through `RoccoClient` in `src/llm/client.py`. To add a provider
 
 1. Add its base URL to `PROVIDER_URLS` in `src/llm/client.py`
 2. Update `.env.example` with the provider alias and example model names
-3. Test with: `python -c "from src.llm.client import RoccoClient; c = RoccoClient(); print(c.call(system='ping', user='hello'))"`
+3. Test with: `python -c "from src.llm.client import RoccoClient; c = RoccoClient(); print(c.send_prompt('ping'))"`
 
 ---
 

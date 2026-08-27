@@ -31,7 +31,7 @@ Step 1: Install & Configure
 
 **Quick provider choices:**
 
-- **Gemini (free tier)**: Get a free key at https://studio.google.dev/gemini
+- **Gemini (free tier)**: Get a free key at https://aistudio.google.com/app/apikey
 - **Ollama (free, local)**: Follow the WSL2 setup instructions in the Configuration guide (no API key needed)
 - **Anthropic, OpenAI, DeepSeek, etc.**: All supported — see Configuration for full list
 
@@ -41,6 +41,13 @@ Step 2: (Optional) Configure Neo4j and Semantic Scholar
 Dataset discovery is backed by `Neo4j <https://neo4j.com/>`_. If you don't have a Neo4j
 instance available, set ``USE_NEO4J=false`` in ``.env`` — the assistant will still answer
 domain Q&A, workflow guidance, literature, and portal documentation questions.
+
+If you do want dataset discovery, install the ``graph`` extra first (it pulls in the Neo4j
+driver and ``langchain-neo4j``; Step 1's plain install doesn't include it):
+
+.. code-block:: bash
+
+   pip install -e ".[graph]"
 
 To set up Neo4j:
 

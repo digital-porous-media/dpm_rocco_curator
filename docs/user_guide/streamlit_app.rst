@@ -40,9 +40,10 @@ See :doc:`evaluator` for a detailed breakdown of each criterion.
 
 **3a. Upload context documents**
 
-Click **"Upload Files"** and select one or more PDFs or DOCX files — method papers, technical protocols,
-or related datasets. Rocco chunks and embeds them into a local FAISS index that persists for the duration
-of your browser session.
+Click **"Upload Files"** and select one or more PDFs — method papers, technical protocols, or
+related datasets (the uploader accepts PDF only; DOCX is supported by the underlying ingestion
+pipeline but not exposed in the UI). Rocco chunks and embeds them into a local FAISS index that
+persists for the duration of your browser session.
 
 See :doc:`rag` for details on how ingestion and retrieval work.
 
@@ -159,8 +160,8 @@ Troubleshooting
    Verify your internet connection, or switch to a local provider (Ollama) in your ``.env``.
 
 **"No context found"**
-   Ensure documents were uploaded successfully and are in PDF or DOCX format. Other file types are
-   not supported. Try re-uploading or use a different document.
+   Ensure documents were uploaded successfully and are in PDF format — the uploader doesn't accept
+   other file types. Try re-uploading or use a different document.
 
 **"Feedback marked as 'Reject'"**
    Rewrite your feedback to be more specific and relevant to the dataset. Avoid vague or off-topic

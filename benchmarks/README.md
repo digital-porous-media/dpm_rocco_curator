@@ -8,11 +8,8 @@ We evaluated Rocco's grading consistency by comparing its scores on five publish
 
 ## Contents
 
-- **`data/`** — Raw evaluation data and statistics
-  - `evaluation_results.xlsx` — 300 scores across 6 sheets:
-    - 5 per-description sheets (Description1–Description5): Rows = 10 rubric items, Columns = 6 evaluators (Rocco + 5 humans)
-    - 1 aggregated flat-file sheet: Flat format with columns for Description, Rubric Item, Grader, Score (300 rows total)
-  - `dataset_descriptions.md` — Full citations and original descriptions for the 5 evaluated datasets.
+- **`data/`** — raw evaluation results and dataset citations; see `data/README.md` for the
+  `evaluation_results.xlsx` sheet structure.
 
 - **`figures/`** — data and analysis visualization
   - `1_proportion_of_scores_by_grader.png` — Aggregate distribution of rubric scores by all evaluators across all five evaluated datasets (Paper figure 1).
@@ -32,10 +29,8 @@ We evaluated Rocco's grading consistency by comparing its scores on five publish
 To re-run the analysis:
 
 ```bash
-jupyter notebook analysis.ipynb
+jupyter notebook statistical_evaluation.ipynb
 ```
-
-The notebook is self-contained with all data loading, preprocessing, and visualization steps clearly documented.
 
 ## Citation
 

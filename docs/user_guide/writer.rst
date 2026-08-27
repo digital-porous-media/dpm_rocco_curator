@@ -84,23 +84,31 @@ Running Without the UI
 
    import json
    from src.llm.client import RoccoClient
+   from src.evaluator.evaluator import DescriptionEvaluator
    from src.editor.editor import DescriptionEditor
    from src.ingestor.embedder import DocumentEmbedder
    from src.retriever.retriever import VectorStoreManager
 
    with open("src/evaluator/rubric.json") as f:
        rubric = json.load(f)
+   with open("src/evaluator/examples_v3.json") as f:
+       examples = json.load(f)
 
-   client  = RoccoClient()
+   client   = RoccoClient()
    embedder = DocumentEmbedder()
    vsm = VectorStoreManager(embedder)
    # vsm.load("my_faiss_index/")  # optional: load a pre-built index
 
+   draft_text = "This dataset contains micro-CT images of Berea sandstone ..."
+
+   # enhance() requires a real EvaluatorOutput — draft_evaluation is not optional
+   evaluation = DescriptionEvaluator(client, rubric, examples).evaluate(draft_text)
+
    editor = DescriptionEditor(client, rubric, vsm)
 
    result = editor.enhance(
-       draft_text="This dataset contains micro-CT images of Berea sandstone ...",
-       draft_evaluation=None,       # pass an EvaluatorOutput if available
+       draft_text=draft_text,
+       draft_evaluation=evaluation,
        user_feedback="The samples were imaged at 2 µm voxel resolution.",
    )
 
@@ -108,13 +116,15 @@ Running Without the UI
    for c in result.citation:
        print(f"  [{c.source}] {c.statement[:80]}...")
 
-To run multiple rounds, call ``enhance()`` again on the improved text:
+To run multiple rounds, call ``enhance()`` again on the improved text (re-evaluating it first,
+since ``draft_evaluation`` must reflect the text being passed in):
 
 .. code-block:: python
 
+   evaluation2 = DescriptionEvaluator(client, rubric, examples).evaluate(result.suggested_text)
    result2 = editor.enhance(
        draft_text=result.suggested_text,
-       draft_evaluation=None,
+       draft_evaluation=evaluation2,
        user_feedback="Clarify the file naming convention.",
    )
 
@@ -127,19 +137,16 @@ The editor automatically carries conversation history across calls. To start fre
 Session Files
 -------------
 
-Session state — original description, current description, and full conversation history — can be
-saved to disk and reloaded later:
+Session state — original description, current description, and full conversation history — is
+*intended* to be saved to disk and reloaded later via ``editor.save_session(path)`` /
+``editor.load_session(path)``.
 
-.. code-block:: python
+.. warning::
 
-   from pathlib import Path
-
-   # Save
-   editor.save_session(Path("sessions/session_2024-01-15.json"))
-
-   # Reload in a new Python session
-   editor2 = DescriptionEditor(client, rubric, vsm)
-   editor2.load_session(Path("sessions/session_2024-01-15.json"))
+   ``save_session()`` currently raises ``pydantic.ValidationError`` on every call:
+   ``EditingSession.metadata`` (``src/llm/schemas.py``) is a required field, but
+   ``save_session()`` never supplies it. This is a code bug, not a documentation gap — don't rely
+   on session persistence until it's fixed.
 
 .. note::
 
@@ -151,11 +158,8 @@ Multi-Turn Refinement
 
 Each call to ``enhance()`` appends to ``editor.conversation_history``. This list is injected into
 the next prompt, so the LLM understands what feedback has already been incorporated and can focus
-on what is still missing. Typical refinement arc:
-
-1. Initial description (score 5/10) → first enhancement → score 7/10
-2. Targeted feedback on missing QA/QC details → second enhancement → score 8/10
-3. Fine-tune wording → third enhancement → score 9/10
+on what's still missing — each round narrows in on a specific gap (e.g. missing QA/QC details,
+then wording) rather than repeating the same broad feedback.
 
 Output Schema
 -------------

@@ -98,7 +98,8 @@ HuggingFace (Serverless Inference)
 
 Get an API key: https://huggingface.co/settings/tokens
 
-**Model options:** Use only *instruction-tuned* model ID from [HuggingFace Hub](https://huggingface.co/models?sort=trending&search=instruction)
+**Model options:** Use only an *instruction-tuned* model ID from the
+`HuggingFace Hub <https://huggingface.co/models?sort=trending&search=instruction>`_.
 
 .. warning:: **Important caveats:**
 
@@ -114,7 +115,7 @@ Ollama runs locally on your machine.
 **Installing Ollama**
 If you haven't installed Ollama yet, you can do so from the command line.
 
-For more information, see the [Ollama installation guide](https://ollama.com/download).
+For more information, see the `Ollama installation guide <https://ollama.com/download>`_.
 
 .. note::
    We **recommend installing Ollama on WSL2 (Windows Subsystem for Linux)** if you're on Windows, rather than the Windows Desktop app, as it provides better integration with development tools.

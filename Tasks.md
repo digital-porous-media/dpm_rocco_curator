@@ -2,6 +2,12 @@
 
 Tasks Bernie must complete before intern Week 1. Track progress here.
 
+> **Historical.** The sections below (Environment & Infrastructure, Data Preparation, Domain
+> Content, Repo Skeleton, Intent Classifier Testing) are the pre-sprint checklist from before
+> Week 1 (ended Jun 6, 2026). Some boxes were never checked off even though the work was done —
+> the graph has been loaded and queryable for months (184 datasets; see `docs/neo4j_schema.md`
+> and CLAUDE.md's "Remaining Work" section). Don't read an unchecked box here as "not done yet."
+
 ---
 
 ## Environment & Infrastructure
@@ -102,6 +108,10 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 ---
 
 ## Intent Classifier Testing (Issue #10 + Verification)
+
+**Note:** `assistant.yaml` is not used in the live routing path — routing is the ReAct agent
+matching tool descriptions (see CLAUDE.md's "Search Architecture"). This classifier is retained
+for offline prompt-quality testing only.
 
 - [x] Draft `src/prompts/assistant.yaml` (v0.2.0) — comprehensive intent classifier
   - Intent definitions: semantic_search, metadata_filter, domain_qa, workflow_guidance, query_expansion, literature_search
@@ -207,7 +217,9 @@ Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Ju
 - [x] Surface source labels in UI; verify search stack in tabbed UI (#40)
 - [x] Connect `assistant_ui.py` into General Assistant tab (#41) — done, board still shows In Progress
 
-**Action item:** close #37, #38, #39, #41, #52 on the GitHub project board — code for all five is merged, but the board hasn't been updated to reflect it. This is blocking #42 from being unblocked in the tracker even though there's no real code dependency left.
+**Action item:** see CLAUDE.md's "Remaining Work Before Project Conclusion" section for the
+current board-reconciliation status — code for all five listed issues is merged; only the board
+itself is stale.
 
 ---
 
@@ -215,10 +227,10 @@ Intern started Jun 7. Bernie was away Weeks 2–3. All items completed before Ju
 
 ### Week 6–7 (Jul 5–18)
 
-- [ ] **#42** — Run the full 20-query acceptance suite through the tabbed `rocco_ui.py`; demo to BCC, MP, and ME
-  - All 20 queries already exist as automated tests in `tests/assistant/test_search_integration.py` (S-1..4, M-1..3, D-1..4, W-1..4, Q-1..2, L-1..3) — this task is *execution*, not authoring
+- [ ] **#42** — Run the full acceptance suite through the tabbed `rocco_ui.py`; demo to BCC, MP, and ME
+  - All queries already exist as automated tests in `tests/assistant/test_search_integration.py` (S-1..4, M-1..3, D-1..6, W-1..5, Q-1..3, L-1..4 — 25 total; see that file for the current list rather than this range, which will drift as queries are added) — this task is *execution*, not authoring
   - Demo must show both tabs (Curator + General Assistant) working independently with no session-state collision
-- [x] **Investigate hanging test suite** — **resolved.** The cause was live network tests running unintentionally. They now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`, so the default run excludes them. Verified Aug 2026: `pytest tests/ -v` → **380 passed, 51 deselected, ~21s**, reproducible across runs. Run the live tier explicitly with `pytest tests/ -m live -v` (needs real credentials + a running Neo4j). #43 can rely on a clean default run.
+- [x] **Investigate hanging test suite** — **resolved.** The cause was live network tests running unintentionally. They now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`, so the default run excludes them. Verified Aug 2026: `pytest tests/ -v` → **358 passed, 51 deselected**, reproducible across runs (wall-clock varies by machine). Run the live tier explicitly with `pytest tests/ -m live -v` (needs real credentials + a running Neo4j). #43 can rely on a clean default run.
 - [ ] **#43** — Final index rebuild (`python scripts/build_dataset_vector_index.py`) + evaluation.
   Assistant documentation is **done** — it shipped as `docs/user_guide/assistant.rst` plus nine
   per-capability pages, not the originally-planned single `docs/assistant.md`. There is no
@@ -371,7 +383,8 @@ verified "paired", which it never checked.
 - [x] Docs — `docs/user_guide/content_reasoning.rst` (new capability page), plus updates to
   `assistant.rst`, `architecture.rst`, `neo4j_schema.md`, `index.rst`, and `CLAUDE.md`.
 
-**Two bugs found while implementing, both fixed:**
+**Two bugs found while implementing, both fixed** (see `HANDOFF.md` for the full bug-by-bug
+investigation narrative, including live-verification detail omitted here):
 1. **`INPUT_FOR` was documented and queried backwards everywhere.** The live graph has
    `(DigitalDataset)-[:INPUT_FOR]->(Sample)` — child → parent, "was derived from" — confirmed by
    edge counts (1893 / 983 / 55) and by `load_graph.py`'s `_establish_connection`. Because

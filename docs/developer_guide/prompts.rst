@@ -642,7 +642,7 @@ Creating a New Prompt
       from src.llm.client import RoccoClient
 
       client   = RoccoClient()
-      response = client.call(system="You are a helpful assistant.", user=text)
+      response = client.send_prompt(prompt=text, context="You are a helpful assistant.")
 
 4. **Define an output schema** in ``src/llm/schemas.py`` if the prompt returns structured JSON,
    then parse the LLM response into it.

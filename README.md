@@ -121,7 +121,7 @@ See [`.env.example`](.env.example) for all supported providers and their base UR
 
 2. **Evaluate**: Click "Evaluate Description" to score it against Rocco's 10-criterion rubric.
 
-3. **Upload Context Documents**: Upload relevant PDFs or DOCX files (optional). Rocco will build a vector index for RAG.
+3. **Upload Context Documents**: Upload relevant PDFs (optional; DOCX is supported programmatically but not in the UI uploader). Rocco will build a vector index for RAG.
 
 4. **Provide Feedback**: Write specific suggestions for improvement.
 
@@ -224,32 +224,6 @@ Rocco's evaluation results demonstrate high agreement with expert human judgment
 
 **Full study data, analysis code, and figures are in the [`benchmarks/`](benchmarks/) folder.**
 
-## Installation for Development
-
-To contribute to Rocco:
-
-```bash
-git clone https://github.com/digital-porous-media/dpm_rocco_curator.git
-cd dpm_rocco_curator
-pip install -e ".[dev]"
-```
-
-### Code Style
-
-Format code before committing:
-
-```bash
-black . --line-length 100
-isort .
-```
-
-### Running Tests
-
-```bash
-pytest tests/
-pytest -v tests/test_file.py  # Single file with verbose output
-```
-
 ## Documentation
 
 **Complete documentation:** https://digital-porous-media.github.io/dpm_rocco_curator/
@@ -321,7 +295,9 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Contributing
 
-We welcome bug reports, feature requests, and pull requests! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome bug reports, feature requests, and pull requests! See [CONTRIBUTING.md](CONTRIBUTING.md)
+for the full guide — dev environment setup (including the `graph` extra and Neo4j for assistant
+work), code style, running tests, and the PR process.
 
 ## Support
 
