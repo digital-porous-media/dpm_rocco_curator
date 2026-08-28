@@ -89,7 +89,7 @@ it looks like it worked.
 
 A named person ("datasets by Jane Doe", "who has published data on sandstone permeability")
 counts as a checkable property here too — it maps to the ``authors`` field. The routing prompt
-distinguishes this from an incidental name mention ("Hi, I'm Bernie"), which is small talk, not
+distinguishes this from an incidental name mention ("Hi, I'm Jane"), which is small talk, not
 an author lookup.
 
 Example Queries

@@ -21,9 +21,6 @@ fibrous media, soils). Two modules ship as two tabs of the same Streamlit app:
 Both are implemented and running. See `CHANGELOG.md` for what shipped when, and `Tasks.md` for
 what's still open.
 
-**Contact:** Bernie Chang (async OK via Slack or email). Check the
-[GitHub Project board](https://github.com/orgs/digital-porous-media/projects/3) for open issues.
-
 ---
 
 ## Prerequisites
