@@ -187,9 +187,10 @@ in Python — add a YAML file and load it with `load_prompt("filename")`.
 | `portal_docs.yaml` | Assistant — portal documentation answers |
 | `assistant.yaml` | **Not called at runtime.** Standalone intent classifier, kept for offline analysis and tests |
 
-Routing is *not* driven by `assistant.yaml`. It is implicit: the ReAct agent matches tool
-descriptions against `SYSTEM_PROMPT` in `conversation_manager.py`. To change routing, edit that
-constant or the tool docstrings in `tools.py`. See
+Routing is *not* driven by `assistant.yaml`. It is implicit: the ReAct agent picks tools by
+matching each tool's own description in `tools.py`, so that description is where a per-tool
+routing rule goes. `SYSTEM_PROMPT` in `conversation_manager.py` carries only the knowledge tiers,
+the cross-tool boundaries, and the response contract. See
 [the Prompt Reference](https://digital-porous-media.github.io/dpm_rocco_curator/developer_guide/prompts.html).
 
 #### `src/assistant/`
@@ -211,11 +212,12 @@ LangGraph ReAct agent, then response assembly that depends on which *kind* of to
 splice vs. self-contained passthrough vs. outer-agent synthesis). Also holds the cross-turn
 result-set state that makes "of these…" and "the second one" work.
 
-**`graph_store.py`** — Two layers. High-level (`search()`, `hybrid_search()`,
+**`graph_store.py`** — Search methods used by `tools.py`: `search()`, `hybrid_search()`,
 `component_search()`, `cypher_qa()`, `get_dataset_profile()`, `rank_fact_sheets()`,
-`fetch_fact_sheets()`) used by `tools.py`; low-level (`semantic_search()`,
-`filter_by_metadata()`, `search_datasets()`, `execute_cypher()`) over the raw driver. Accepts
-`filters: dict` rather than hardcoded field names, per the Croissant extensibility constraint.
+`fetch_fact_sheets()`. `execute_cypher()` runs raw parameterized Cypher over the `neo4j`
+driver and backs `hybrid_search()`'s BM25 half, the fact-sheet methods and
+`get_dataset_profile()`. Accepts `filters: dict` rather than hardcoded field names, per the
+Croissant extensibility constraint.
 
 **`literature_search.py`** — Semantic Scholar wrapper with a 1 req/s throttle and 429 backoff.
 
@@ -267,7 +269,7 @@ tests/
     ├── test_literature_search.py       # Semantic Scholar wrapper, throttle, backoff
     ├── test_search_integration.py      # the 20-query acceptance suite
     ├── test_assistant_ui.py            # badges, DOI/URL linkifying, LaTeX normalization
-    ├── test_prompts.py                 # every prompt YAML loads and renders
+    ├── test_prompts.py                 # query_expander/educational/corpus_reasoning load+render
     └── test_intent_classifier.py       # assistant.yaml (offline only)
 ```
 

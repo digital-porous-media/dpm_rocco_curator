@@ -25,9 +25,20 @@ backing data (``data/domain_workflows.yaml``), but answer different question sha
    * - Theory, concepts, relationships, scientific terminology
      - Practical steps, tool usage, portal workflows, suitability of a specific item
 
-The rule of thumb from the routing prompt: *"How do I compute/derive/calculate X?"* asks about
-the method/math (domain Q&A); *"How do I use/set up/prepare X?"* or *"is X suitable for Y?"* asks
-about practical steps (workflow guidance).
+The rule of thumb: a *"what is X"* / *"why does X happen"* / *"how does X relate to Y"* question
+about theory or terminology comes here. Anything asking **how to actually do it** — including
+*"how do I compute/derive/calculate X"* — goes to :doc:`workflow_guidance`, because a method
+question is answered by the workflow steps for that method. Portal *actions* (upload, download,
+cite) and portal *entity-schema* questions go to :doc:`portal_docs` instead, never here.
+
+.. note::
+
+   Earlier versions of this page split ``"how do I compute X"`` (method/math) from ``"how do I
+   set up X"`` (practical steps), sending the first here. That rule came from
+   ``src/prompts/assistant.yaml``, the standalone intent classifier that is **not called at
+   runtime**. Live routing is governed by ``SYSTEM_PROMPT`` in ``conversation_manager.py`` and by
+   each tool's own description, both of which route a scientific/analysis method to
+   ``get_workflow_guidance``.
 
 What It Does
 ------------

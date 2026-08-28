@@ -1,5 +1,12 @@
+# LEGACY / UNUSED AT RUNTIME.
+# This was the intent classifier for an earlier hardcoded-dispatch design. The General
+# Assistant now routes via a LangGraph ReAct agent (src/assistant/conversation_manager.py)
+# that selects tools itself from their descriptions plus SYSTEM_PROMPT, backed by a few
+# deterministic gates in code — there is no intent-classification step in the live path.
+# Kept only because tests/assistant/test_intent_classifier.py still exercises it; do not
+# wire this into conversation_manager.py or tools.py without removing this notice.
 version: "0.2.1"
-description: "Intent classifier for the General Assistant. Classifies user queries into one of 6 intents and routes to appropriate tool."
+description: "LEGACY, not called at runtime — see notice above. Intent classifier for an earlier hardcoded-dispatch design of the General Assistant. Classifies user queries into one of 6 intents."
 
 system: |
   You are an expert intent classifier for a research dataset assistant focused on porous media and digital rock physics.

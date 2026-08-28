@@ -758,8 +758,11 @@ below are the module-level (class/file) reference.
 .. dropdown:: src/assistant/conversation_manager.py — Orchestrator
    :icon: file-directory-fill
 
-   - ``ConversationManager`` class — built on ``langgraph.prebuilt.create_react_agent`` with
-     ``MemorySaver`` for per-session (in-process) history
+   - ``ConversationManager`` class — built on ``langgraph.prebuilt.create_react_agent``. There is
+     **no** LangGraph checkpointer and ``chat()`` takes no ``session_id``: prior turns are
+     replayed by the caller via ``chat(..., history=[...])``, and cross-turn result-set state
+     lives on the instance — so session isolation means one manager per user, cached in
+     ``st.session_state.assistant_manager`` by ``assistant_ui.py``
    - ``_classify_off_domain()`` / ``_classify_needs_tool()`` / ``_needs_followup_tool_call()`` —
      the tools-unbound gate calls in the Request Lifecycle diagram above
    - ``_build_verbatim_response()`` / ``_run_manual_dispatch()`` — response-assembly and
@@ -772,8 +775,9 @@ below are the module-level (class/file) reference.
      one leaves the prior turn's results in place looking current
    - ``SYSTEM_PROMPT`` — implements the tiered knowledge-source policy (tools-only for dataset
      facts, tools-first-with-disclaimer for domain Q&A/workflows, pre-trained knowledge allowed
-     for foundational concepts) and the tool-routing rules the ReAct agent follows. Routing
-     changes go here, **not** in ``src/prompts/assistant.yaml`` (see :doc:`prompts`)
+     for foundational concepts), the cross-tool routing boundaries, and the response contract. A
+     **per-tool** routing rule goes in that tool's own description in ``tools.py`` — never here,
+     and never in ``src/prompts/assistant.yaml`` (see :doc:`prompts`)
 
 .. dropdown:: src/assistant/tools.py — Tool Interface
    :icon: file-directory-fill

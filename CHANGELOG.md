@@ -85,8 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Unified LLM/Agent Stack
 - `RoccoClient` now inherits from both `LLMClient` and `BaseChatModel`, giving the curator and
   assistant identical, zero-duplication LLM configuration
-- Agent stack: `langgraph.prebuilt.create_react_agent` + `MemorySaver` (replaces the legacy
-  `AgentExecutor`, removed in LangChain 1.x)
+- Agent stack: `langgraph.prebuilt.create_react_agent` (replaces the legacy `AgentExecutor`,
+  removed in LangChain 1.x). No checkpointer — conversation history is replayed per call by the
+  UI layer
 - Neo4j vector search via `langchain-neo4j` (optional `graph` extra:
   `pip install -e ".[graph]"`)
 

@@ -234,7 +234,7 @@ clean.)
 | `tests/assistant/test_portal_docs_retrieval.py` | Heading-tree node selection and synthesis |
 | `tests/assistant/test_literature_search.py` | Semantic Scholar wrapper, throttling, 429 backoff |
 | `tests/assistant/test_search_integration.py` | The 20-query acceptance suite (mocked + live-tier) |
-| `tests/assistant/test_prompts.py` | Every prompt YAML loads and renders |
+| `tests/assistant/test_prompts.py` | Load/render + grounding rules for `query_expander`, `educational`, `corpus_reasoning` |
 | `tests/assistant/test_assistant_ui.py` | Badge rendering, DOI/URL linkifying, LaTeX normalization |
 | `tests/assistant/test_intent_classifier.py` | `assistant.yaml` classifier against all 6 intents (offline analysis only — not called at runtime) |
 

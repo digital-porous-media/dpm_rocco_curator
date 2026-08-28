@@ -1,11 +1,22 @@
 """
 Shared tool interface for the General Assistant.
 
-All callable tools are defined here — both interns code to this interface.
+Every tool the ReAct agent can call is defined here and registered by
+build_langchain_tools(): search_datasets, get_dataset_details, get_dataset_profile,
+reason_about_dataset_content, search_portal_docs, get_workflow_guidance,
+get_educational_context, search_literature. expand_query is a helper, not a tool —
+search_datasets calls it internally.
 
-Intern A owns (Week 2-3): search_datasets, get_dataset_details
+Each tool's docstring IS its routing signal: it is what the agent reads to decide which
+tool to call, so a change to when a tool should or shouldn't be used belongs there rather
+than in conversation_manager.SYSTEM_PROMPT. get_dataset_details' property list is appended
+at import time from the live schema, so it never drifts from what Cypher can answer.
 
-Bernie owns: get_educational_context, get_workflow_guidance, expand_query, search_literature
+Some routing is deliberately NOT left to the agent. _needs_content_reasoning(),
+_is_plain_property_query(), and _mentions_named_person() are deterministic gates that run
+inside the tools themselves, because prompt-level routing proved unreliable for
+distinctions this fine ("segmented and porosity above 0.3" is a plain field query;
+"segmented and imaged the same way" is relational).
 """
 
 import json
@@ -810,6 +821,10 @@ def get_dataset_profile(dataset_reference: str, question: str) -> str:
     Do NOT use this to discover NEW datasets matching a description (use search_datasets) or to
     run a structured multi-dataset property query across the whole catalog (use
     get_dataset_details) — this tool answers about one dataset that is already identified.
+    Conversely, once a dataset HAS been identified, keep answering further follow-ups about that
+    same dataset with this tool and the same resolved reference — do not fall back to
+    search_datasets or get_dataset_details, which would re-search the catalog instead of reading
+    the dataset already on the table.
 
     Source label: [dataset profile]
     """
@@ -1484,7 +1499,12 @@ def _ensure_all_tutorials_mentioned(response: str, tutorials: list[dict]) -> str
 
 @tool
 def get_workflow_guidance(goal: str) -> str:
-    """Return step-by-step DRP workflow guidance for a user goal, with tutorial links."""
+    """Return step-by-step DRP workflow guidance for a scientific/analysis method or goal
+    (computing permeability, segmenting an image, running a simulation, extracting a pore
+    network), with tutorial links. Do NOT use for a portal action (upload, download, cite,
+    manage collaborators) or for operating a portal-documented tool (the LBPM interface, the
+    portal's Jupyter tools) — even when phrased "how do I run/use X"; those go to
+    search_portal_docs."""
     from src.prompts.loader import load_prompt, render
     from src.assistant.llm import get_chat_model
 
@@ -1504,7 +1524,11 @@ def get_workflow_guidance(goal: str) -> str:
 
 @tool
 def get_educational_context(question: str) -> str:
-    """Answer domain Q&A using domain_workflows.yaml, global best practices, and tutorials."""
+    """Answer domain Q&A about porous media science and DRP concepts/methods, using
+    domain_workflows.yaml, global best practices, and tutorials. Do NOT use for a question about
+    the portal's own data model or entity types (Dataset, Sample, Digital Dataset, Analysis
+    Dataset) — those are portal-specific schema terms, not general science concepts, and belong
+    to search_portal_docs."""
     from src.prompts.loader import load_prompt, render
     from src.assistant.llm import get_chat_model
 
@@ -1531,11 +1555,14 @@ def get_educational_context(question: str) -> str:
 
 @tool
 def search_portal_docs(question: str) -> str:
-    """Search the DPM Portal user documentation for how-to guides and metadata schema reference.
+    """Search the DPM Portal user documentation for how-to guides and metadata schema reference:
+    dataset submission, portal navigation, upload/download/citation/collaborator actions,
+    operating portal tools (LBPM interface, Jupyter tools), file format requirements, and the
+    definitions of the portal's own entity types (Dataset, Sample, Digital Dataset, Analysis
+    Dataset) — sourced from https://github.com/digital-porous-media/dpm_docs.
 
-    Covers: dataset submission guidelines, portal navigation, metadata field definitions,
-    and file format requirements sourced from https://github.com/digital-porous-media/dpm_docs.
-    Source label: [portal docs].
+    Pass the user's question in full, not a shortened keyword phrase — retrieval works better on
+    full sentence context. Source label: [portal docs].
     """
     from src.assistant.portal_docs_retrieval import search_portal_docs_v2
     return search_portal_docs_v2(question)

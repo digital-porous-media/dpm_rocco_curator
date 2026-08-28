@@ -454,8 +454,9 @@ Literature search uses the **Semantic Scholar API** only (see `literature_search
    pointed at the fact-sheet indexes, and `reason_about_dataset_content` runs one cited reasoning
    pass over the shortlist. See §Content Reasoning below.
 
-Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic scholar]`,
-`[content reasoning]`.
+Source labels on all results — the full set `SYSTEM_PROMPT` requires the agent to relay verbatim:
+`[graph match]`, `[semantic match]`, `[hybrid match]`, `[component match]`, `[cypher match]`,
+`[dataset profile]`, `[content reasoning]`, `[portal docs]`, `[semantic scholar]`.
 
 ### Content Reasoning (`reason_about_dataset_content`)
 
@@ -541,18 +542,24 @@ another growing-pattern-library problem.
 
 ### Knowledge Source Policy (conversation_manager.py + educational.yaml)
 
-The system prompt must **not** blanket-restrict the LLM to tool-only knowledge. The right policy is tiered:
+The system prompt must **not** blanket-restrict the LLM to tool-only knowledge. The policy is
+tiered, and is **implemented** — `SYSTEM_PROMPT`'s "Knowledge tiers" section and
+`educational.yaml`'s "Knowledge policy" section both carry it. Keep any edit to either in step
+with this table:
 
-| Question type | Policy | Example |
-|--------------|--------|---------|
-| Dataset facts / portal content | **Tools only** — no pre-trained fallback. Hallucinated dataset properties erode researcher trust. | "How many sandstone datasets have φ > 0.2?" |
-| Domain Q&A / workflows | **Tools first** (`domain_workflows.yaml`, Semantic Scholar). Fall back to pre-trained with explicit disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
-| Foundational concepts | **Pre-trained knowledge is fine** — these are stable and well-established. | "What is porosity?" |
+| Tier | Question type | Policy | Example |
+|------|--------------|--------|---------|
+| 0 | Conversation, brainstorming, code help | **Answer directly, no tool.** Includes self-introductions — an incidental name is never an author lookup. Off-domain requests get one acknowledging sentence, then stop. | "Hi, I'm Bernie"; "why is my segmentation pipeline crashing?" |
+| 1 | Dataset facts / portal content | **Tools only** — no pre-trained fallback. Hallucinated dataset properties erode researcher trust. | "How many sandstone datasets have φ > 0.2?" |
+| 2 | Domain Q&A / workflows / portal how-to | **Tools first** (`domain_workflows.yaml`, portal docs, Semantic Scholar). Fall back to pre-trained only when the tool's context was genuinely sparse, with the disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
+| 3 | Foundational concepts | **Pre-trained knowledge is fine** — these are stable and well-established. | "What is porosity?" |
 
-**Applies to:**
-- `conversation_manager.py` system prompt — replace "do not answer from pre-trained knowledge" with "prefer tool results; for general domain knowledge you may draw on your expertise but make the source clear"
-- `educational.yaml` system prompt — same tiered framing; instruct the LLM to distinguish between portal knowledge base results vs. general domain knowledge
-- `general_chat` tool in `tools.py` — currently broken because it also forbids pre-trained knowledge while receiving no context; fix by removing that restriction (this tool is a placeholder until `get_educational_context` is wired up)
+Tier 0 has a deterministic backstop: `_classify_off_domain()` returns a fixed steer-back string
+before any other LLM call, because the prompt-only version was observed acknowledging the mismatch
+and then answering the off-topic question anyway.
+
+Note: `general_chat`, referenced in older notes as a broken placeholder, no longer exists —
+`get_educational_context` replaced it.
 
 ### Prompts for New Modules
 
@@ -731,7 +738,7 @@ The assistant module shares the **unified** LLM client with the curator:
 | Chat LLM | `RoccoClient` | `src.llm.client` | Inherits from `BaseChatModel`; works with all providers (OpenAI, SambaNova, etc.) |
 | Embeddings | `OpenAIEmbeddings` | `langchain_openai` | Custom `EMBEDDING_URL` for provider-specific embedding endpoint |
 | Agent | `create_react_agent` | `langgraph.prebuilt` | LangGraph ReAct; replaces legacy `AgentExecutor` (removed in langchain 1.x) |
-| Memory | `MemorySaver` | `langgraph.checkpoint.memory` | In-process per-session history; resets on restart |
+| Memory | *(none — no checkpointer)* | — | `chat(..., history=[...])` replays prior turns per call; the UI owns the list. Cross-turn result-set state lives on the `ConversationManager` instance, so isolation = one instance per session. Resets on restart |
 | Neo4j Vector Search | `Neo4jVector` | `langchain_neo4j` | Vectorstore abstraction for semantic search over dataset embeddings |
 
 Both curator and assistant use `RoccoClient` from `src/llm/client.py`.
@@ -805,6 +812,42 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 ---
 
 ## Recent Changes
+
+### Prompt Consolidation: Routing Rules Moved to Tool Descriptions (August 2026)
+- **`SYSTEM_PROMPT` (`conversation_manager.py`) cut roughly in half.** Its per-tool routing
+  bullets duplicated what `search_datasets`, `get_dataset_details`, `get_dataset_profile`, and
+  `reason_about_dataset_content` already say in their own descriptions — two authored copies of
+  one policy, with no shared source of truth. The tool description is the copy that stays: it's
+  where the agent reads it, and `get_dataset_details`' property list is generated from
+  `MANUAL_SCHEMA` so it can't drift from the live schema. `SYSTEM_PROMPT` now carries only the
+  knowledge tiers, the cross-tool boundaries no single description can own, and the response
+  contract.
+- **The three thin tool descriptions absorbed what moved.** `get_workflow_guidance`,
+  `get_educational_context`, and `search_portal_docs` were one-liners whose disambiguation logic
+  (scientific-method vs. portal-action "how do I X"; portal entity types vs. general science)
+  lived entirely in `SYSTEM_PROMPT`. That logic now sits in the descriptions, matching the other
+  five tools.
+- **⚠️ One deleted instruction turned out to be load-bearing for CODE and was restored.** The
+  "compose ONE self-contained question restating every accumulated constraint" rule is read by
+  `_continues_filter_chain()` and `_tool_filter_text()`, which detect a refinement turn by
+  checking whether the agent's composed question still carries the prior chain's subject terms.
+  Removing the instruction removes the behavior those two functions detect, so cross-turn
+  narrowing silently stops firing — the refinement runs over the whole catalog while the answer
+  still looks right, and `_cumulative_filter_text` stores a constraint-less question that
+  corrupts the chain for later turns. The unit tests do **not** catch this: they hand-feed
+  composed question strings and never exercise a real LLM composing one. The bullet is back in
+  `SYSTEM_PROMPT` with a `LOAD-BEARING, do not trim` comment naming both dependents. It also
+  now handles supersession ("above 0.3" then "below 0.25" replaces rather than ANDs), which the
+  original wording got wrong — blind AND-composition produces a contradiction that returns
+  nothing.
+- **`assistant.yaml` marked LEGACY** in-file. It was already documented as not-called-at-runtime
+  but read as live; the header comment now says so at the point of edit.
+- **Fixed: `MemorySaver` was documented but never implemented.** `create_react_agent` is called
+  with no checkpointer and `chat()` has no `session_id` — the docstring's usage example would
+  have raised `TypeError`. Corrected in `conversation_manager.py`'s module and class docstrings,
+  `docs/developer_guide/architecture.rst`, `CHANGELOG.md`, `Tasks.md`, and the agent-stack table
+  above. Real mechanism: caller-replayed `history=[...]` plus instance-level cross-turn state,
+  so isolation = one `ConversationManager` per session.
 
 ### Content-Reasoning Gate Missed Non-"image" Artifact Nouns (August 2026)
 - **Fixed: `"both grayscale and segmented volumes"` did not fire `_needs_content_reasoning()`**
@@ -909,7 +952,7 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 ### General Assistant Skeleton (May 2026)
 - Created `src/assistant/` with working implementations ported from legacy `Chatbot/` folder
 - `conversation_manager.py` is the top-level orchestrator (renamed from `assistant.py` to avoid confusion with Intern B's educational work); `assistant.py` is a one-line re-export
-- Agent upgraded from legacy `AgentExecutor` (removed in langchain 1.x) to `langgraph.prebuilt.create_react_agent` + `MemorySaver`
+- Agent upgraded from legacy `AgentExecutor` (removed in langchain 1.x) to `langgraph.prebuilt.create_react_agent` (no checkpointer — see the agent-stack table above)
 - LLM/embeddings for assistant use `ChatOpenAI` + `OpenAIEmbeddings` from `langchain_openai` (provider-agnostic via `.env`; `langchain_sambanova` not required)
 - `graph_store.py` documents full Neo4j schema; Neo4j imports are lazy so `USE_NEO4J=false` works without the driver loading
 - `scripts/scrape_metadata.py` ported from `CurationTools/ScrapesMetadata.py`

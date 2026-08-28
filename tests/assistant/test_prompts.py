@@ -1,7 +1,13 @@
 """
-Tests for src/prompts/query_expander.yaml and educational.yaml.
+Tests for src/prompts/query_expander.yaml, educational.yaml, and corpus_reasoning.yaml.
 
-No LLM calls — only load/render validation.
+No LLM calls — only load/render validation, plus pinning the specific prompt strings that
+tools.py's code-level guards depend on (see TestCorpusReasoningPrompt).
+
+Not every prompt YAML is covered here: dataset_profile.yaml and portal_docs.yaml are
+exercised through their tools in test_tools.py / test_portal_docs_retrieval.py, the three
+curator prompts through test_curator_integration.py, and assistant.yaml (legacy, not called
+at runtime) through test_intent_classifier.py.
 """
 
 import pytest

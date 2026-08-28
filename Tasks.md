@@ -96,7 +96,8 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 - [x] Port `Chatbot/` working code into `src/assistant/`:
   - [x] `graph_store.py` — full Neo4j vector + Cypher QA, schema documented
   - [x] `tools.py` — `search_datasets`, `get_dataset_details`, `general_chat` working; Intern B stubs added
-  - [x] `conversation_manager.py` — LangGraph ReAct agent with MemorySaver
+  - [x] `conversation_manager.py` — LangGraph ReAct agent orchestrator (no checkpointer; history
+        is replayed per call by the UI layer)
   - [x] `assistant_ui.py` — working Streamlit tab, `assistant_`-prefixed session keys
   - [x] `llm.py` — `ChatOpenAI` + `OpenAIEmbeddings` via `.env`
 - [x] Fix bugs from `Chatbot/`:
@@ -113,7 +114,7 @@ Tasks Bernie must complete before intern Week 1. Track progress here.
 matching tool descriptions (see CLAUDE.md's "Search Architecture"). This classifier is retained
 for offline prompt-quality testing only.
 
-- [x] Draft `src/prompts/assistant.yaml` (v0.2.0) — comprehensive intent classifier
+- [x] Draft `src/prompts/assistant.yaml` (now v0.2.1, marked LEGACY in-file) — comprehensive intent classifier
   - Intent definitions: semantic_search, metadata_filter, domain_qa, workflow_guidance, query_expansion, literature_search
   - Examples per intent with porous media terminology (porosity, permeability, micro-CT, wettability, etc.)
   - Decision rules to avoid boundary cases

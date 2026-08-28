@@ -554,8 +554,18 @@ Not every LLM call in the assistant is backed by a YAML file. The gate and assem
 module constants in ``src/assistant/conversation_manager.py``, because they are tightly coupled
 to control flow there rather than being independently versionable behavior:
 
-- ``SYSTEM_PROMPT`` — the tiered knowledge-source policy and the tool-routing rules the ReAct
-  agent follows. **This is where routing changes go.**
+- ``SYSTEM_PROMPT`` — the tiered knowledge-source policy, the cross-tool routing boundaries, and
+  the response/formatting contract. Deliberately short: **a per-tool routing rule belongs in that
+  tool's own description** in ``src/assistant/tools.py``, which is where the agent reads it and
+  where ``get_dataset_details``'s property list stays in sync with the live schema. Keeping a
+  second copy here produced two versions that drifted.
+
+  Its "Narrowing an earlier dataset listing" bullet is load-bearing for *code*, not only for the
+  agent: ``_continues_filter_chain()`` and ``_tool_filter_text()`` recognize a refinement turn by
+  checking whether the agent's composed question still carries the prior filter chain's subject
+  terms — which only happens because that bullet tells the agent to restate them. Delete it and
+  both mechanisms stop firing silently, so a refinement runs over the whole catalog while the
+  answer still looks correct.
 - ``_OFF_DOMAIN_GATE_SYSTEM_PROMPT`` / ``_GATE_SYSTEM_PROMPT`` /
   ``_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT`` — the three cheap, tools-unbound classifier calls
 - ``_COMPARISON_SYNTHESIS_SYSTEM_PROMPT`` — multi-dataset comparison synthesis
@@ -605,7 +615,8 @@ Editing an Existing Prompt
    .. code-block:: bash
 
       pytest tests/
-      pytest tests/assistant/test_prompts.py -v   # every prompt YAML loads and renders
+      pytest tests/assistant/test_prompts.py -v   # load/render + grounding rules for
+                                                 # query_expander, educational, corpus_reasoning
 
 ----
 

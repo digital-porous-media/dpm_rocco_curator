@@ -251,7 +251,8 @@ tests/assistant/test_conversation_manager.py tests/assistant/test_graph_store.py
   relationship types to use in the new Cypher, rather than guessing.
 - **Measuring instead of guessing when debugging the context-overflow report.** The first
   instinct (a large sub-node count) was checked directly by measuring `SYSTEM_PROMPT` + all
-  tool description sizes (~17k chars, nowhere near the limit) *before* committing to that fix —
+  tool description sizes (~17k chars at the time, nowhere near the limit; ~14k after the
+  August 2026 prompt consolidation) *before* committing to that fix —
   which turned out to be the wrong root cause. When the user reported it recurring on a
   small-by-file-count dataset, that ruled out "sub-node count" cleanly and pointed straight at
   something size-independent: the embedding vectors carried on every embedded node.

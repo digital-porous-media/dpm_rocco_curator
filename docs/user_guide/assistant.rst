@@ -44,11 +44,16 @@ its description against the system prompt — not a lookup table. This is implem
    ("What is porosity?") are answered directly, with no tools bound to that call (so the model
    can't hallucinate a tool call it doesn't have).
 3. **ReAct agent** — for everything else, the agent is given all eight tools (see the table
-   below) and the system prompt's routing rules, and picks one or more based on the query.
+   below) and picks one or more by reading their descriptions, with the system prompt supplying
+   the knowledge tiers and the handful of boundaries no single description can own.
    Cross-intent queries ("explain relative permeability and find datasets that measure it"), and
    multi-dataset comparisons ("compare dataset A and dataset B"), trigger multiple sequential
    tool calls.
-4. **Response assembly** — how the final answer is built depends on which tool(s) ran:
+4. **Follow-up gate** — when the agent asks for exactly one tool whose answer is already
+   complete on its own, a third classifier checks whether the question *also* needs a different
+   kind of lookup ("...and can you find datasets that measure it?"). If not, that single tool's
+   answer is returned without running the agent's second turn at all.
+5. **Response assembly** — how the final answer is built depends on which tool(s) ran:
 
    - **Verbatim tools** (``search_datasets``, ``get_dataset_details``) return real dataset
      titles/DOIs/descriptions that must reach the user unmodified. The agent's own retelling of
@@ -66,7 +71,7 @@ its description against the system prompt — not a lookup table. This is implem
      syntax, the intended call is parsed out of the error and dispatched directly, following the
      same verbatim/self-contained rules above.
 
-5. **Result-set tracking** — if the turn listed datasets, the titles/DOIs are recorded so your
+6. **Result-set tracking** — if the turn listed datasets, the titles/DOIs are recorded so your
    next message can refer back to them ("the second one", "of these, which are coal?"). See
    :doc:`multi_turn`.
 
@@ -133,6 +138,8 @@ information came from:
      - Meaning
    * - ``graph match``
      - Pure vector-similarity match against the Neo4j dataset embedding index
+   * - ``semantic match``
+     - Vector-similarity match surfaced by the lower-level semantic search path
    * - ``hybrid match``
      - Combined vector + BM25 full-text match (Reciprocal Rank Fusion) — the default for
        ``search_datasets``
@@ -152,6 +159,12 @@ information came from:
    * - ``portal docs``
      - Result from the DPM Portal's user documentation
 
+Two further tags can appear at the top of a dataset-search answer. ``[search reasoning: ...]``
+means the query described a *purpose* rather than concrete properties, so the assistant explains
+what the task requires and how each result fits. ``[weak match: ...]`` means nothing directly
+matched your topic and the closest available results are shown instead — treat those as a
+starting point, not an answer.
+
 Knowledge Source Policy
 ------------------------
 
@@ -164,6 +177,10 @@ pre-trained knowledge:
 
    * - Question type
      - Policy
+   * - Conversation, brainstorming, code help
+     - **Answered directly, no tool.** Greetings, self-introductions, thinking through a sampling
+       design, writing or debugging analysis code. If the conversation turns into a real lookup,
+       the assistant calls a tool at that point.
    * - Dataset facts / portal content
      - **Tools only.** If nothing is found, the assistant says so rather than guessing —
        hallucinated dataset properties would erode trust in the catalog.

@@ -8,10 +8,12 @@ the ``get_workflow_guidance`` tool.
 When to Use This vs. Domain Q&A
 -----------------------------------
 
-See :doc:`domain_qa`'s comparison table. In short: practical "how do I do/set up/prepare X"
-questions and suitability-of-a-specific-item questions route here; "what is X" / "how do I
-compute/derive X" questions route to :doc:`domain_qa`. Portal *actions* (upload, download, cite)
-and portal *entity-schema* questions never route here — those go to :doc:`portal_docs` instead.
+See :doc:`domain_qa`'s comparison table. In short: any question about **how to actually do**
+something with a scientific or analysis method routes here — "how do I do/set up/prepare X" and
+"how do I compute/derive X" alike, plus suitability-of-a-specific-item questions. Only "what is
+X" / "why does X happen" theory questions route to :doc:`domain_qa`. Portal *actions* (upload,
+download, cite) and portal *entity-schema* questions never route here — those go to
+:doc:`portal_docs` instead, even when phrased "how do I run/use X".
 
 What It Does
 ------------
