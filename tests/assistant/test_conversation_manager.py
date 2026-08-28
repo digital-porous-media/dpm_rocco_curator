@@ -22,10 +22,14 @@ from src.assistant.conversation_manager import (
     _classify_off_domain,
     _extract_tool_calls_from_error,
     _extract_tool_calls_from_text,
-    _needs_followup_tool_call,
+    _assemble_response,
+    _needs_followup_lookup,
     _run_manual_dispatch,
     _strip_reasoning_scaffold,
     _strip_recap_paragraph,
+    _uncovered_requests,
+    _with_uncovered_segment,
+    Segment,
 )
 
 
@@ -542,6 +546,7 @@ class TestPreemptSecondTurn:
 
         with patch("src.assistant.conversation_manager._classify_off_domain", return_value=False), \
              patch("src.assistant.conversation_manager._classify_needs_tool", return_value=True), \
+             patch("src.assistant.conversation_manager._uncovered_requests", return_value=[]), \
              patch(
                  "src.assistant.conversation_manager._run_manual_dispatch",
                  return_value="Here's the Minkowski Functionals notebook link.",
@@ -553,6 +558,7 @@ class TestPreemptSecondTurn:
             [{"name": "get_workflow_guidance", "args": {"goal": "compute porosity"}}],
             "how to compute porosity from an image",
             [],
+            uncovered=[],
         )
 
     def test_dispatch_failure_falls_through_to_normal_graph_execution(self):
@@ -569,6 +575,7 @@ class TestPreemptSecondTurn:
         tool_msg.content = "The Minkowski Functionals notebook explains this."
         with patch("src.assistant.conversation_manager._classify_off_domain", return_value=False), \
              patch("src.assistant.conversation_manager._classify_needs_tool", return_value=True), \
+             patch("src.assistant.conversation_manager._uncovered_requests", return_value=[]), \
              patch("src.assistant.conversation_manager._run_manual_dispatch", return_value=None) as mock_dispatch:
             manager._agent.stream.return_value = iter([
                 {"messages": [_USER_ECHO]},
@@ -581,6 +588,7 @@ class TestPreemptSecondTurn:
             [{"name": "get_workflow_guidance", "args": {"goal": "compute porosity"}}],
             "how to compute porosity from an image",
             [],
+            uncovered=[],
         )
         assert result == "The Minkowski Functionals notebook explains this."
 
@@ -589,9 +597,11 @@ class TestPreemptSecondTurn:
         tool call on the first turn, deciding on a second tool only after seeing that
         answer), not in one parallel tool_calls list — so a single-tool-call first
         turn alone isn't a reliable signal that no follow-up call is coming.
-        _needs_followup_tool_call must be consulted before short-circuiting, and when
-        it says a follow-up is needed, the normal (non-short-circuited) graph
-        execution must run so the model gets the chance to make that second call."""
+        The coverage gate must be consulted before short-circuiting, and when it
+        reports an uncovered part that needs a LOOKUP, the normal (non-short-circuited)
+        graph execution must run so the model gets the chance to make that second call.
+        An uncovered part needing no lookup is handled differently — see
+        TestCompoundQuestionAssembly."""
         manager = object.__new__(ConversationManager)
         manager._agent = MagicMock()
         first_ai_msg = self._ai_message_with_tool_calls(
@@ -600,7 +610,10 @@ class TestPreemptSecondTurn:
         final_msg = MagicMock(content="Combined answer citing both tools.")
         with patch("src.assistant.conversation_manager._classify_off_domain", return_value=False), \
              patch("src.assistant.conversation_manager._classify_needs_tool", return_value=True), \
-             patch("src.assistant.conversation_manager._needs_followup_tool_call", return_value=True), \
+             patch(
+                 "src.assistant.conversation_manager._uncovered_requests",
+                 return_value=[{"asks_for": "find datasets that measure it", "needs_lookup": True}],
+             ), \
              patch("src.assistant.conversation_manager._run_manual_dispatch") as mock_dispatch:
             manager._agent.stream.return_value = iter([
                 {"messages": [_USER_ECHO]},
@@ -615,47 +628,220 @@ class TestPreemptSecondTurn:
         assert result == "Combined answer citing both tools."
 
 
-class TestNeedsFollowupToolCall:
-    def test_call_failure_defaults_to_no_followup_needed(self):
-        """Default False (proceed with short-circuit) on failure — the short-circuit
-        exists to fix a confirmed 400-error bug, so an uncertain case shouldn't
-        reintroduce that risk just to preserve a maybe-needed follow-up call."""
+class TestUncoveredRequests:
+    """The coverage gate reports which parts of a message the one called tool won't
+    answer. Its predecessor asked for a yes/no "needs_followup" verdict and taught the
+    boundary purely by example, all of which paired a tool with a SECOND TOOL — so a
+    part needing no tool at all fell outside every example and the gate said no. That
+    is the live-reported bug where "What is porosity and how do I compute it from a
+    microCT image?" came back with only the workflow half."""
+
+    def _llm_returning(self, payload):
+        m = MagicMock()
+        m.return_value.invoke.return_value = MagicMock(content=payload)
+        return m
+
+    def test_call_failure_defaults_to_nothing_uncovered(self):
+        """Default [] (relay proceeds) on failure — the relay short-circuit exists to fix
+        a confirmed 400-error bug, so an uncertain case shouldn't reintroduce that risk."""
         with patch("src.assistant.llm.get_chat_model") as mock_get_llm:
             mock_get_llm.return_value.invoke.side_effect = RuntimeError("boom")
-            assert _needs_followup_tool_call("some query", "get_workflow_guidance") is False
+            assert _uncovered_requests("some query", "get_workflow_guidance") == []
 
-    def test_plain_single_intent_question_does_not_need_followup(self):
-        with patch("src.assistant.llm.get_chat_model") as mock_get_llm:
-            mock_get_llm.return_value.invoke.return_value = MagicMock(
-                content='{"needs_followup": false}'
-            )
-            assert _needs_followup_tool_call(
+    def test_malformed_entries_are_ignored(self):
+        """`covered` missing defaults to True, and a blank asks_for is dropped: a
+        malformed entry must not spuriously pull an extra LLM call into a single-intent
+        turn."""
+        payload = (
+            '{"requests": [{"asks_for": "compute porosity"}, '
+            '{"asks_for": "", "covered": false}, "junk"]}'
+        )
+        with patch("src.assistant.llm.get_chat_model", self._llm_returning(payload)), \
+             patch("src.assistant.conversation_manager._tool_description", return_value="desc"):
+            assert _uncovered_requests("q", "get_workflow_guidance") == []
+
+    def test_single_intent_question_has_nothing_uncovered(self):
+        payload = '{"requests": [{"asks_for": "compute relative permeability", "covered": true, "needs_lookup": false}]}'
+        with patch("src.assistant.llm.get_chat_model", self._llm_returning(payload)), \
+             patch("src.assistant.conversation_manager._tool_description", return_value="desc"):
+            assert _uncovered_requests(
                 "How do I compute relative permeability?", "get_workflow_guidance"
-            ) is False
+            ) == []
 
-    def test_cross_intent_question_needs_followup(self):
-        with patch("src.assistant.llm.get_chat_model") as mock_get_llm:
-            mock_get_llm.return_value.invoke.return_value = MagicMock(
-                content='{"needs_followup": true}'
+    def test_no_lookup_half_is_reported_uncovered(self):
+        """The reported bug's exact shape: a Tier 3 definition alongside a Tier 2
+        workflow. The definition needs no lookup, so it is answerable alongside the
+        relayed tool output rather than requiring a second tool call."""
+        payload = (
+            '{"requests": ['
+            '{"asks_for": "define porosity", "covered": false, "needs_lookup": false},'
+            '{"asks_for": "compute porosity from a microCT image", "covered": true, "needs_lookup": false}'
+            ']}'
+        )
+        with patch("src.assistant.llm.get_chat_model", self._llm_returning(payload)), \
+             patch("src.assistant.conversation_manager._tool_description", return_value="desc"):
+            uncovered = _uncovered_requests(
+                "What is porosity and how do I compute it from a microCT image?",
+                "get_workflow_guidance",
             )
-            assert _needs_followup_tool_call(
+        assert [u["asks_for"] for u in uncovered] == ["define porosity"]
+        assert _needs_followup_lookup(uncovered) is False
+
+    def test_lookup_half_suppresses_the_short_circuit(self):
+        payload = (
+            '{"requests": ['
+            '{"asks_for": "compute relative permeability", "covered": true, "needs_lookup": false},'
+            '{"asks_for": "find datasets that measure it", "covered": false, "needs_lookup": true}'
+            ']}'
+        )
+        with patch("src.assistant.llm.get_chat_model", self._llm_returning(payload)), \
+             patch("src.assistant.conversation_manager._tool_description", return_value="desc"):
+            uncovered = _uncovered_requests(
                 "How do I compute relative permeability, and can you also find datasets that measure it?",
                 "get_workflow_guidance",
-            ) is True
-
-    def test_dataset_comparison_with_same_tool_needs_followup(self):
-        """A comparison names a second dataset but calls the SAME tool
-        (get_dataset_profile) both times — the gate's added rule for this case must
-        still surface needs_followup=True rather than short-circuiting after the
-        first dataset's profile. See _FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT's added example."""
-        with patch("src.assistant.llm.get_chat_model") as mock_get_llm:
-            mock_get_llm.return_value.invoke.return_value = MagicMock(
-                content='{"needs_followup": true}'
             )
-            assert _needs_followup_tool_call(
-                "Compare Dataset A and Dataset B for two-phase flow simulation",
-                "get_dataset_profile",
-            ) is True
+        assert _needs_followup_lookup(uncovered) is True
+
+    def test_tool_description_is_injected_not_restated(self):
+        """Coverage is judged against the tool's LIVE description from tools.py, so the
+        gate never carries a second hand-written copy of each tool's scope to drift."""
+        captured = {}
+
+        def _capture(messages):
+            captured["system"] = messages[0]["content"]
+            return MagicMock(content='{"requests": []}')
+
+        mock_llm = MagicMock()
+        mock_llm.return_value.invoke.side_effect = _capture
+        with patch("src.assistant.llm.get_chat_model", mock_llm):
+            _uncovered_requests("q", "get_workflow_guidance")
+
+        assert "get_workflow_guidance" in captured["system"]
+        # The real description's own exclusion clause must be present verbatim.
+        assert "search_portal_docs" in captured["system"]
+
+
+class TestAssembleResponse:
+    def test_orders_segments_by_request_position(self):
+        out = _assemble_response([
+            Segment(kind="verbatim", content="tool answer", order=1),
+            Segment(kind="generated", content="definition", order=0),
+        ])
+        assert out == "definition\n\ntool answer"
+
+    def test_equal_orders_keep_append_order(self):
+        out = _assemble_response([
+            Segment(kind="generated", content="first"),
+            Segment(kind="generated", content="second"),
+        ])
+        assert out == "first\n\nsecond"
+
+    def test_empty_segment_is_dropped_not_left_as_a_gap(self):
+        """A generated segment comes back empty when its LLM call failed. The verbatim
+        tool output is real grounded data and must still reach the user, with no blank
+        gap where the other segment would have been."""
+        out = _assemble_response([
+            Segment(kind="generated", content="   ", order=0),
+            Segment(kind="verbatim", content="tool answer", order=1),
+        ])
+        assert out == "tool answer"
+
+    def test_all_empty_falls_back_rather_than_returning_empty_string(self):
+        """An empty response appended to the UI's history poisons every later turn's
+        replayed context — same reason _non_empty exists."""
+        assert _assemble_response([Segment(kind="generated", content="")]) == _HONEST_TOOL_FAILURE_MSG
+
+    def test_verbatim_content_is_not_reworded(self):
+        tool_bytes = "- **Estaillades Carbonate** (DOI: 10.17612/abc-123)"
+        out = _assemble_response([
+            Segment(kind="generated", content="Porosity is void volume over total volume.", order=0),
+            Segment(kind="verbatim", content=tool_bytes, order=1),
+        ])
+        assert tool_bytes in out
+
+
+class TestCompoundQuestionAssembly:
+    """End-to-end for the reported bug: one tool call plus a no-tool half must produce
+    BOTH, with the tool's bytes untouched. Before the assembler, the relay path returned
+    the tool's output as the entire response and the definition half — already computed
+    by the model — was discarded with nothing revealing the loss."""
+
+    def test_relay_keeps_tool_bytes_and_gains_the_uncovered_half(self):
+        tool_output = "Segment the image, then count pore voxels.\n\n  - **connected components** — path.ipynb"
+        with patch("src.assistant.conversation_manager._answer_uncovered", return_value="Porosity is the void fraction."):
+            out = _with_uncovered_segment(
+                tool_output,
+                [{"asks_for": "define porosity", "needs_lookup": False}],
+                "What is porosity and how do I compute it from a microCT image?",
+                [],
+            )
+        assert out.startswith("Porosity is the void fraction.")
+        assert tool_output.strip() in out
+
+    def test_nothing_uncovered_relays_tool_bytes_unchanged(self):
+        """The single-segment case — every turn that already behaved correctly. No extra
+        LLM call, no wrapping, byte-identical output."""
+        with patch("src.assistant.conversation_manager._answer_uncovered") as mock_answer:
+            out = _with_uncovered_segment("tool answer", [], "q", [])
+        mock_answer.assert_not_called()
+        assert out == "tool answer"
+
+    def test_lookup_parts_are_never_answered_from_model_knowledge(self):
+        """A needs_lookup part is the graph's job, not the generated segment's. Filling
+        it here would fabricate exactly the dataset facts the lookup was meant to supply."""
+        with patch("src.assistant.conversation_manager._answer_uncovered") as mock_answer:
+            out = _with_uncovered_segment(
+                "tool answer",
+                [{"asks_for": "find datasets measuring it", "needs_lookup": True}],
+                "q",
+                [],
+            )
+        mock_answer.assert_not_called()
+        assert out == "tool answer"
+
+    def test_failed_uncovered_answer_still_relays_the_tool_output(self):
+        with patch("src.assistant.conversation_manager._answer_uncovered", return_value=""):
+            out = _with_uncovered_segment(
+                "tool answer", [{"asks_for": "define porosity", "needs_lookup": False}], "q", [],
+            )
+        assert out == "tool answer"
+
+
+class TestFourHundredRecoveryCoverage:
+    """The 400 path never consulted the old gate at all, so a correctly-detected
+    multi-part turn still collapsed to the one recovered call's output. This is the path
+    the reported failure actually went through (its log line reads "Tool-call format
+    mismatch (400); attempting manual dispatch")."""
+
+    def test_single_recovered_relay_call_is_coverage_checked(self):
+        from src.assistant.conversation_manager import _recovered_call_coverage
+
+        with patch(
+            "src.assistant.conversation_manager._uncovered_requests",
+            return_value=[{"asks_for": "define porosity", "needs_lookup": False}],
+        ) as mock_gate:
+            out = _recovered_call_coverage(
+                [{"name": "get_workflow_guidance", "args": {"goal": "compute porosity"}}],
+                "What is porosity and how do I compute it?",
+            )
+        mock_gate.assert_called_once()
+        assert [u["asks_for"] for u in out] == ["define porosity"]
+
+    def test_multiple_recovered_calls_skip_the_gate(self):
+        """Two or more recovered calls go through synthesis, which already sees the full
+        question — nothing to assemble, and no reason to pay for the gate."""
+        from src.assistant.conversation_manager import _recovered_call_coverage
+
+        with patch("src.assistant.conversation_manager._uncovered_requests") as mock_gate:
+            out = _recovered_call_coverage(
+                [
+                    {"name": "get_dataset_profile", "args": {"dataset_reference": "A", "question": "q"}},
+                    {"name": "get_dataset_profile", "args": {"dataset_reference": "B", "question": "q"}},
+                ],
+                "compare A and B",
+            )
+        mock_gate.assert_not_called()
+        assert out == []
 
 
 class TestExtractToolCallsMultiArg:
@@ -928,3 +1114,103 @@ class TestStaleListingIsNotLeftLookingCurrent:
             mgr.chat("Which of these are sandstone?")
         mock_dispatch.assert_not_called()
         mgr._agent.stream.assert_called_once()
+
+
+class TestParseJsonObject:
+    """Both malformed shapes here were observed live from this model on the coverage
+    gate, ~1-in-3 across repeated runs of the SAME input, with correct judgment every
+    time — the verdict was right and the envelope was unparseable. That matters more
+    than it sounds: json.loads failing makes the gate report "nothing uncovered", so a
+    format slip silently became a dropped half."""
+
+    def test_plain_object(self):
+        from src.assistant.conversation_manager import _parse_json_object
+
+        assert _parse_json_object('{"requests": []}') == {"requests": []}
+
+    def test_trailing_comma_before_bracket(self):
+        from src.assistant.conversation_manager import _parse_json_object
+
+        raw = '{"requests": [{"asks_for": "a", "covered": true},]}'
+        assert _parse_json_object(raw)["requests"][0]["asks_for"] == "a"
+
+    def test_reasoning_prose_before_a_fenced_block(self):
+        from src.assistant.conversation_manager import _parse_json_object
+
+        raw = (
+            "- **needs_lookup**: True. A comparison would require both datasets.\n\n"
+            "Given the analysis, the JSON response should be:\n\n"
+            '```json\n{"requests": [{"asks_for": "Dataset B", "covered": false}]}\n```'
+        )
+        assert _parse_json_object(raw)["requests"][0]["asks_for"] == "Dataset B"
+
+    def test_unrecoverable_returns_none(self):
+        from src.assistant.conversation_manager import _parse_json_object
+
+        assert _parse_json_object("I'm not sure how to answer that.") is None
+        assert _parse_json_object("") is None
+
+    def test_json_array_is_not_accepted_as_an_object(self):
+        """A bare array has no "requests" key to read, so it must not be mistaken for a
+        valid envelope."""
+        from src.assistant.conversation_manager import _parse_json_object
+
+        assert _parse_json_object('[{"asks_for": "a"}]') is None
+
+
+class TestArgumentEvidenceGuard:
+    """The gate's step 2 ("do the arguments actually ask for this?") is verified in code.
+    Asking the model to supply supporting argument text was not enough on its own — live,
+    3/3 runs, it quoted the USER'S question instead: evidence "how do I compute it from a
+    microCT image" against arguments {"question": "What is porosity?"}. So the model
+    proposes the evidence and code checks it actually occurs."""
+
+    def _gate(self, payload, args):
+        with patch("src.assistant.llm.get_chat_model") as mock_get_llm, \
+             patch("src.assistant.conversation_manager._tool_description", return_value="desc"):
+            mock_get_llm.return_value.invoke.return_value = MagicMock(content=payload)
+            return _uncovered_requests("What is porosity and how do I compute it?", "t", args)
+
+    def test_evidence_absent_from_arguments_downgrades_to_uncovered(self):
+        payload = (
+            '{"requests": [{"asks_for": "compute porosity", "covered": true, '
+            '"needs_lookup": true, "argument_evidence": "how do I compute it"}]}'
+        )
+        uncovered = self._gate(payload, {"question": "What is porosity?"})
+        assert [u["asks_for"] for u in uncovered] == ["compute porosity"]
+        # needs_lookup must survive the downgrade, or a workflow half would be answered
+        # from model knowledge instead of by the tool that has the verified tutorials.
+        assert uncovered[0]["needs_lookup"] is True
+
+    def test_evidence_present_in_arguments_stays_covered(self):
+        payload = (
+            '{"requests": [{"asks_for": "compute porosity", "covered": true, '
+            '"needs_lookup": true, "argument_evidence": "how do I compute it"}]}'
+        )
+        assert self._gate(payload, {"question": "What is porosity and how do I compute it?"}) == []
+
+    def test_evidence_match_ignores_case_and_whitespace(self):
+        payload = (
+            '{"requests": [{"asks_for": "compute porosity", "covered": true, '
+            '"needs_lookup": true, "argument_evidence": "How Do   I Compute It"}]}'
+        )
+        assert self._gate(payload, {"question": "what is porosity and how do i compute it?"}) == []
+
+    def test_guard_is_skipped_when_no_arguments_were_recorded(self):
+        """A recovery path that couldn't parse the args has nothing to check against;
+        showing the model "{}" would fail every request instead."""
+        payload = (
+            '{"requests": [{"asks_for": "compute porosity", "covered": true, '
+            '"needs_lookup": true, "argument_evidence": ""}]}'
+        )
+        assert self._gate(payload, {}) == []
+
+    def test_guard_never_upgrades_an_uncovered_verdict(self):
+        """It can only move covered -> uncovered, so its worst case is a redundant extra
+        answer, never a dropped part."""
+        payload = (
+            '{"requests": [{"asks_for": "define porosity", "covered": false, '
+            '"needs_lookup": false, "argument_evidence": "what is porosity"}]}'
+        )
+        uncovered = self._gate(payload, {"question": "What is porosity?"})
+        assert [u["asks_for"] for u in uncovered] == ["define porosity"]

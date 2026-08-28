@@ -567,7 +567,23 @@ to control flow there rather than being independently versionable behavior:
   both mechanisms stop firing silently, so a refinement runs over the whole catalog while the
   answer still looks correct.
 - ``_OFF_DOMAIN_GATE_SYSTEM_PROMPT`` / ``_GATE_SYSTEM_PROMPT`` /
-  ``_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT`` — the three cheap, tools-unbound classifier calls
+  ``_UNCOVERED_REQUEST_GATE_SYSTEM_PROMPT`` — the three cheap, tools-unbound classifier calls
+
+  ``_UNCOVERED_REQUEST_GATE_SYSTEM_PROMPT`` replaced ``_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT``. The
+  old one asked for a yes/no "does this need a follow-up tool" verdict and taught the boundary
+  by example — and every example paired a tool with a *second tool*, so a question half needing
+  no tool at all fell outside all of them and the gate said no. Two lessons worth keeping:
+
+  1. When instructions and examples disagree, the examples win. Its opening sentence ("is one
+     tool's answer enough to *fully address* the question") was correct and was overridden by
+     its own examples.
+  2. Its **step 2** — "do the tool's arguments actually ask for this?" — is verified in
+     ``_uncovered_requests()``, not trusted to the prompt. Two prompt revisions failed to make
+     the model perform it, and asking it to quote the supporting argument text failed too: live,
+     3/3 runs, it quoted the *user's question* instead of the arguments. The model now proposes
+     the evidence and code checks the substring really occurs in the argument values.
+- ``_UNCOVERED_ANSWER_NOTICE`` — the tools-unbound call that answers a part of the message the
+  relayed tool answer won't cover, for splicing as a ``generated`` segment
 - ``_COMPARISON_SYNTHESIS_SYSTEM_PROMPT`` — multi-dataset comparison synthesis
 - ``_WRAPPER_SYSTEM_PROMPT`` — the lead-in sentence for a verbatim splice
 

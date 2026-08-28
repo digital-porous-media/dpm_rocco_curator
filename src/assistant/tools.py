@@ -1504,7 +1504,13 @@ def get_workflow_guidance(goal: str) -> str:
     network), with tutorial links. Do NOT use for a portal action (upload, download, cite,
     manage collaborators) or for operating a portal-documented tool (the LBPM interface, the
     portal's Jupyter tools) — even when phrased "how do I run/use X"; those go to
-    search_portal_docs."""
+    search_portal_docs.
+
+    Pass the user's goal in full. If they asked for more than one thing in one message
+    ("what is porosity and how do I compute it"), keep the whole thing in the goal rather
+    than trimming it to the part that sounds most procedural — this tool's context includes
+    concept material and matched tutorials, so a narrowed goal loses coverage it would
+    otherwise have had."""
     from src.prompts.loader import load_prompt, render
     from src.assistant.llm import get_chat_model
 
@@ -1528,7 +1534,13 @@ def get_educational_context(question: str) -> str:
     domain_workflows.yaml, global best practices, and tutorials. Do NOT use for a question about
     the portal's own data model or entity types (Dataset, Sample, Digital Dataset, Analysis
     Dataset) — those are portal-specific schema terms, not general science concepts, and belong
-    to search_portal_docs."""
+    to search_portal_docs.
+
+    Pass the user's question in full. If they asked for more than one thing in one message
+    ("what is porosity and how do I compute it from a microCT image"), keep the whole thing in
+    the question rather than trimming it to the first half — this tool answers concepts AND
+    methods and matches tutorials against what it is given, so a narrowed question drops
+    coverage it would otherwise have had."""
     from src.prompts.loader import load_prompt, render
     from src.assistant.llm import get_chat_model
 

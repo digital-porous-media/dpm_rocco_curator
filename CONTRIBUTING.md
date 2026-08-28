@@ -206,7 +206,7 @@ pytest tests/ --cov=src --cov-report=term-missing
 
 `pytest.ini` sets `addopts = -m "not live"`, so tests that make **real** network calls (LLM,
 Neo4j, Semantic Scholar) are excluded by default. A clean default run currently reports
-358 passed, 51 deselected.
+381 passed, 64 deselected.
 
 Run the live tier explicitly, with real credentials and a running Neo4j, when you need
 end-to-end verification:

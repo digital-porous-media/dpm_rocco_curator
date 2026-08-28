@@ -94,7 +94,7 @@ python scripts/build_dataset_vector_index.py
 python -c "from src.assistant.tools import build_langchain_tools; print(len(build_langchain_tools()), 'tools')"
 python -c "import os; os.environ['USE_NEO4J']='false'; from src.assistant.graph_store import GraphStore; GraphStore(); print('OK')"
 
-# 8. Run tests — expect "380 passed, 51 deselected"
+# 8. Run tests — expect "381 passed, 64 deselected"
 pytest tests/ -v
 
 # 9. Launch the Streamlit UI — both tabs
@@ -102,7 +102,7 @@ streamlit run rocco_ui.py
 ```
 
 > `pytest.ini` sets `addopts = -m "not live"`, so tests making real network calls are excluded
-> by default — a clean run reports 380 passed, 51 deselected. Run the live tier explicitly with
+> by default — a clean run reports 381 passed, 64 deselected. Run the live tier explicitly with
 > `pytest tests/ -m live -v` when you have credentials and a running Neo4j; those are slow and
 > can block on a rate-limited endpoint, which is why they're opt-in.
 

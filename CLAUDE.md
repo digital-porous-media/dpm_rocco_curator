@@ -799,7 +799,7 @@ Actual remaining work:
   BCC, MP, ME. This is an execution/verification task, not authoring.
 - ~~**Fix hanging test suite**~~ — **resolved.** The cause was live network tests running
   unintentionally; they now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`.
-  `pytest tests/ -v` is clean and reproducible: **358 passed, 51 deselected** (verified Aug 2026;
+  `pytest tests/ -v` is clean and reproducible: **381 passed, 64 deselected** (verified Aug 2026;
   wall-clock varies by machine, typically under a minute). Run the excluded tier explicitly with
   `pytest tests/ -m live -v`.
 - **#43** (Week 7) — Final index rebuild + evaluation + `docs/assistant.md`
@@ -812,6 +812,72 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 ---
 
 ## Recent Changes
+
+### Multi-Part Questions Lost a Half; Response Assembly Added (August 2026)
+- **Fixed: a compound question returned only one of its halves.** Reported live —
+  "What is porosity and how do I compute it from a microCT image?" answered only the
+  workflow half. The model was not ignoring the request: it wrote the definition and
+  the code **deleted** it. Every early return in `chat()` assumed it owned the entire
+  user-facing string, so when one relayed tool's bytes became the response, any part of
+  the message that path didn't own was structurally unanswerable.
+- **`Segment` + `_assemble_response()`** (`conversation_manager.py`) — a turn's response
+  is now an ordered list of segments. `verbatim` segments are spliced byte-for-byte and
+  **never** pass through a model (this is the DOI/citation grounding guarantee);
+  `generated` segments come only from tools-unbound calls, so they cannot re-trigger the
+  native-tool-call 400 the relay short-circuits exist to avoid.
+  `_build_verbatim_response()` was already this pattern for one case; this generalizes it
+  so a new case is a call site, not another early return.
+- **`_needs_followup_tool_call()` → `_uncovered_requests()`.** The old gate asked for a
+  yes/no verdict and taught the boundary purely by example, and every example paired a
+  tool with a **second tool** — so a half needing *no* tool fell outside everything the
+  examples taught and the gate said "no follow-up". Its first sentence ("is one tool's
+  answer enough to fully address the question") was right; the examples overrode it.
+  The replacement decomposes the message and marks per-request coverage, which makes the
+  hard boundary ("what is X, and how is it measured?" — one request, covered) fall out of
+  the same rule as the easy cases, and hands the caller the uncovered part's text.
+  `needs_lookup` now tracks the Tier 3 line: a workflow half routes to a tool (which has
+  the verified tutorials), not to model memory.
+- **⚠️ Coverage is judged against the tool's ARGUMENTS, not just its description.** The
+  live failure turned out to be an *argument*, not a routing choice: the agent sent the
+  compound question to `get_educational_context` — which covers both halves — but narrowed
+  the argument to `"What is porosity?"`. Judging on tool name alone reported "nothing
+  uncovered": right about the tool, wrong about the turn.
+- **⚠️ The argument check is enforced in CODE, not by the prompt.** Two prompt revisions
+  failed to make the model perform step 2; asking it to quote the supporting argument text
+  failed too — live, 3/3 runs, it quoted the **user's question** instead (evidence "how do
+  I compute it from a microCT image" against arguments `{"question": "What is porosity?"}`).
+  So the model proposes the evidence and `_uncovered_requests` verifies the substring
+  actually occurs in the argument values. Same shape as
+  `reason_about_dataset_content`'s citation guard. The check can only move a verdict from
+  covered to uncovered, so its worst case is a redundant extra answer, never a dropped part.
+- **Also fixed: the gate failed *open* on malformed JSON.** `json.loads` failing meant
+  "nothing uncovered", so a format slip silently became a dropped half. Observed ~1-in-3
+  on repeated runs of the same input, with correct judgment every time — trailing commas,
+  and reasoning prose before a fenced block. `_parse_json_object()` recovers both. It only
+  scrapes a brace span *after* an outright parse failure: a valid bare array is a
+  wrong-shaped answer, not something to dig an envelope out of.
+- **`get_workflow_guidance` / `get_educational_context` descriptions** now carry the
+  "pass the question in full" rule `search_portal_docs` already had — the fix at the layer
+  that caused the narrowing. With it, the reported query passes the whole question through
+  and the tool answers both halves with no assembly needed; the gate is the safety net for
+  when the agent narrows anyway.
+- **The 400 recovery path now consults the gate at all.** It previously called
+  `_run_manual_dispatch` with no coverage check, so a correctly-detected multi-part turn
+  still collapsed to the one recovered call's output. That is the path the reported failure
+  actually took (its log reads "Tool-call format mismatch (400); attempting manual dispatch").
+- **Known-open: the two-tool grounding hole.** When 2+ self-contained/verbatim tools run in
+  one turn, `len(...) == 1` fails on both relay checks and the generic synthesis path asks
+  the model to "preserve DOIs verbatim" — a prompt-level plea this project has repeatedly
+  found unreliable. Observed dropping dataset rows and source labels entirely. Recorded as
+  an `xfail` (`test_q2_workflow_plus_dataset_search_live`). The fix is converting that path
+  to `_assemble_response` (one segment per tool result) — no new machinery, but it changes
+  the comparison/cross-intent output shape, so it was deliberately not bundled in here.
+- Tests: `TestUncoveredRequests`, `TestAssembleResponse`, `TestCompoundQuestionAssembly`,
+  `TestFourHundredRecoveryCoverage`, `TestParseJsonObject`, `TestArgumentEvidenceGuard`
+  (unit), plus `TestMultiPartQuestions` and `TestCoverageGateJudgment` (live). The live
+  judgment tier exists because the unit tests hand-feed the gate's JSON and structurally
+  cannot catch a prompt regression — the same blind spot that let the predecessor gate stay
+  green while answering wrongly. Verified 60/60 verdicts across 6 repeat runs.
 
 ### Prompt Consolidation: Routing Rules Moved to Tool Descriptions (August 2026)
 - **`SYSTEM_PROMPT` (`conversation_manager.py`) cut roughly in half.** Its per-tool routing

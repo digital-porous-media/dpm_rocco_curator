@@ -21,9 +21,13 @@ it") trigger multiple tool calls in sequence. The agent synthesizes results into
 preserving the source labels ([graph match], [semantic scholar], etc.) returned by each tool.
 
 Not all routing is the agent's. Three tools-unbound classifier gates (off-domain, tool-need,
-follow-up) and several deterministic dispatch paths (multi-dataset comparison, cumulative-filter
-refinement) run around the agent and can bypass its tool selection entirely for a turn — see
-chat().
+request-coverage) and several deterministic dispatch paths (multi-dataset comparison,
+cumulative-filter refinement) run around the agent and can bypass its tool selection entirely
+for a turn — see chat().
+
+A turn's response is assembled from segments (see Segment/_assemble_response), not returned as
+one string by whichever path won. That is what lets a single relayed tool answer coexist with an
+answer to the part of the message it didn't cover.
 
 Session isolation: there is no LangGraph checkpointer and chat() takes no session_id.
 Prior turns are replayed by the caller via chat(..., history=[...]), and cross-turn
@@ -35,6 +39,7 @@ on process restart; there is no persistent storage. See ConversationManager's do
 import json
 import logging
 import re
+from dataclasses import dataclass
 
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import create_react_agent
@@ -210,6 +215,59 @@ def _build_verbatim_response(user_input: str, tool_output: str) -> str:
     lead_in = _generate_lead_in(user_input, tool_output) if needs_nuanced_lead_in else _DEFAULT_LEAD_IN
 
     return "\n\n".join([lead_in, display_block, _VERIFICATION_DISCLAIMER])
+
+
+# --- Response assembly -----------------------------------------------------
+#
+# A turn's answer is a LIST of segments, not one string owned by whichever code path
+# won the race. Every early return in chat() used to assume it owned the entire
+# user-facing response, which made any part of the user's message that path didn't own
+# structurally unanswerable: a compound question ("what is porosity AND how do I
+# compute it from a microCT image") had its no-tool half written by the model and then
+# discarded when the tool's output was relayed verbatim. Reported live, Aug 2026.
+#
+# Two kinds, and the distinction IS the grounding guarantee:
+#   "verbatim"  — tool bytes. Spliced in untouched, NEVER passed through a model. This
+#                 is what keeps real DOIs/titles/notebook paths off the model's
+#                 retyping path (see _VERBATIM_TOOLS / _SELF_CONTAINED_TOOLS).
+#   "generated" — model prose: lead-ins, and answers to parts of the question no tool
+#                 covered. Produced ONLY by tools-unbound calls, so it cannot re-trigger
+#                 the native-tool-call 400 that the relay short-circuits exist to avoid.
+#
+# _build_verbatim_response above is this same pattern, arrived at once already for one
+# case (generated lead-in + verbatim block + fixed disclaimer). This generalizes it, so
+# a new case becomes a call site rather than another early return. The two-self-contained
+# -tool grounding hole below (`len(...) == 1` fails, so the generic synthesis retypes both
+# grounded answers) is the next one to convert, and needs no new machinery here.
+@dataclass
+class Segment:
+    """One piece of an assembled response.
+
+    `order` is the position of the request this segment answers within the user's
+    message, so a definition asked first reads first and the result is one answer
+    rather than two stapled together. Sorting is stable, so equal orders keep the
+    order they were appended in.
+    """
+
+    kind: str  # "verbatim" | "generated"
+    content: str
+    order: int = 0
+
+
+def _assemble_response(segments: list[Segment]) -> str:
+    """Join segments into the final response, in request order.
+
+    Empty or whitespace-only segments are dropped rather than left as a blank gap: a
+    generated segment legitimately comes back empty when its LLM call failed, and the
+    verbatim tool output — real, grounded data — must still reach the user in that case.
+    Guarantees a non-empty result for the same reason _non_empty does; an empty string
+    appended to the UI's history poisons every later turn's replayed context.
+    """
+    ordered = sorted(
+        [s for s in segments if s.content and s.content.strip()],
+        key=lambda s: s.order,
+    )
+    return _non_empty("\n\n".join(s.content.strip() for s in ordered))
 
 logger = logging.getLogger(__name__)
 
@@ -801,10 +859,21 @@ and/or bullets to organize it.
 """
 
 
-def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[dict]) -> str | None:
+def _run_manual_dispatch(
+    tool_calls: list[dict],
+    user_input: str,
+    prior: list[dict],
+    uncovered: list[dict] | None = None,
+) -> str | None:
     """
     Execute tool_calls directly (bypassing LangGraph), then synthesize a response.
     Returns the synthesized string, or None if dispatch produced no results.
+
+    `uncovered` carries the coverage gate's verdict (see _uncovered_requests) for the
+    single-tool relay cases below: parts of the user's message this tool's answer won't
+    cover get answered separately and assembled alongside it, instead of being dropped
+    when the tool's output is relayed as the whole response. Defaults to None (relay
+    exactly as before) for the multi-call callers, which synthesize anyway.
     """
     from src.assistant.llm import get_chat_model
     from src.assistant.tools import build_langchain_tools
@@ -832,12 +901,18 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
     # citation rule) was silently dropping tutorial notebook references and inventing
     # DOIs — so for a single call to one of these tools, return its own output directly.
     if len(raw_results) == 1 and raw_results[0][0] in _SELF_CONTAINED_TOOLS:
-        return _non_empty(_clean_response(raw_results[0][1]), fallback=_non_empty(raw_results[0][1]))
+        return _with_uncovered_segment(
+            _non_empty(_clean_response(raw_results[0][1]), fallback=_non_empty(raw_results[0][1])),
+            uncovered, user_input, prior,
+        )
 
     # Same verbatim-passthrough rationale as the normal ReAct path in chat(): don't let
     # a second LLM call retype search_datasets' real DOIs/descriptions from memory.
     if len(raw_results) == 1 and raw_results[0][0] in _VERBATIM_TOOLS:
-        return _non_empty(_build_verbatim_response(user_input, raw_results[0][1]))
+        return _with_uncovered_segment(
+            _non_empty(_build_verbatim_response(user_input, raw_results[0][1])),
+            uncovered, user_input, prior,
+        )
 
     # Multiple calls to the SAME self-contained tool (the dataset-comparison case: N>=2
     # get_dataset_profile calls, one per dataset). Each raw result is already a complete,
@@ -961,8 +1036,12 @@ though both are phrased "how do I X."
 science — always search_portal_docs, never get_educational_context or get_workflow_guidance, \
 even when it reads like "What is X?"
 
-For cross-intent queries ("explain X and find datasets that measure it"), call multiple tools \
-and synthesize one coherent response.
+When one message asks for more than one thing, answer every part of it. Where the parts need \
+different tools ("explain X and find datasets that measure it"), call each tool and synthesize \
+one coherent response. Where one part needs a tool and another needs none ("what is porosity and \
+how do I compute it from a microCT image" — a Tier 3 definition alongside a Tier 2 workflow), \
+answer the no-tool part yourself in the same response; never drop it just because the other part \
+came from a tool.
 
 ## Response formatting
 
@@ -1169,66 +1248,352 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
         return True
 
 
-_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT = """\
-You are checking whether a single tool's answer is enough to fully address a user's
-question, or whether the question also needs a DIFFERENT kind of lookup beyond what
-that one tool already covers (e.g. it also explicitly asks to find/search datasets,
-find papers/literature, or look up a specific dataset property/count).
+_UNCOVERED_REQUEST_GATE_SYSTEM_PROMPT = """\
+You decompose a user's question into the distinct things it asks for, then report which \
+of them will be answered by the tool that was already called.
 
-Also answer {"needs_followup": true} when the question names or clearly implies a SECOND
-distinct dataset (e.g. a comparison — "compare A and B", "which of these two...") and only
-ONE dataset's profile has been looked up so far — even though tool_called is the SAME tool
-(get_dataset_profile) both times. get_dataset_profile only ever covers one dataset per call,
-so a comparison needs it called again for the second dataset.
+The tool already called is {{TOOL_NAME}}, with these arguments:
 
-You will be given the user's original question and which tool was already called.
+<tool_arguments>
+{{TOOL_ARGUMENTS}}
+</tool_arguments>
+
+This is its full description:
+
+<tool_description>
+{{TOOL_DESCRIPTION}}
+</tool_description>
+
+First split the message into every distinct thing the user wants to walk away knowing. A \
+definition, a procedure, a dataset lookup, and a literature search are each distinct. Split \
+generously: a request wrongly split is harmless, because coverage is judged next and two \
+requests the tool covers both of give the same result as one.
+
+Then judge each request in TWO steps. A request is covered only if it passes both; failing \
+either one makes it uncovered.
+
+**Step 1 — is it in scope for this tool at all?** Judge against the description, not what you \
+assume from the tool's name.
+- A tool that explains concepts and methods is in scope for both "what is X" and "how is X \
+measured".
+- A tool that returns step-by-step procedural guidance is NOT in scope for "what is X" — a \
+procedure is not a definition, even when it is a procedure for measuring the thing being defined.
+- If the description limits the tool's scope (for example, to a single dataset per call), a \
+request beyond that limit is out of scope.
+
+**Step 2 — do the arguments actually ask for it?** Read the argument VALUES above literally, as \
+the only thing the tool will receive. If a request's subject matter is absent from those values, \
+the tool will never see that request, so it is NOT covered — no matter how squarely the \
+description puts it in scope. A caller that trimmed a two-part question down to one part fails \
+this step on the trimmed-away part. Do not credit the tool for a request the arguments don't \
+mention.
+
+A request counts as uncovered whether or not answering it needs a tool. A foundational \
+definition you would answer from your own knowledge ("what is porosity", "explain Darcy's \
+law") is still uncovered when the called tool's answer won't contain it: that answer is \
+relayed to the user on its own, so anything outside it is lost.
+
+For EVERY request — covered or not — also report needs_lookup: true when a tool ought to \
+answer it (a dataset property or count, a catalog search, portal documentation, published \
+literature, or step-by-step workflow/method guidance — the portal has verified tutorials for \
+those, so answering from memory would lose them). false ONLY for a foundational concept or \
+definition that is stable textbook knowledge ("what is porosity", "explain Darcy's law").
+
+And for every request, report argument_evidence: the exact substring of the argument VALUES \
+above that asks for this request. Leave it as an empty string when nothing in the arguments \
+asks for it. Do not paraphrase and do not quote the user's original question here — only text \
+that literally appears in the arguments counts, because the arguments are all the tool receives.
 
 Respond with a JSON object only, no markdown fences:
-{"needs_followup": true} or {"needs_followup": false}
-
-Examples:
-- question: "How do I compute relative permeability?", tool_called: "get_workflow_guidance" -> {"needs_followup": false}
-- question: "How do I compute relative permeability, and can you also find datasets that measure it?", tool_called: "get_workflow_guidance" -> {"needs_followup": true}
-- question: "What is porosity, and are there any recent papers on it?", tool_called: "get_educational_context" -> {"needs_followup": true}
-- question: "How do I upload a dataset to the portal?", tool_called: "search_portal_docs" -> {"needs_followup": false}
-- question: "Compare Dataset A and Dataset B for two-phase flow simulation", tool_called: "get_dataset_profile" -> {"needs_followup": true}
-- question: "Tell me more about this dataset", tool_called: "get_dataset_profile" -> {"needs_followup": false}
+{"requests": [{"asks_for": "<short paraphrase>", "covered": true|false, \
+"needs_lookup": true|false, "argument_evidence": "<exact substring, or empty>"}]}
 """
 
 
-def _needs_followup_tool_call(user_input: str, tool_name: str) -> bool:
-    """A cheap, tools-unbound gate (same 400-proof pattern as _classify_needs_tool),
-    checked only when chat()'s single-tool-call short-circuit (see Fix 1 in
-    HANDOFF.md's 400-error-recovery section) would otherwise fire.
+# Both malformed shapes below were observed live from this model on the coverage gate,
+# at roughly 1-in-3 across repeated runs of the same input, with correct JUDGMENT in every
+# case — the verdict was right and the envelope was unparseable. Because json.loads
+# failing means the gate returns "nothing uncovered", a format slip silently became a
+# dropped half: the fail-open direction, and invisible in the answer.
+#
+# strip_code_fences only unwraps a response that STARTS with a fence, which is the right
+# call for its other callers; this adds the two recoveries specific to a JSON-object
+# response, and is deliberately scoped to this gate rather than retrofitted onto the
+# off-domain/tool-need/lead-in gates, which share the same fail-open shape but whose live
+# behavior is out of scope to shift here.
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
-    Live-verified this model's first ReAct turn requests tools SEQUENTIALLY, not in
-    one parallel tool_calls list, for genuine cross-intent phrasing ("compute relative
-    permeability, and also find datasets that measure it" -> a single
-    get_workflow_guidance call on the first turn, with search_datasets only decided on
-    a later turn after seeing that answer) — so short-circuiting on "exactly one tool
-    call" alone silently drops that follow-up call. This gate catches that case before
-    committing to the short-circuit.
 
-    Defaults to False (short-circuit proceeds) on any parse/call failure: the
-    short-circuit exists to fix a confirmed, reported 400-error bug (LaTeX-heavy
-    self-contained answers sometimes get mis-detected as malformed tool calls on the
-    graph's second turn) — an uncertain case should not reintroduce that risk. The cost
-    of a wrong "no follow-up needed" guess is a dropped second tool call, not a
-    fabricated or ungrounded answer.
+def _parse_json_object(raw: str) -> dict | None:
+    """Best-effort parse of a JSON object out of an LLM response. None if nothing parses.
+
+    Recovers from the two shapes seen live: a trailing comma before a closing brace or
+    bracket, and reasoning prose preceding a fenced block ("Given the analysis, the JSON
+    response should be: ```json{...}```").
+
+    The brace-span recovery is tried ONLY after the response fails to parse as JSON
+    outright. Otherwise a valid but wrong-shaped response — a bare array — would have an
+    inner object scraped out of it and returned as an envelope, and the caller's
+    `.get("requests")` would come back empty while the log claimed a clean parse.
+    """
+    text = (raw or "").strip()
+    for candidate in (text, _TRAILING_COMMA_RE.sub(r"\1", text)):
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        # Parsed cleanly, so the model's intended shape is known: accept an object,
+        # reject anything else rather than digging a nested object out of it.
+        return parsed if isinstance(parsed, dict) else None
+
+    # Nothing parsed as JSON at all — now it is worth skipping any leading prose.
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        span = text[start:end + 1]
+        for candidate in (span, _TRAILING_COMMA_RE.sub(r"\1", span)):
+            try:
+                parsed = json.loads(candidate)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return None
+
+
+def _normalize_ws(text: str) -> str:
+    """Lowercased, whitespace-collapsed form, for substring comparison between a model's
+    quoted evidence and the text it claims to be quoting."""
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _tool_description(tool_name: str) -> str:
+    """The live description string the agent itself reads for `tool_name`.
+
+    Injected into the coverage gate's prompt rather than restated inside it, so tools.py
+    stays the single source of truth for what each tool covers — same reason the per-tool
+    routing rules moved out of SYSTEM_PROMPT. A gate carrying its own hand-written copy of
+    each tool's scope is a second copy that drifts, and this one would drift silently:
+    nothing downstream reveals that coverage was judged against a stale description.
+    """
+    for t in build_langchain_tools():
+        if t.name == tool_name:
+            return (t.description or "").strip()
+    return ""
+
+
+def _uncovered_requests(user_input: str, tool_name: str, tool_args: dict | None = None) -> list[dict]:
+    """The parts of `user_input` that `tool_name`'s own answer will NOT cover.
+
+    Returns ``[{"asks_for": str, "needs_lookup": bool}, ...]``; empty means the one tool
+    covers the whole message. Checked wherever chat() is about to relay a single tool's
+    output as the entire response (the pre-emptive short-circuit, the post-graph relay,
+    and the 400-recovery dispatch).
+
+    The two kinds of uncovered request have OPPOSITE handling, which is why needs_lookup
+    is reported and not just a count:
+
+    - ``needs_lookup=True`` — chat() must NOT short-circuit. Let the full graph run so the
+      agent gets its chance to call the second tool. Answering this part from model
+      knowledge instead would fabricate exactly the dataset/portal facts the lookup was
+      supposed to supply, which is the worst failure mode available here.
+    - ``needs_lookup=False`` — safe to short-circuit. The part is answered by a
+      tools-unbound call (_answer_uncovered) and assembled alongside the tool's verbatim
+      output, so the tool bytes stay untouched.
+
+    Coverage is judged against the tool's ARGUMENTS as well as its description, because the
+    live failure mode turned out to be an argument, not a routing choice: the agent sent the
+    whole compound question to get_educational_context — which covers both halves — but narrowed
+    the argument to "What is porosity?", so the compute half was dropped by a tool that would
+    have answered it. Judging on tool_name alone reported "nothing uncovered" and was right
+    about the tool and wrong about the turn.
+
+    Asked as a decomposition rather than a yes/no verdict deliberately. The predecessor
+    gate asked "does this need a follow-up?" and every one of its examples paired a tool
+    with a SECOND TOOL, so a half needing no tool at all fell outside everything the
+    examples taught and the gate answered false — the live-reported bug where "What is
+    porosity and how do I compute it from a microCT image?" returned only the workflow
+    half. Enumerating the requests and marking coverage makes the hard boundary
+    ("what is X, and how is it measured?" — one request, covered) fall out of the same
+    rule as the easy cases instead of needing an example to carve it out, and it hands
+    the caller the uncovered part's text, which a boolean cannot.
+
+    Defaults to [] (relay proceeds) on any parse/call failure, preserving the predecessor's
+    rationale: the short-circuit exists to fix a confirmed 400-error bug, and an uncertain
+    case should not reintroduce that risk. The cost of a wrong "nothing uncovered" is a
+    dropped part, not a fabricated answer.
     """
     from src.assistant.llm import get_chat_model, strip_code_fences
 
+    system = (
+        _UNCOVERED_REQUEST_GATE_SYSTEM_PROMPT
+        .replace("{{TOOL_NAME}}", tool_name)
+        .replace(
+            "{{TOOL_ARGUMENTS}}",
+            json.dumps(tool_args, ensure_ascii=False) if tool_args
+            # No args recorded (an older caller, or a recovery path that couldn't parse
+            # them): Step 2 has nothing to check, so say so rather than showing "{}",
+            # which reads as "the tool was asked nothing" and fails every request.
+            else "(not recorded — judge on the description alone, skip step 2)",
+        )
+        .replace("{{TOOL_DESCRIPTION}}", _tool_description(tool_name) or "(unavailable)")
+    )
     try:
         llm = get_chat_model()
-        messages = [
-            {"role": "system", "content": _FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"question: {user_input!r}, tool_called: {tool_name!r}"},
-        ]
-        raw = strip_code_fences(llm.invoke(messages).content)
-        return bool(json.loads(raw).get("needs_followup", False))
+        raw = strip_code_fences(llm.invoke([
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"question: {user_input!r}"},
+        ]).content)
     except Exception as e:
-        logger.warning("Follow-up tool gate failed (%s); proceeding with short-circuit.", e)
-        return False
+        logger.warning("Coverage gate call failed (%s); relaying the single tool answer.", e)
+        return []
+
+    parsed = _parse_json_object(raw)
+    if parsed is None:
+        logger.warning(
+            "Coverage gate returned unparseable output; relaying the single tool answer. Raw: %r",
+            raw[:400],
+        )
+        return []
+    requests = parsed.get("requests") or []
+
+    args_recorded = bool(tool_args)
+    # All argument values as one normalized haystack, for verifying the model's claimed
+    # step-2 evidence against what the tool is ACTUALLY being asked.
+    arg_text = _normalize_ws(" ".join(str(v) for v in (tool_args or {}).values()))
+    uncovered = []
+    for r in requests:
+        if not isinstance(r, dict):
+            continue
+        asks = (r.get("asks_for") or "").strip()
+        if not asks:
+            continue
+        # `covered` defaults True: a malformed entry should not spuriously report an
+        # uncovered part and pull an extra LLM call into a single-intent turn.
+        covered = r.get("covered", True)
+        evidence = (r.get("argument_evidence") or "").strip()
+        # Step 2, verified in code rather than trusted to the prompt. Across several
+        # prompt revisions this model marked a request "covered" on the strength of the
+        # tool DESCRIPTION and skipped the argument check entirely, so a question the
+        # caller had trimmed down still reported full coverage. Asking it to supply the
+        # supporting argument text did not fix that on its own either — it quoted the
+        # USER'S question instead (live, 3/3 runs: evidence "how do I compute it from a
+        # microCT image" against arguments {"question": "What is porosity?"}), which is
+        # precisely the text that isn't there.
+        #
+        # So the model proposes the evidence and code checks it actually occurs in the
+        # argument values. That turns a judgment the model kept getting wrong into a
+        # substring test that cannot be wrong. Same shape as
+        # reason_about_dataset_content's citation guard, which drops a candidate whose
+        # title wasn't in the shortlist actually sent.
+        #
+        # Can only move a verdict from covered to uncovered, never the reverse, so the
+        # worst case is a redundant extra answer rather than a dropped part. Skipped
+        # when no arguments were recorded — there is then nothing to find evidence in.
+        if covered and args_recorded and _normalize_ws(evidence) not in arg_text:
+            logger.warning(
+                "Coverage claimed for %r but its evidence %r is not in the arguments; "
+                "treating as uncovered.",
+                asks, evidence,
+            )
+            covered = False
+        if not covered:
+            uncovered.append({"asks_for": asks, "needs_lookup": bool(r.get("needs_lookup"))})
+    # Logged whichever way it goes — this gate has a history of failing silently in a way
+    # that only shows up as a subtly incomplete answer, so the decomposition it based its
+    # verdict on is worth having in the log.
+    logger.warning(
+        "Coverage gate for %s: %d request(s), %d uncovered %r",
+        tool_name, len(requests), len(uncovered), [u["asks_for"] for u in uncovered],
+    )
+    return uncovered
+
+
+def _needs_followup_lookup(uncovered: list[dict]) -> bool:
+    """True when some uncovered request needs a real lookup — the case where chat() must
+    let the full graph run so the agent can make that second tool call, rather than
+    short-circuiting and answering from model knowledge."""
+    return any(r.get("needs_lookup") for r in uncovered)
+
+
+_UNCOVERED_ANSWER_NOTICE = (
+    "[This response has NO tool access and covers ONLY the part(s) of the user's message "
+    "listed below. Another part of the same message was answered by a tool, and that "
+    "answer is appended directly beneath your text — so do not answer it, do not "
+    "summarize it, do not refer to it as coming up, and do not end with a transition "
+    "sentence. Write only the answer to the listed part(s), as if it opens the response. "
+    "Never state a dataset title, DOI, count, or portal-specific property: you have "
+    "retrieved nothing, so anything of that kind here is fabricated.]"
+)
+
+
+def _answer_uncovered(parts: list[dict], user_input: str, prior: list[dict]) -> str:
+    """Answer the parts of a message that a relayed tool answer won't cover — the
+    "generated" segment of an assembled response.
+
+    Tools-unbound, same 400-proof pattern as _answer_direct, and only ever called for
+    parts the coverage gate marked needs_lookup=False, so it is never the thing standing
+    in for a real lookup.
+
+    Returns "" on failure. The tool's own output is real, grounded data and must still
+    reach the user, so a failure here degrades to the old behavior (one part answered)
+    rather than losing the turn — _assemble_response drops the empty segment.
+    """
+    from src.assistant.llm import get_chat_model
+
+    asks = "\n".join(f"- {p['asks_for']}" for p in parts if p.get("asks_for"))
+    if not asks:
+        return ""
+    try:
+        llm = get_chat_model()
+        messages = (
+            [{"role": "system", "content": SYSTEM_PROMPT},
+             {"role": "system", "content": _UNCOVERED_ANSWER_NOTICE}]
+            + prior
+            + [{"role": "user", "content": (
+                f"{user_input}\n\n[Answer ONLY these part(s) of the message above:\n{asks}\n]"
+            )}]
+        )
+        return _clean_response(llm.invoke(messages).content)
+    except Exception as e:
+        logger.warning("Uncovered-part answer failed (%s); relaying the tool output alone.", e)
+        return ""
+
+
+def _recovered_call_coverage(tool_calls: list[dict], user_input: str) -> list[dict]:
+    """Coverage verdict for a tool call recovered from a 400 error or leaked text.
+
+    Only meaningful for a single recovered relay call — that is the case whose output
+    becomes the whole response. Two or more recovered calls go through synthesis, which
+    already sees the user's full question, so there is nothing to assemble.
+    """
+    if len(tool_calls) != 1 or tool_calls[0]["name"] not in (_SELF_CONTAINED_TOOLS | _VERBATIM_TOOLS):
+        return []
+    return _uncovered_requests(user_input, tool_calls[0]["name"], tool_calls[0].get("args") or {})
+
+
+def _with_uncovered_segment(
+    relayed: str, uncovered: list[dict] | None, user_input: str, prior: list[dict]
+) -> str:
+    """Assemble a relayed tool answer together with an answer to whatever parts of the
+    message it didn't cover. With nothing uncovered this returns the tool's own output
+    byte-for-byte — the single-segment case, i.e. every turn that behaved correctly before.
+
+    The generated part leads because the shape that prompted this is a definition asked
+    ahead of a method ("what is porosity and how do I compute it"). Segment.order is the
+    hook if a future case needs true request-position ordering; no call site changes.
+    """
+    parts = [p for p in (uncovered or []) if not p.get("needs_lookup")]
+    if not parts:
+        return relayed
+    logger.warning(
+        "Assembling %d uncovered request(s) ahead of the relayed tool answer: %r",
+        len(parts), [p.get("asks_for") for p in parts],
+    )
+    return _assemble_response([
+        Segment(kind="generated", content=_answer_uncovered(parts, user_input, prior), order=0),
+        Segment(kind="verbatim", content=relayed, order=1),
+    ])
+
 
 
 _NO_TOOL_ACCESS_NOTICE = (
@@ -1605,22 +1970,38 @@ class ConversationManager:
             last_first = new_after_first[-1] if new_after_first else None
             first_turn_tool_calls = getattr(last_first, "tool_calls", None) or []
 
-            if (
-                len(first_turn_tool_calls) == 1
+            # One relayed tool call is about to become the whole response, so ask what
+            # parts of the message that answer won't cover. Computed ONCE per turn and
+            # reused by the post-graph relay below, so no turn pays for this gate twice.
+            single_relay_call = (
+                first_turn_tool_calls[0]
+                if len(first_turn_tool_calls) == 1
                 and first_turn_tool_calls[0]["name"] in (_SELF_CONTAINED_TOOLS | _VERBATIM_TOOLS)
-                and not _needs_followup_tool_call(user_input, first_turn_tool_calls[0]["name"])
-            ):
-                first_tool_name = first_turn_tool_calls[0]["name"]
+                else None
+            )
+            uncovered = (
+                _uncovered_requests(
+                    user_input, single_relay_call["name"], single_relay_call.get("args") or {}
+                )
+                if single_relay_call else []
+            )
+
+            # An uncovered part that needs a LOOKUP still has to suppress the
+            # short-circuit and let the graph run for its second tool call — only a
+            # no-lookup part (a definition) can be answered alongside the relay.
+            if single_relay_call and not _needs_followup_lookup(uncovered):
+                first_tool_name = single_relay_call["name"]
                 # The agent composes the question; this adds the "stay inside the datasets
                 # already listed" guarantee for an elliptical follow-up that the
                 # deterministic refinement dispatch above doesn't recognise.
                 first_tool_args = self._with_result_set_restriction(
-                    first_tool_name, dict(first_turn_tool_calls[0].get("args") or {}), user_input
+                    first_tool_name, dict(single_relay_call.get("args") or {}), user_input
                 )
                 dispatched = _run_manual_dispatch(
                     [{"name": first_tool_name, "args": first_tool_args}],
                     effective_user_input,
                     prior,
+                    uncovered=uncovered,
                 )
                 if dispatched is not None:
                     self._track_dataset_listing(
@@ -1636,8 +2017,9 @@ class ConversationManager:
                 # its answer, THEN decide to also call tool B) would otherwise have
                 # that second call silently dropped by this single-tool-call check —
                 # live-verified this model requests cross-intent tools sequentially,
-                # not in one parallel tool_calls list, so _needs_followup_tool_call
-                # above is the actual guard against that, not the tool_calls count.
+                # not in one parallel tool_calls list, so the coverage gate's
+                # needs_lookup verdict above is the actual guard against that, not the
+                # tool_calls count.
 
             result = first_model_step
             for step in stream:
@@ -1673,7 +2055,10 @@ class ConversationManager:
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in _VERBATIM_TOOLS
             ]
             if len(verbatim_tool_msgs) == 1:
-                return _non_empty(_build_verbatim_response(effective_user_input, verbatim_tool_msgs[0].content))
+                return _with_uncovered_segment(
+                    _non_empty(_build_verbatim_response(effective_user_input, verbatim_tool_msgs[0].content)),
+                    uncovered, effective_user_input, prior,
+                )
 
             # Same rationale for tools that already return a complete, grounded answer —
             # skip the outer agent's own retelling of it.
@@ -1681,8 +2066,16 @@ class ConversationManager:
                 m for m in new_messages
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in _SELF_CONTAINED_TOOLS
             ]
+            # Same assembly as the pre-emptive path. Note what this deliberately does
+            # NOT paper over: if the gate reported a needs_lookup part above (so the graph
+            # ran) and the agent then still made only this one call, that part stays
+            # unanswered — _with_uncovered_segment only ever fills no-lookup parts, and
+            # inventing the lookup's data here is the failure this whole file guards against.
             if len(self_contained_tool_msgs) == 1 and not verbatim_tool_msgs:
-                return _non_empty(_clean_response(self_contained_tool_msgs[0].content))
+                return _with_uncovered_segment(
+                    _non_empty(_clean_response(self_contained_tool_msgs[0].content)),
+                    uncovered, effective_user_input, prior,
+                )
 
             raw = result["messages"][-1].content
             # Llama-4-Maverick sometimes emits tool-call syntax as plain text that
@@ -1692,7 +2085,10 @@ class ConversationManager:
                 logger.warning("Tool call leaked into final response; dispatching manually.")
                 tool_calls = _extract_tool_calls_from_text(raw)
                 if tool_calls:
-                    dispatched = _run_manual_dispatch(tool_calls, effective_user_input, prior)
+                    dispatched = _run_manual_dispatch(
+                        tool_calls, effective_user_input, prior,
+                        uncovered=_recovered_call_coverage(tool_calls, user_input),
+                    )
                     if dispatched is not None:
                         for tc in tool_calls:
                             self._track_dataset_listing(
@@ -1710,7 +2106,15 @@ class ConversationManager:
                 logger.warning("Tool-call format mismatch (400); attempting manual dispatch.")
                 tool_calls = _extract_tool_calls_from_error(err_str)
                 if tool_calls:
-                    dispatched = _run_manual_dispatch(tool_calls, effective_user_input, prior)
+                    # The coverage gate never ran for this turn: the 400 fired from the
+                    # graph's own relay turn, before or instead of the short-circuit that
+                    # normally consults it. Without checking here, a correctly-detected
+                    # multi-part turn still collapses to the one recovered call's output —
+                    # this is the exact path in the reported "it ignored half my question".
+                    dispatched = _run_manual_dispatch(
+                        tool_calls, effective_user_input, prior,
+                        uncovered=_recovered_call_coverage(tool_calls, user_input),
+                    )
                     if dispatched is not None:
                         for tc in tool_calls:
                             self._track_dataset_listing(

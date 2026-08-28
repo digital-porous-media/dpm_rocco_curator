@@ -763,10 +763,21 @@ below are the module-level (class/file) reference.
      replayed by the caller via ``chat(..., history=[...])``, and cross-turn result-set state
      lives on the instance — so session isolation means one manager per user, cached in
      ``st.session_state.assistant_manager`` by ``assistant_ui.py``
-   - ``_classify_off_domain()`` / ``_classify_needs_tool()`` / ``_needs_followup_tool_call()`` —
-     the tools-unbound gate calls in the Request Lifecycle diagram above
-   - ``_build_verbatim_response()`` / ``_run_manual_dispatch()`` — response-assembly and
-     400-error manual-dispatch logic
+   - ``_classify_off_domain()`` / ``_classify_needs_tool()`` / ``_uncovered_requests()`` —
+     the tools-unbound gate calls in the Request Lifecycle diagram above.
+     ``_uncovered_requests()`` replaced ``_needs_followup_tool_call()``: instead of a yes/no
+     "does this need a second tool" verdict, it decomposes the message and reports which
+     requests the called tool's **arguments** actually ask for. Its step-2 evidence check is
+     enforced in code (``_normalize_ws`` substring match), because the model was observed
+     claiming coverage on the strength of the tool description and quoting the user's question
+     rather than the arguments
+   - ``Segment`` / ``_assemble_response()`` / ``_with_uncovered_segment()`` — a turn's response
+     is assembled from ordered segments, not returned whole by whichever path won.
+     ``verbatim`` segments are spliced byte-for-byte and never pass through a model;
+     ``generated`` segments come only from tools-unbound calls. This is what lets a relayed
+     tool answer coexist with an answer to the part of the message it didn't cover
+   - ``_build_verbatim_response()`` / ``_run_manual_dispatch()`` / ``_parse_json_object()`` —
+     response assembly, 400-error manual dispatch, and tolerant JSON parsing for the gates
    - ``_track_dataset_listing()`` / ``_resolve_reference()`` / ``_with_result_set_restriction()``
      / ``_detect_comparison_references()`` — cross-turn result-set state: what "these" and "the
      second one" refer to, and when a follow-up is narrowed to the previous result set instead of
