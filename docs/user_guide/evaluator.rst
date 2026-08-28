@@ -47,20 +47,10 @@ The Evaluation Rubric
 Score Interpretation
 --------------------
 
-.. list-table::
-   :widths: 20 80
-   :header-rows: 1
-
-   * - Score
-     - Interpretation
-   * - **8–10**
-     - Excellent. Clear, complete, ready for archival or citation.
-   * - **6–7**
-     - Good. Minor gaps; a single round of enhancement typically brings it to 8+.
-   * - **4–5**
-     - Fair. Significant gaps to address during the enhancement process.
-   * - **0–3**
-     - Poor. Description is too vague or incomplete.
+As a rough guide: 8–10 means the description is largely complete and ready for archival; 4–7
+means it covers some criteria but has real gaps worth an enhancement pass; below 4 means most
+criteria are missing. These bands aren't computed or enforced anywhere in the code — they're a
+guideline for reading the rubric breakdown, not a guaranteed outcome of running ``enhance()``.
 
 
 How the Prompt Works

@@ -6,7 +6,7 @@
 
 ## Node Labels
 
-### Dataset  (n=176)
+### Dataset  (n=184)
 
 Root node. One per DRP project.
 
@@ -16,15 +16,18 @@ Root node. One per DRP project.
 | `datasetNumber` | int | 100% | Integer N from projectId. Always set. |
 | `title` | string | 100% |  |
 | `description` | string | 100% |  |
-| `doi` | string | 99% |  |
+| `doi` | string | 97% |  |
 | `authors` | string | 100% | Concatenated `First Last` names |
-| `license` | string | 99% |  |
-| `publicationDate` | string | 100% |  |
-| `descriptionEmbedding` | float[] | — | Set by `build_dataset_vector_index.py`. Used for semantic search. |
+| `license` | string | 97% |  |
+| `publicationDate` | string | 97% |  |
+| `datasetEmbedding` | float[] | — | Derived. Set by `build_dataset_vector_index.py`. Aggregated dataset-level vector for semantic search. |
+| `factSheetEmbedding` | float[] | — | Derived. Set by `build_dataset_vector_index.py`. Vector over the fact sheet, for `rank_fact_sheets()`. |
+| `factSheet` | string | — | Derived. JSON fact sheet — edge-preserving summary. See "Fact sheets" below. |
+| `factSheetText` | string | — | Derived. Rendered prose form of `factSheet`; BM25-indexed and read by the reasoning pass. |
 | `llmKeywords` | string[] | — | Planned; not yet populated. |
 | | | | **`license` values:** `ODC-BY 1.0` |
 
-### Sample  (n=570)
+### Sample  (n=614)
 
 Physical or synthetic porous media sample.
 
@@ -32,14 +35,14 @@ Physical or synthetic porous media sample.
 |---|---|---|---|
 | `identifier` | string | 100% | Node id from JSON |
 | `title` | string | 100% | Stored as `title` in Neo4j |
-| `location` | string | 90% ⚠️ |  |
+| `location` | string | 84% ⚠️ |  |
 | `porousMediaType` | string | 100% |  |
-| `porosity` | float | 27% ❌ |  |
+| `porosity` | float | 26% ❌ |  |
 | `source` | string | 100% |  |
-| `geographicOrigin` | string | 16% ❌ |  |
-| `grainSizeAvg` | float | 15% ❌ |  |
-| `grainSizeMin` | float | 15% ❌ |  |
-| `grainSizeMax` | float | 15% ❌ |  |
+| `geographicOrigin` | string | 15% ❌ |  |
+| `grainSizeAvg` | float | 14% ❌ |  |
+| `grainSizeMin` | float | 14% ❌ |  |
+| `grainSizeMax` | float | 14% ❌ |  |
 | `grainSizeUnits` | string | 0% ❌ |  |
 | `collectionMethod` | string | 0% ❌ |  |
 | `onshoreOffshore` | string | 0% ❌ |  |
@@ -47,12 +50,13 @@ Physical or synthetic porous media sample.
 | `waterDepth` | string | 0% ❌ |  |
 | `procedure` | string | 0% ❌ |  |
 | `equipment` | string | 0% ❌ |  |
-| `algorithmDescription` | string | 0% ❌ |  |
+| `algorithmDescription` | string | 2% ❌ |  |
 | `datasetNumber` | int | 100% | Always set. |
-| | | | **`porousMediaType` values:** `beads`, `carbonate`, `coal`, `fibrous_media`, `granite`, `other`, `sandstone`, `soil` |
-| | | | **`source` values:** `artificial`, `natural` |
+| | | | **`porousMediaType` values:** `beads`, `carbonate`, `coal`, `energy_storage`, `fibrous_media`, `granite`, `other`, `sandstone`, `soil` |
+| | | | **`source` values:** `artificial`, `computer_generated`, `natural` |
+| | | | **`onshoreOffshore` values:** `onshore` |
 
-### DigitalDataset  (n=1683)
+### DigitalDataset  (n=1893)
 
 3D imaging data (CT scan, micro-CT, etc.) derived from a Sample.
 
@@ -61,14 +65,14 @@ Physical or synthetic porous media sample.
 | `identifier` | string | 100% | Node id from JSON |
 | `title` | string | 100% | From node label |
 | `voxelDimensions` | string | — | Combined: `X, Y, Z units (in µm): ...` |
-| `description` | string | 100% |  |
+| `description` | string | 99% |  |
 | `segmented` | string | 100% | `yes` or `no` |
-| `imagingCenter` | string | 0% ❌ |  |
-| `imagingEquipmentAndModel` | string | 0% ❌ |  |
-| `imageFormat` | string | 0% ❌ |  |
-| `imageDimensions` | string | 0% ❌ |  |
+| `imagingCenter` | string | 4% ❌ |  |
+| `imagingEquipmentAndModel` | string | 4% ❌ |  |
+| `imageFormat` | string | 10% ❌ |  |
+| `imageDimensions` | string | 1% ❌ |  |
 | `imageByteOrder` | string | 0% ❌ |  |
-| `dimensionality` | string | 0% ❌ |  |
+| `dimensionality` | string | 11% ❌ |  |
 | `referencedSample` | string | — | UUID of linked Sample node |
 | `numberOfFiles` | int | 100% | len(fileObjs). Always set. |
 | `fileTypes` | string[] | 100% | Derived from file extensions. |
@@ -76,7 +80,7 @@ Physical or synthetic porous media sample.
 | | | | **`segmented` values:** `no`, `yes` |
 | | | | **`voxelDimensions (combined)` values:** `micrometer`, `millimeter`, `nanometer`, `other` |
 
-### AnalysisDataset  (n=1020)
+### AnalysisDataset  (n=1038)
 
 Computed result (simulation, measurement) derived from a DigitalDataset.
 
@@ -92,42 +96,42 @@ Computed result (simulation, measurement) derived from a DigitalDataset.
 | `numberOfFiles` | int | 100% | Always set. |
 | `fileTypes` | string[] | 100% | Derived from file extensions. |
 | `datasetNumber` | int | 100% | Always set. |
-| | | | **`type` values:** `geometric_analysis`, `other`, `simulation` |
-| | | | **`segmented` values:** `no` |
+| | | | **`type` values:** `characterization`, `experimental`, `geometric_analysis`, `other`, `simulation` |
+| | | | **`segmented` values:** `no`, `yes` |
 
-### RelatedPublication  (n=272)
+### RelatedPublication  (n=278)
 
 Article written about or using the dataset. Linked to its parent Dataset via PART_OF.
 
 | Neo4j property | Type | Coverage | Notes |
 |---|---|---|---|
 | `title` | string | 100% |  |
-| `authors` | string | 100% |  |
-| `abstract` | string | 68% ⚠️ |  |
+| `authors` | string | 98% |  |
+| `abstract` | string | 67% ⚠️ |  |
 | `link` | string | 97% | Publication URL (not DOI) |
-| `publicationDate` | string | 100% |  |
+| `publicationDate` | string | 98% |  |
 | `datasetNumber` | int | 100% | Always set. |
 
-### RelatedSoftware  (n=0)
+### RelatedSoftware  (n=4)
 
 Software used to produce or analyze the dataset.
 
 | Neo4j property | Type | Coverage | Notes |
 |---|---|---|---|
-| `title` | string | 0% ❌ |  |
-| `description` | string | 0% ❌ |  |
-| `link` | string | 0% ❌ |  |
+| `title` | string | 100% |  |
+| `description` | string | 100% |  |
+| `link` | string | 100% |  |
 | `datasetNumber` | int | 100% | Always set. |
 
-### RelatedDataset  (n=0)
+### RelatedDataset  (n=13)
 
 External dataset referenced by this project.
 
 | Neo4j property | Type | Coverage | Notes |
 |---|---|---|---|
-| `title` | string | 0% ❌ |  |
+| `title` | string | 100% |  |
 | `description` | string | 0% ❌ |  |
-| `link` | string | 0% ❌ |  |
+| `link` | string | 100% |  |
 | `datasetNumber` | int | 100% | Always set. |
 
 ## Relationship Types
@@ -140,18 +144,58 @@ External dataset referenced by this project.
 | `PART_OF` | `RelatedPublication → Dataset` | Publication linked to this project |
 | `PART_OF` | `RelatedSoftware → Dataset` | Software linked to this project |
 | `PART_OF` | `RelatedDataset → Dataset` | External dataset linked to this project |
-| `INPUT_FOR` | `Sample → DigitalDataset` | Sample was imaged to produce this digital dataset |
-| `INPUT_FOR` | `DigitalDataset → AnalysisDataset` | Image data was input for this analysis |
+| `INPUT_FOR` | `DigitalDataset → Sample` | This scan was produced by imaging that sample (1,893 edges) |
+| `INPUT_FOR` | `AnalysisDataset → DigitalDataset` | This analysis was computed from that image data (983 edges) |
+| `INPUT_FOR` | `AnalysisDataset → Sample` | This analysis was computed straight from that sample, no intermediate scan (55 edges) |
 
-## Vector Index
+> ⚠️ **`INPUT_FOR` points CHILD → PARENT**, i.e. "was derived from" — the *same* direction as
+> `PART_OF`, despite what the name suggests. A scan points **at** the sample it came from; an
+> analysis points **at** the scan it came from. This is what `scripts/load_graph.py`'s
+> `_establish_connection` writes (`MERGE (s)<-[:INPUT_FOR]-(t)`, where `s` is the parent in the
+> DRP metadata's `links` list), and it is verified against the live graph by the edge counts
+> above. Writing the pattern the intuitive way round —
+> `(s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset)` — matches **zero rows and fails silently**.
+> To find the scans taken of a given sample:
+>
+> ```cypher
+> MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)
+> RETURN s.title, collect(dd.title)
+> ```
 
-| Field | Value |
-|---|---|
-| Name | `datasetDescription` |
-| Node label | `Dataset` |
-| Property | `descriptionEmbedding` |
-| Dimensions | 4096 (E5-Mistral-7B-Instruct) |
-| Built by | `scripts/build_dataset_vector_index.py` |
+## Vector and Fulltext Indexes
+
+| Name | Node label | Property | Purpose |
+|---|---|---|---|
+| `datasetEmbedding` | `Dataset` | `datasetEmbedding` | Dataset-level semantic search (`GraphStore.search`) |
+| `componentEmbedding` | `DatasetComponent` | `componentEmbedding` | Per-sub-node semantic search (`GraphStore.component_search`) |
+| `factSheetEmbedding` | `Dataset` | `factSheetEmbedding` | Fact-sheet semantic search (`GraphStore.rank_fact_sheets`) |
+| `datasetDescriptionFulltext` | `Dataset` | `title`, `description` | BM25 half of `GraphStore.hybrid_search` |
+| `datasetFactSheetFulltext` | `Dataset` | `factSheetText` | BM25 half of `GraphStore.rank_fact_sheets` |
+
+All three vector indexes are 4096-dimensional (E5-Mistral-7B-Instruct); all five are built
+by `scripts/build_dataset_vector_index.py`. `DatasetComponent` is a secondary label added
+to `Sample`/`DigitalDataset`/`AnalysisDataset` nodes at embed time — `load_graph.py` does
+not set it.
+
+### Derived (non-source) `Dataset` properties
+
+`datasetEmbedding`, `factSheetEmbedding`, `factSheet` (a JSON string), and `factSheetText` are
+**computed from** the published DRP metadata by the index builder. The published metadata
+itself — `title`, `description`, `doi`, `authors`, and all sub-node properties — is never
+modified. Never `RETURN` a whole node (`RETURN d`) that carries one of these: a 4096-float
+vector reaching an LLM context has already caused a production context-window failure. Use a
+map projection instead:
+`RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null}`.
+
+### Fact sheets
+
+`Dataset.factSheet` / `Dataset.factSheetText` hold a precomputed, edge-preserving summary of
+each dataset — its description, its sub-nodes with their key properties, and, critically, which
+`DigitalDataset` belongs to which `Sample`. This is the raw material the assistant's
+`reason_about_dataset_content` tool reasons over for questions no single literal field can
+answer ("paired tomographic and segmented images", "the same sample at different
+resolutions"). Fact sheets cache raw material only, never a verdict — whether a dataset
+satisfies a given relationship is judged live, per query.
 
 ## Cypher Quick Reference
 
@@ -178,14 +222,25 @@ ORDER BY d.datasetNumber
 ```
 
 ### Full graph for one dataset
+
+Note the map projection: `d` carries `datasetEmbedding`/`factSheetEmbedding`/`factSheetText`,
+so a bare `RETURN d` dumps a 4096-float vector and the whole fact sheet into the result.
+
 ```cypher
 MATCH (n)-[:PART_OF]->(d:Dataset {datasetNumber: 1})
-RETURN d, n
+RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null},
+       n{.*, componentEmbedding: null}
 ```
 
-### Semantic search (requires descriptionEmbedding populated)
+### Find the scans taken of each sample (INPUT_FOR is child → parent)
 ```cypher
-CALL db.index.vector.queryNodes('datasetDescription', 5, $embedding)
+MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)-[:PART_OF]->(d:Dataset)
+RETURN d.title, s.title, collect(dd.title) AS scans
+```
+
+### Semantic search (requires datasetEmbedding populated)
+```cypher
+CALL db.index.vector.queryNodes('datasetEmbedding', 5, $embedding)
 YIELD node, score
 RETURN node.title, node.datasetNumber, score
 ```
@@ -208,19 +263,24 @@ Dataset `description` is present on nearly all nodes and is the primary field us
 
 ## Graceful Degradation Tiers
 
-The assistant should **always attempt a query** regardless of field coverage. These tiers govern how the assistant communicates when results come back empty.
+The assistant should **always attempt a query** regardless of field coverage. These tiers govern how the assistant communicates when results come back empty. Tier membership below is computed from the coverage numbers above, so it stays in step with the data rather than being maintained by hand.
+
+Properties with no coverage figure (`identifier`, `datasetNumber`, the derived embedding/fact-sheet properties, and combined fields like `voxelDimensions`) are omitted — they are either always present or not directly queryable.
 
 ### Tier 1 — High confidence (≥90% coverage)
 
 If a query on these fields returns no results, it is a genuine miss.
 Report confidently: *"No datasets match your criteria."*
 
-| Node | Fields |
-|---|---|
-| Dataset | `title`, `description`, `authors`, `publicationDate`, `doi` |
-| Sample | `porousMediaType`, `source` |
-| DigitalDataset | `segmented` |
-| AnalysisDataset | `type`, `segmented` |
+| Node | Fields | Coverage |
+|---|---|---|
+| Dataset | `title`, `description`, `doi`, `authors`, `license`, `publicationDate` | 97–100% |
+| Sample | `title`, `porousMediaType`, `source` | 100% |
+| DigitalDataset | `description`, `segmented` | 99–100% |
+| AnalysisDataset | `description`, `segmented`, `type` | 100% |
+| RelatedPublication | `title`, `authors`, `link`, `publicationDate` | 97–100% |
+| RelatedSoftware | `title`, `description`, `link` | 100% |
+| RelatedDataset | `title`, `link` | 100% |
 
 ### Tier 2 — Low confidence on empty results (50–89% coverage)
 
@@ -228,20 +288,17 @@ If a query on these fields returns no results, add a caveat: *"This field is not
 
 | Node | Fields | Coverage |
 |---|---|---|
-| Sample | `location` | 89.8% |
-| DigitalDataset | `voxelDimensions` | 63–69% |
-| RelatedPublication | `abstract` | 68% |
-| RelatedPublication | `link` | 97.4% |
+| Sample | `location` | 84% |
+| RelatedPublication | `abstract` | 67% |
 
 ### Tier 3 — Very sparse; always note sparsity (<50% coverage)
 
 Always mention sparsity alongside results (or their absence): *"Note: this metadata is not consistently captured across all datasets."* For 0% fields, be explicit: *"This field is not present in the current portal metadata."*
 
+A non-zero but tiny percentage is **not** permission to treat the field as available: a 4%-populated field answers the question for 4% of the catalog and silently drops the rest, so a query filtering on one needs the sparsity caveat even when it does return rows.
+
 | Node | Fields | Coverage |
 |---|---|---|
-| Sample | `porosity` | 26.7% |
-| Sample | `geographicOrigin` | 16.5% |
-| Sample | `grainSizeAvg/Min/Max` | ~15% |
-| Sample | `grainSizeUnits` | 0% |
-| Sample | `collectionMethod`, `onshoreOffshore`, `depth`, `waterDepth`, `procedure`, `equipment`, `algorithmDescription` | 0% |
-| DigitalDataset | `imagingCenter`, `imagingEquipmentAndModel`, `imageFormat`, `imageDimensions`, `imageByteOrder`, `dimensionality` | 0% |
+| Sample | `porosity`, `geographicOrigin`, `grainSizeAvg`, `grainSizeMin`, `grainSizeMax`, `grainSizeUnits`, `collectionMethod`, `onshoreOffshore`, `depth`, `waterDepth`, `procedure`, `equipment`, `algorithmDescription` | 0–26% |
+| DigitalDataset | `imagingCenter`, `imagingEquipmentAndModel`, `imageFormat`, `imageDimensions`, `imageByteOrder`, `dimensionality` | 0–11% |
+| RelatedDataset | `description` | 0% |

@@ -7,7 +7,7 @@ import openai
 from pydantic import Field
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 
@@ -97,18 +97,6 @@ class LLMClient:
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Using LLM provider: {self.provider}, model: {self.model}, endpoint: {self.api_url}")
 
-    def list_models(self) -> List[str]:
-        """Return a list of model IDs available from the configured provider endpoint."""
-        try:
-            self.logger.info("Listing available models...")
-            response = self.client.models.list()
-            models = [m.id for m in response.data]
-            self.logger.info(f"Available models: {models}")
-            return models
-        except Exception as e:
-            self.logger.error(f"Error listing models: {str(e)}")
-            return []
-
     def send_prompt(self, prompt: str, context: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
         """
         Send a prompt to the LLM and return the response text.
@@ -179,42 +167,31 @@ class RoccoClient(BaseChatModel):
             temperature: Temperature for LLM generation (0.0-1.0).
             **kwargs: Additional arguments for BaseChatModel.
         """
-        resolved_timeout = timeout if timeout is not None else int(os.getenv("LLM_TIMEOUT", "120"))
-        # Determine provider and api_url using same logic as LLMClient
-        resolved_provider = provider or os.getenv("LLM_PROVIDER", "").lower()
-        if not resolved_provider:
-            if api_url or os.getenv("LLM_BASE_URL"):
-                resolved_provider = "custom"
-            else:
-                resolved_provider = "openai"
+        # LLMClient owns the provider/URL/key/model/timeout resolution rules (see its
+        # __init__); build it from the raw arguments and read the resolved values back
+        # off it, rather than reimplementing the same env-fallback chain here and having
+        # to keep two copies in step.
+        llm_client = LLMClient(
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            provider=provider,
+            timeout=timeout,
+        )
 
-        # Determine API URL using provider mapping
-        if api_url:
-            resolved_api_url = api_url
-        elif os.getenv("LLM_BASE_URL"):
-            resolved_api_url = os.getenv("LLM_BASE_URL")
-        else:
-            resolved_api_url = LLMClient.PROVIDER_URLS.get(resolved_provider, "https://api.openai.com/v1")
-
-        # Initialize BaseChatModel (Pydantic) with configuration
+        # Initialize BaseChatModel (Pydantic) with the resolved configuration.
         super().__init__(
-            provider=resolved_provider,
-            api_key=api_key or os.getenv("LLM_API_KEY"),
-            api_url=resolved_api_url,
-            model=model or os.getenv("LLM_MODEL", "gpt-4o-mini"),
-            timeout=resolved_timeout,
+            provider=llm_client.provider,
+            api_key=llm_client.api_key,
+            api_url=llm_client.api_url,
+            model=llm_client.model,
+            timeout=llm_client.timeout,
             temperature=temperature,
             **kwargs
         )
 
-        # Create wrapped LLMClient instance (handles the actual API calls)
-        self.llm_client = LLMClient(
-            api_url=self.api_url,
-            api_key=self.api_key,
-            model=self.model,
-            provider=self.provider,
-            timeout=self.timeout
-        )
+        # The wrapped instance handles the actual API calls.
+        self.llm_client = llm_client
 
     @property
     def _llm_type(self) -> str:

@@ -4,7 +4,7 @@ from src.common.utils import _build_rubric, _build_evaluation_text
 from src.retriever.retriever import VectorStoreManager
 from src.prompts.loader import load_prompt, render
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Optional, Union
 from langchain_core.documents import Document
 import json
 from pathlib import Path
@@ -86,21 +86,6 @@ class DescriptionEditor:
 
         print(f"Session loaded from {filepath}")
         print(session.get_summary())
-
-    def get_session_summary(self) -> str:
-        """Get a summary of the current session"""
-        session = EditingSession(
-            created_at=self.session_metadata["created_at"],
-            original_description=self.session_metadata.get("original_description"),
-            current_description=self.session_metadata.get("current_description"),
-            conversation_history=self.conversation_history,
-            rubric=self.rubric,
-            config={
-                "use_rag": self.use_rag,
-                "top_k_context": self.top_k_context,
-            },
-        )
-        return session.get_summary()
 
     def retrieve_context(self, query: str = None) -> List[Document]:
         """Retrieve relevant context from related papers"""
@@ -340,17 +325,6 @@ class DescriptionEditor:
                 citation=[],
             )
         return updated_desc
-
-    def print_enhancement_result(self, editor_output: EditorOutput) -> None:
-        """Utility to print enhancement results"""
-        print(f"Original Description:\n{editor_output.original_text}\n")
-        print(f"Enhanced Description:\n{editor_output.suggested_text}\n")
-        print(f"Justifications:\n {editor_output.rationale}")
-        print(f"Citations:\n")
-        for item in editor_output.citation:
-            print(f"Statement: {item.statement}")
-            print(f"Source: {item.source}")
-            print(f"Source Quote: {item.quote}\n")
 
     def reset_conversation_history(self):
         """Clear all stored conversation turns, starting a fresh refinement session."""

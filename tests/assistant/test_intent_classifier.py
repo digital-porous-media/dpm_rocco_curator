@@ -2,6 +2,11 @@
 Formal test suite for the intent classifier prompt.
 Tests that queries are classified into the correct intent with expected confidence ranges.
 
+NOTE: assistant.yaml is LEGACY and not called at runtime — the General Assistant routes via a
+LangGraph ReAct agent (src/assistant/conversation_manager.py), not an intent classifier. This
+suite exists only to keep the legacy prompt file's own behavior pinned in case it's ever revived
+or fully removed; it is not exercising anything on the live request path.
+
 Run with:
     pytest tests/assistant/test_intent_classifier.py -v
 """

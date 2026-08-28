@@ -186,12 +186,6 @@ streamlit run rocco_ui.py
 ```
 Starts the web interface for evaluating and editing descriptions with document upload and RAG support.
 
-### CLI Evaluation
-```bash
-python evaluate_description.py <description_text>
-```
-Example: `python evaluate_description.py "This is a porous media dataset..."`
-
 ### Testing
 
 **IMPORTANT: Always run tests before committing changes.** This catches refactoring regressions early.
@@ -221,11 +215,16 @@ pytest tests/ --cov=src --cov-report=term-missing
 
 ### Manual Testing
 ```bash
-# Test RAG pipeline
-python test_rag_pipeline.py
-
-# Test evaluation without Streamlit
-python -c "from src.evaluator import DescriptionEvaluator; eval = DescriptionEvaluator(); print(eval.evaluate('test description'))"
+# Test evaluation without Streamlit (rubric/examples/client are all required, no defaults)
+python -c "
+import json
+from src.llm.client import RoccoClient
+from src.evaluator.evaluator import DescriptionEvaluator
+rubric = json.load(open('src/evaluator/rubric.json'))
+examples = json.load(open('src/evaluator/examples_v3.json'))
+evaluator = DescriptionEvaluator(RoccoClient(), rubric, examples)
+print(evaluator.evaluate('test description'))
+"
 ```
 
 ## Output Formats
@@ -304,12 +303,10 @@ All LLM calls go through `RoccoClient` (`src/llm/client.py`). This is a thin wra
 from src.llm.client import RoccoClient
 
 client = RoccoClient()
-response = client.call(
-    system="You are an evaluator",
-    user="Evaluate this description: ...",
-    temperature=0.7,
-    max_tokens=500,
-    model="Qwen3-32B"  # Optional, defaults to config
+response = client.send_prompt(
+    prompt="Evaluate this description: ...",
+    context="You are an evaluator",
+    params={"temperature": 0.7, "max_tokens": 500},
 )
 ```
 
@@ -394,34 +391,53 @@ Rocco is being extended with a General Assistant tab — a unified conversationa
 ```
 src/assistant/
 ├── __init__.py
-├── tools.py                  # all callable tools — shared interface both interns code to
-├── conversation_manager.py   # LangGraph ReAct agent (intent → dispatch → synthesize)
+├── tools.py                  # all 8 callable tools + their deterministic routing gates
+├── conversation_manager.py   # orchestrator: gates → ReAct agent → response assembly;
+│                             #   also cross-turn result-set state
 ├── assistant.py              # one-line re-export of ConversationManager (backwards compat)
-├── graph_store.py            # Neo4j vector index + structured Cypher search
-├── literature_search.py      # Semantic Scholar API wrapper (Bernie pre-builds)
+├── graph_store.py            # Neo4j: hybrid/component/fact-sheet search, Cypher QA, profiles
+├── literature_search.py      # Semantic Scholar API wrapper
+├── portal_docs_retrieval.py  # PageIndex-style retrieval over dpm_docs heading tree
+├── portal_docs_tree.py       # markdown → heading tree (parsed at import time)
 ├── llm.py                    # RoccoClient + OpenAIEmbeddings singletons (unified with curator)
-└── assistant_ui.py           # Streamlit UI — added as new tab in rocco_ui.py Week 6
+└── assistant_ui.py           # Streamlit UI — the "General Assistant" page in rocco_ui.py
 
-src/prompts/                  # new prompts alongside existing ones
-├── assistant.yaml            # intent classifier (semantic_search / metadata_filter /
-│                             #   domain_qa / workflow_guidance / query_expansion / literature_search)
+src/prompts/                  # assistant prompts alongside the three curator ones
+├── assistant.yaml            # 6-intent classifier — NOT called at runtime; offline/tests only
 ├── query_expander.yaml       # user query → expanded_query + inferred_filters + rationale
-└── educational.yaml          # domain Q&A + workflow synthesis
+├── educational.yaml          # domain Q&A + workflow synthesis (shared by both tools)
+├── dataset_profile.yaml      # single-dataset deep-dive profile synthesis
+├── corpus_reasoning.yaml     # relationship/content reasoning over ranked fact sheets
+│                             #   (+ batch_screen_* pair for the map-reduce fallback)
+└── portal_docs.yaml          # portal how-to / data-model answer synthesis
 
 data/
 ├── tutorials.yaml                 # 20+ user goals → verified portal tutorial URLs
-├── domain_workflows.yaml          # 15 DRP workflows (Bernie authors; do not edit without domain review)
+├── domain_workflows.yaml          # 15 DRP workflows (do not edit without domain review)
+├── portal_docs/docs/              # synced copy of the dpm_docs repo
 └── metadata/                      # scraped DRP metadata JSONs — GITIGNORED
 
 scripts/
 ├── scrape_metadata.py             # downloads DRP metadata JSONs from TACC Corral
-└── build_dataset_vector_index.py  # embeds dataset nodes → Neo4j vector index
+├── load_graph.py                  # metadata JSONs → Neo4j nodes + relationships ONLY
+├── build_dataset_vector_index.py  # embeddings, fact sheets, and ALL FIVE indexes
+├── reembed_single_dataset.py      # patch one dataset after --mode upsert
+├── audit_schema.py                # coverage audit; GENERATES docs/neo4j_schema.md
+├── sync_dpm_docs.py               # pull portal documentation updates
+├── check_embedding_health.py      # one-call probe of the embedding endpoint
+└── check_neo4j_vector_support.py  # verifies the server supports vector indexes
 
 tests/assistant/
-├── conftest.py                    # fixtures: mock Neo4j driver, small FAISS index
-├── test_graph_store.py
-└── test_search_integration.txt
+├── conftest.py                    # fixtures: mock Neo4j driver, mock GraphStore
+├── test_graph_store.py            test_tools.py
+├── test_conversation_manager.py   test_fact_sheet_builder.py
+├── test_portal_docs_retrieval.py  test_literature_search.py
+├── test_search_integration.py     test_assistant_ui.py
+└── test_prompts.py                test_intent_classifier.py
 ```
+
+Note: `docs/neo4j_schema.md` is **generated**. Fix `scripts/audit_schema.py` and regenerate —
+a hand-edit is lost on the next run.
 
 ### Search Architecture
 
@@ -432,7 +448,80 @@ Two-layer search — all handled in `graph_store.py`:
 
 Literature search uses the **Semantic Scholar API** only (see `literature_search.py`). A local full-text PDF corpus was considered but dropped due to copyright concerns — publisher PDFs cannot be legally chunked and stored even under institutional access licenses. Semantic Scholar provides titles, abstracts, DOIs, and citation counts, which is sufficient for the assistant's use cases.
 
-Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic scholar]`.
+3. **Fact-sheet reasoning** — for questions no literal field can settle (a relationship, a
+   comparison across one dataset's sub-nodes, or a property that only appears in free text),
+   `rank_fact_sheets()` reuses the same vector+BM25 Reciprocal Rank Fusion as `hybrid_search()`,
+   pointed at the fact-sheet indexes, and `reason_about_dataset_content` runs one cited reasoning
+   pass over the shortlist. See §Content Reasoning below.
+
+Source labels on all results — the full set `SYSTEM_PROMPT` requires the agent to relay verbatim:
+`[graph match]`, `[semantic match]`, `[hybrid match]`, `[component match]`, `[cypher match]`,
+`[dataset profile]`, `[content reasoning]`, `[portal docs]`, `[semantic scholar]`.
+
+### Content Reasoning (`reason_about_dataset_content`)
+
+The dividing line for routing is **not** "does the field exist" — it is *"is every property in
+the question a plain, literal, structured field?"*
+
+- A plain conjunction of independent literal fields ("sandstone AND porosity > 0.3") stays
+  entirely on `get_dataset_details`/Cypher. Each clause narrows the catalog on its own.
+- Anything relational ("paired", "corresponding", "the same X", "derived from", "at different
+  resolutions") or free-text-only (an instrument named in a description — there is no queryable
+  imaging-modality field) routes **entirely** to `reason_about_dataset_content`, and is **never
+  split**. A literal clause pulled out of a relational claim (`segmented` inside "paired
+  tomographic and segmented images") is not an independently valid partial answer — presenting
+  one is a wrong answer, not a partial one, since nothing tells the reader "paired" was dropped.
+
+**Gated in code, not by routing.** `_needs_content_reasoning()` (`tools.py`) is a deterministic
+check that BOTH `get_dataset_details` and `search_datasets` run before committing to a Cypher
+answer; if it fires they hand the whole question over and return that result. The two sides of
+the line are worded almost identically ("segmented and porosity above 0.3" is plain; "segmented
+and imaged the same way" is relational), and this project has repeatedly found prompt-level
+routing unreliable for calls that fine — same precedent as `search_datasets`'s existing
+`_is_plain_property_query()`. Borderline matches are logged for periodic review.
+
+Query-time sequence: **rank** precomputed fact sheets (no LLM call) → **fetch** them by ID →
+**one** cited LLM reasoning pass → **compose** behind a fixed honesty framing. Exhaustive
+questions ("list every dataset where…") fall back to a batched map-reduce screen instead of
+ranking. Two grounding guards run in code, not in the prompt: a candidate with no citation is
+dropped, and so is one whose title wasn't in the shortlist actually sent. Titles/DOIs come from
+graph records, never retyped by the model.
+
+Adding a new relational phrasing needs **no new code** — if the fact sheet has the relevant
+facts, the same mechanism handles it; if not, that's a fact-sheet content fix, not a new pattern
+to author. The accepted trade-off is recall: a hand-written Cypher condition for one specific
+relationship would have zero recall risk for that one case, and hybrid ranking narrows but does
+not close that gap.
+
+### Cross-Turn Result-Set State
+
+`ConversationManager` remembers, per session: `_last_dataset_mentions` (what "these" / "the
+second one" refer to), `_cumulative_filter_text` (the filter chain so far), and
+`_last_profiled_dataset` (what a bare "that dataset" resolves to). Documented for users in
+`docs/user_guide/multi_turn.rst`.
+
+Three invariants that are easy to break:
+
+1. **Every tool that lists datasets must be in `_DATASET_LISTING_TOOLS`.** Membership is about
+   the *shape* of the output, not the relay path — content reasoning is self-contained rather
+   than verbatim, but it renders the same `- **Title** (DOI: ...)` bullets, so the same parser
+   handles it. An unregistered listing tool doesn't just fail to record its own results; it
+   leaves the *previous* set in place looking current, and a later "of these" refines a set the
+   user has moved on from with nothing in the answer revealing the substitution.
+2. **Every one of `chat()`'s return paths must call `_track_dataset_listing()`** — the
+   single-tool short-circuit, the refinement and comparison dispatches, and the normal
+   end-of-stream path. Miss one and reference resolution works or fails depending on which path
+   a turn happened to take.
+3. **`restrict_to_titles=[]` means *no restriction*** to `cypher_qa`, not "restrict to nothing".
+   Require a non-empty title list *and* a filter chain before dispatching a restricted search,
+   or the query silently runs over the whole catalog while the log says otherwise.
+
+Two narrowing mechanisms, deliberately distinct: `_REFINEMENT_RE` phrasings ("of these") AND the
+new constraint onto the chain; `_ELLIPTICAL_REFINEMENT_RE` phrasings ("how about any below
+0.25?") do **not**, because the new constraint *supersedes* an earlier one on the same property
+and ANDing produces a contradiction. The primary signal is phrasing-independent
+(`_continues_filter_chain`), for the usual reason — recognising refinement from user phrasing was
+another growing-pattern-library problem.
 
 ### Literature Strategy
 
@@ -443,24 +532,34 @@ Source labels on all results: `[graph match]`, `[semantic match]`, `[semantic sc
 
 - `graph_store.py` must accept `filters: dict` (not hardcoded field names) — required for future Croissant file-level metadata extension
 - `USE_NEO4J=false` env flag must allow the assistant to degrade gracefully (Semantic Scholar still works)
-- Session state for the new tab must be namespaced (Bernie adds `curator_` prefix to all existing keys in Week 6)
+- Session state for the assistant tab is namespaced with an `assistant_` prefix. The curator's
+  keys in `rocco_ui.py` were never prefixed (`description_text`, `evaluation`,
+  `vector_store_manager`, …) — the planned `curator_` pass didn't happen and isn't needed, but it
+  does mean the `assistant_` prefix is the *only* thing preventing a collision. Never add an
+  unprefixed session key to the assistant tab.
 - Never assert a dataset property that isn't present in the graph — honest gap responses required
 - **Never modify dataset metadata pulled from the DRP.** All `title`, `description`, `doi`, `authors`, and sub-node properties are published, public data. Do not edit these values in Neo4j or in any data loading/indexing script. Improvements to retrieval must come from the embedding/search layer, not from altering source data.
 
 ### Knowledge Source Policy (conversation_manager.py + educational.yaml)
 
-The system prompt must **not** blanket-restrict the LLM to tool-only knowledge. The right policy is tiered:
+The system prompt must **not** blanket-restrict the LLM to tool-only knowledge. The policy is
+tiered, and is **implemented** — `SYSTEM_PROMPT`'s "Knowledge tiers" section and
+`educational.yaml`'s "Knowledge policy" section both carry it. Keep any edit to either in step
+with this table:
 
-| Question type | Policy | Example |
-|--------------|--------|---------|
-| Dataset facts / portal content | **Tools only** — no pre-trained fallback. Hallucinated dataset properties erode researcher trust. | "How many sandstone datasets have φ > 0.2?" |
-| Domain Q&A / workflows | **Tools first** (`domain_workflows.yaml`, Semantic Scholar). Fall back to pre-trained with explicit disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
-| Foundational concepts | **Pre-trained knowledge is fine** — these are stable and well-established. | "What is porosity?" |
+| Tier | Question type | Policy | Example |
+|------|--------------|--------|---------|
+| 0 | Conversation, brainstorming, code help | **Answer directly, no tool.** Includes self-introductions — an incidental name is never an author lookup. Off-domain requests get one acknowledging sentence, then stop. | "Hi, I'm Bernie"; "why is my segmentation pipeline crashing?" |
+| 1 | Dataset facts / portal content | **Tools only** — no pre-trained fallback. Hallucinated dataset properties erode researcher trust. | "How many sandstone datasets have φ > 0.2?" |
+| 2 | Domain Q&A / workflows / portal how-to | **Tools first** (`domain_workflows.yaml`, portal docs, Semantic Scholar). Fall back to pre-trained only when the tool's context was genuinely sparse, with the disclaimer: *"I don't have portal-specific data on this, but generally…"* | "How do I compute relative permeability?" |
+| 3 | Foundational concepts | **Pre-trained knowledge is fine** — these are stable and well-established. | "What is porosity?" |
 
-**Applies to:**
-- `conversation_manager.py` system prompt — replace "do not answer from pre-trained knowledge" with "prefer tool results; for general domain knowledge you may draw on your expertise but make the source clear"
-- `educational.yaml` system prompt — same tiered framing; instruct the LLM to distinguish between portal knowledge base results vs. general domain knowledge
-- `general_chat` tool in `tools.py` — currently broken because it also forbids pre-trained knowledge while receiving no context; fix by removing that restriction (this tool is a placeholder until `get_educational_context` is wired up)
+Tier 0 has a deterministic backstop: `_classify_off_domain()` returns a fixed steer-back string
+before any other LLM call, because the prompt-only version was observed acknowledging the mismatch
+and then answering the off-topic question anyway.
+
+Note: `general_chat`, referenced in older notes as a broken placeholder, no longer exists —
+`get_educational_context` replaced it.
 
 ### Prompts for New Modules
 
@@ -468,6 +567,8 @@ Follow the existing versioned YAML pattern in `src/prompts/`. New files:
 - `assistant.yaml` — intent classifier
 - `query_expander.yaml` — LLM query expansion
 - `educational.yaml` — domain Q&A and workflow synthesis
+- `corpus_reasoning.yaml` — relationship/content reasoning over fact sheets, with a mandatory
+  per-candidate citation (also carries the map-reduce batch-screening prompt)
 
 ### Equation Rendering
 
@@ -494,34 +595,139 @@ The fix is at the **prompt + rendering layer**:
 
 ### Vector Indexes
 
-Two indexes are built by `scripts/build_dataset_vector_index.py`:
+Built by `scripts/build_dataset_vector_index.py`:
 
 | Index | Node | Property | Purpose |
 |-------|------|----------|---------|
 | `datasetEmbedding` | `Dataset` | `datasetEmbedding` | Aggregated dataset-level vector (title + description + sub-node metadata). Used by `GraphStore.search()` and `GraphCypherQAChain`. |
 | `componentEmbedding` | `DatasetComponent` | `componentEmbedding` | One vector per `Sample`/`DigitalDataset`/`AnalysisDataset` sub-node. Each blob includes the parent Dataset title + description as a context header so sparse sub-nodes inherit parent signal. Used by `GraphStore.component_search()`. |
+| `factSheetEmbedding` | `Dataset` | `factSheetEmbedding` | Vector over the dataset's **fact sheet** — an edge-preserving narration of which `DigitalDataset` belongs to which `Sample`, their resolutions/segmented status, and sub-node descriptions. Used by `GraphStore.rank_fact_sheets()`. |
+
+Plus two fulltext (BM25) indexes: `datasetDescriptionFulltext` (`Dataset.title` + `Dataset.description`,
+the BM25 half of `hybrid_search`) and `datasetFactSheetFulltext` (`Dataset.factSheetText`, the
+BM25 half of `rank_fact_sheets`).
 
 `DatasetComponent` is a secondary label added to sub-nodes at embed time — it is not set by `load_graph.py`.
+
+### Fact Sheets
+
+`Dataset.factSheet` (JSON string) + `Dataset.factSheetText` (rendered prose) hold a precomputed,
+edge-preserving summary per dataset — node titles/descriptions, `porousMediaType`/
+`voxelDimensions`/`segmented`/`type`, related publication abstracts, and the
+`Sample`→`DigitalDataset`→`AnalysisDataset` structure. They are the raw material for
+`reason_about_dataset_content` (see below).
+
+Deliberately **not** built from `_build_embedding_text`: that function flattens sub-node
+properties into aggregated lines (right for embedding similarity), which discards which specific
+`DigitalDataset`s belong to which specific `Sample` — exactly what "does this sample have scans
+at two different resolutions?" needs. Fact sheets cache raw material only, **never a verdict** —
+whether a dataset satisfies a given relationship is query-dependent and always judged live.
+
+These are derived properties computed *from* the published DRP metadata, alongside the
+embeddings; the published metadata itself is never modified (see the Key Design Constraints
+above).
+
+### Embedding Endpoint: Total-Characters-Per-Request Limit
+
+The TACC/SambaNova E5-Mistral-7B-Instruct embedding endpoint limits the **total characters in a
+request**, not the number of items in it. Measured live: ~14k characters per request succeeds,
+~40k fails with a 500 whose body carries per-item
+`{"embedding": null, "error": "unexpected_error"}`. A single large item is fine (a 21k-character
+text embeds on its own); several large ones together are not.
+
+There is **also a per-item limit** — E5-Mistral-7B-Instruct caps at 4096 tokens, and
+`check_embedding_ctx_length=False` is set on `OpenAIEmbeddings` (the TACC/LiteLLM endpoint expects
+raw strings), so LangChain does **not** chunk or truncate oversized inputs for you: an over-long
+single item just 500s. Token density varies a lot between texts, so a character-based cap has to
+be conservative — measured live, the 17 fact sheets that failed at full length ranged from 10.5k
+to 20.9k characters and all 17 embedded successfully at 8k.
+
+Hence the fact-sheet pass does two things the other passes don't:
+- batches by character budget (`_batch_by_char_budget`, `FACT_SHEET_EMBED_CHAR_BUDGET = 12_000`)
+  instead of a fixed `--batch-size`, and
+- caps each item at `FACT_SHEET_EMBED_MAX_CHARS = 8_000` **for embedding only** — the stored
+  `factSheetText` is always complete, so BM25 and the reasoning pass see the whole sheet; only the
+  ranking vector is built from the leading section.
+
+A failed batch retries item-by-item, and an item that still fails is skipped loudly with its fact
+sheet still stored (BM25-only ranking for that dataset). Recover stragglers from transient endpoint
+errors with `--only fact-sheets --retry-missing` rather than a full rebuild. Any new embedding pass
+over large texts needs the same treatment.
 
 ### Index Rebuild
 
 ```bash
-# Rebuild both Neo4j vector indexes (dataset + component)
+# Rebuild everything (dataset + component embeddings, fact sheets, all indexes)
 python scripts/build_dataset_vector_index.py
 
-# Rebuild publication FAISS
-python scripts/build_publication_index.py
+# Rebuild only the fact sheets + their indexes (skips the two embedding passes)
+python scripts/build_dataset_vector_index.py --only fact-sheets
+
+# Recover fact sheets that failed on a transient endpoint error
+python scripts/build_dataset_vector_index.py --only fact-sheets --retry-missing
 ```
 
-Re-running is safe — both indexes use `CREATE ... IF NOT EXISTS` and embeddings are upserted with `SET`.
-Rebuild required when: new datasets are added, the embedding model changes, or text assembly logic changes.
+`load_graph.py` does **not** create indexes. It used to create a `datasetDescription` vector
+index on a `descriptionEmbedding` property that nothing has ever written — a dead index plus a
+phantom property that `audit_schema.py` then dutifully audited into `docs/neo4j_schema.md`. All
+index creation belongs to `build_dataset_vector_index.py`, which is the only place that knows
+the embedding dimension.
+
+Re-running is safe — all indexes use `CREATE ... IF NOT EXISTS` and embeddings/fact sheets are
+upserted with `SET`.
+Rebuild required when: new datasets are added, the embedding model changes, or text/fact-sheet
+assembly logic changes.
 If switching embedding models, drop old indexes first:
 ```cypher
 DROP INDEX datasetEmbedding IF EXISTS;
 DROP INDEX componentEmbedding IF EXISTS;
+DROP INDEX factSheetEmbedding IF EXISTS;
 ```
 
 Both are also triggerable via the stretch-goal index management API (`src/assistant/index_api.py`) once implemented.
+
+### ⚠️ Never `x IS NULL OR <required condition>` in Generated Cypher
+
+The single most common way a generated query silently returns wrong rows. With
+`OPTIONAL MATCH (d)<-[:PART_OF]-(s:Sample)`, the clause `WHERE s IS NULL OR
+toLower(s.porousMediaType) = 'sandstone'` is **true for every dataset that has no Sample at
+all** — the filter looks present but admits almost everything. Observed live in a "find me a
+sandstone dataset" turn.
+
+Use `OPTIONAL MATCH` + a null-tolerant `WHERE` only for a property the question treats as
+optional extra information. When the question *filters* on it, require the node:
+
+```cypher
+MATCH (d:Dataset)<-[:PART_OF]-(s:Sample)
+WHERE toLower(s.porousMediaType) = 'sandstone'
+RETURN DISTINCT d.identifier, d.title, d.doi
+```
+
+A dataset missing the property is **not** a match — returning it is a wrong answer, not a
+lenient one. The rule and a worked example are in `CYPHER_GENERATION_TEMPLATE`
+(`graph_store.py`); the porosity example there was also rewritten to model the plain-`MATCH`
+shape, since teaching the `OPTIONAL MATCH` shape for a required filter is what invited the
+`IS NULL OR` in the first place.
+
+### ⚠️ `INPUT_FOR` Points Child → Parent
+
+`INPUT_FOR` means "was derived from" and runs the **same direction as `PART_OF`**, despite the
+name:
+
+```cypher
+(DigitalDataset)-[:INPUT_FOR]->(Sample)          // 1893 edges — a scan points AT its sample
+(AnalysisDataset)-[:INPUT_FOR]->(DigitalDataset) //  983 edges
+(AnalysisDataset)-[:INPUT_FOR]->(Sample)         //   55 edges — no intermediate scan
+```
+
+Writing it the intuitive way round — `(s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset)` — matches
+**zero rows and fails silently**. Verified against the live graph and against
+`scripts/load_graph.py`'s `_establish_connection`, which writes `MERGE (s)<-[:INPUT_FOR]-(t)`
+with `s` being the parent in the DRP metadata's `links` list.
+
+Also: never `RETURN d` wholesale on a node carrying an embedding or fact sheet — use a map
+projection (`d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null}`). A
+4096-float vector reaching an LLM context has already caused a production context-window failure.
 
 ### LLM / Agent Stack for the Assistant
 
@@ -532,7 +738,7 @@ The assistant module shares the **unified** LLM client with the curator:
 | Chat LLM | `RoccoClient` | `src.llm.client` | Inherits from `BaseChatModel`; works with all providers (OpenAI, SambaNova, etc.) |
 | Embeddings | `OpenAIEmbeddings` | `langchain_openai` | Custom `EMBEDDING_URL` for provider-specific embedding endpoint |
 | Agent | `create_react_agent` | `langgraph.prebuilt` | LangGraph ReAct; replaces legacy `AgentExecutor` (removed in langchain 1.x) |
-| Memory | `MemorySaver` | `langgraph.checkpoint.memory` | In-process per-session history; resets on restart |
+| Memory | *(none — no checkpointer)* | — | `chat(..., history=[...])` replays prior turns per call; the UI owns the list. Cross-turn result-set state lives on the `ConversationManager` instance, so isolation = one instance per session. Resets on restart |
 | Neo4j Vector Search | `Neo4jVector` | `langchain_neo4j` | Vectorstore abstraction for semantic search over dataset embeddings |
 
 Both curator and assistant use `RoccoClient` from `src/llm/client.py`.
@@ -542,7 +748,8 @@ Both curator and assistant use `RoccoClient` from `src/llm/client.py`.
 pip install -e ".[graph]"  # Includes neo4j, langchain-neo4j, langchain-openai
 ```
 
-**Conda environment:** All development uses `conda activate rocco_ai`.
+**Conda environment:** `conda activate rocco` on this machine. (`CONTRIBUTING.md` and
+`docs/developer_guide/onboarding.md` now say `rocco` too — they previously said `rocco_ai`.)
 
 ### APOC Note
 
@@ -551,6 +758,13 @@ APOC is **not required**. The Cypher generation prompt in `graph_store.py` expli
 `langchain-neo4j` provides vectorstore abstractions for semantic search but does not introduce external dependencies — all Cypher queries remain within the Neo4j driver and are portable.
 
 ### Week-by-Week Plan (Intern Sprint)
+
+> **Historical (May–Aug 2026).** Kept as a record of how the sprint was planned; it is not a
+> current work plan and several rows describe work that was later dropped or reassigned. In
+> particular `publication_corpus.py` / `build_publication_index.py` / `docs/search_layer.md`
+> were **never built** — issues #13, #27 and #32 were closed when the local PDF corpus was
+> dropped over copyright. For what is actually outstanding, see `Tasks.md` §"Remaining Work
+> Before Project Conclusion".
 
 > **Note (May 2026):** Revised for one intern with realistic ramp-up. Week 1 is program orientation (no project work). Bernie is away Weeks 2–3; intern works self-directed. Weeks 3 and 5 are short (4-day). Intern has light capacity in Weeks 8–9 alongside poster/paper.
 
@@ -580,13 +794,14 @@ issues #37, #38, #39, #41, #52 show Open/In Progress but their code is merged; t
 closed before #42 is treated as unblocked in the tracker.
 
 Actual remaining work:
-- **#42** (Week 6–7) — Run the full 20-query acceptance suite (already written as automated tests
-  in `tests/assistant/test_search_integration.py`) through the tabbed `rocco_ui.py`; demo to BCC,
-  MP, ME. This is an execution/verification task, not authoring.
-- **Fix hanging test suite** — `pytest tests/assistant/test_graph_store.py` passes in isolation
-  (22/22), but `pytest tests/assistant/` (full directory) hangs indefinitely, likely on an
-  unmocked live network call (Semantic Scholar or Neo4j) somewhere in `test_search_integration.py`
-  or `test_tools.py`. Needs to be fixed before #43 can rely on a clean `pytest tests/ -v` run.
+- **#42** (Week 6–7) — Run the full acceptance suite (25 queries, already written as automated
+  tests in `tests/assistant/test_search_integration.py`) through the tabbed `rocco_ui.py`; demo to
+  BCC, MP, ME. This is an execution/verification task, not authoring.
+- ~~**Fix hanging test suite**~~ — **resolved.** The cause was live network tests running
+  unintentionally; they now carry a `live` marker and `pytest.ini` sets `addopts = -m "not live"`.
+  `pytest tests/ -v` is clean and reproducible: **381 passed, 64 deselected** (verified Aug 2026;
+  wall-clock varies by machine, typically under a minute). Run the excluded tier explicitly with
+  `pytest tests/ -m live -v`.
 - **#43** (Week 7) — Final index rebuild + evaluation + `docs/assistant.md`
 - **#45** (Week 7) — README, handoff doc, tag `v2.0.0`, demo video
 - **#46 / #48** (Week 8) — Poster write-up (Intern-A) + review (Bernie)
@@ -598,19 +813,195 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 
 ## Recent Changes
 
+### Multi-Part Questions Lost a Half; Response Assembly Added (August 2026)
+- **Fixed: a compound question returned only one of its halves.** Reported live —
+  "What is porosity and how do I compute it from a microCT image?" answered only the
+  workflow half. The model was not ignoring the request: it wrote the definition and
+  the code **deleted** it. Every early return in `chat()` assumed it owned the entire
+  user-facing string, so when one relayed tool's bytes became the response, any part of
+  the message that path didn't own was structurally unanswerable.
+- **`Segment` + `_assemble_response()`** (`conversation_manager.py`) — a turn's response
+  is now an ordered list of segments. `verbatim` segments are spliced byte-for-byte and
+  **never** pass through a model (this is the DOI/citation grounding guarantee);
+  `generated` segments come only from tools-unbound calls, so they cannot re-trigger the
+  native-tool-call 400 the relay short-circuits exist to avoid.
+  `_build_verbatim_response()` was already this pattern for one case; this generalizes it
+  so a new case is a call site, not another early return.
+- **`_needs_followup_tool_call()` → `_uncovered_requests()`.** The old gate asked for a
+  yes/no verdict and taught the boundary purely by example, and every example paired a
+  tool with a **second tool** — so a half needing *no* tool fell outside everything the
+  examples taught and the gate said "no follow-up". Its first sentence ("is one tool's
+  answer enough to fully address the question") was right; the examples overrode it.
+  The replacement decomposes the message and marks per-request coverage, which makes the
+  hard boundary ("what is X, and how is it measured?" — one request, covered) fall out of
+  the same rule as the easy cases, and hands the caller the uncovered part's text.
+  `needs_lookup` now tracks the Tier 3 line: a workflow half routes to a tool (which has
+  the verified tutorials), not to model memory.
+- **⚠️ Coverage is judged against the tool's ARGUMENTS, not just its description.** The
+  live failure turned out to be an *argument*, not a routing choice: the agent sent the
+  compound question to `get_educational_context` — which covers both halves — but narrowed
+  the argument to `"What is porosity?"`. Judging on tool name alone reported "nothing
+  uncovered": right about the tool, wrong about the turn.
+- **⚠️ The argument check is enforced in CODE, not by the prompt.** Two prompt revisions
+  failed to make the model perform step 2; asking it to quote the supporting argument text
+  failed too — live, 3/3 runs, it quoted the **user's question** instead (evidence "how do
+  I compute it from a microCT image" against arguments `{"question": "What is porosity?"}`).
+  So the model proposes the evidence and `_uncovered_requests` verifies the substring
+  actually occurs in the argument values. Same shape as
+  `reason_about_dataset_content`'s citation guard. The check can only move a verdict from
+  covered to uncovered, so its worst case is a redundant extra answer, never a dropped part.
+- **Also fixed: the gate failed *open* on malformed JSON.** `json.loads` failing meant
+  "nothing uncovered", so a format slip silently became a dropped half. Observed ~1-in-3
+  on repeated runs of the same input, with correct judgment every time — trailing commas,
+  and reasoning prose before a fenced block. `_parse_json_object()` recovers both. It only
+  scrapes a brace span *after* an outright parse failure: a valid bare array is a
+  wrong-shaped answer, not something to dig an envelope out of.
+- **`get_workflow_guidance` / `get_educational_context` descriptions** now carry the
+  "pass the question in full" rule `search_portal_docs` already had — the fix at the layer
+  that caused the narrowing. With it, the reported query passes the whole question through
+  and the tool answers both halves with no assembly needed; the gate is the safety net for
+  when the agent narrows anyway.
+- **The 400 recovery path now consults the gate at all.** It previously called
+  `_run_manual_dispatch` with no coverage check, so a correctly-detected multi-part turn
+  still collapsed to the one recovered call's output. That is the path the reported failure
+  actually took (its log reads "Tool-call format mismatch (400); attempting manual dispatch").
+- **Known-open: the two-tool grounding hole.** When 2+ self-contained/verbatim tools run in
+  one turn, `len(...) == 1` fails on both relay checks and the generic synthesis path asks
+  the model to "preserve DOIs verbatim" — a prompt-level plea this project has repeatedly
+  found unreliable. Observed dropping dataset rows and source labels entirely. Recorded as
+  an `xfail` (`test_q2_workflow_plus_dataset_search_live`). The fix is converting that path
+  to `_assemble_response` (one segment per tool result) — no new machinery, but it changes
+  the comparison/cross-intent output shape, so it was deliberately not bundled in here.
+- Tests: `TestUncoveredRequests`, `TestAssembleResponse`, `TestCompoundQuestionAssembly`,
+  `TestFourHundredRecoveryCoverage`, `TestParseJsonObject`, `TestArgumentEvidenceGuard`
+  (unit), plus `TestMultiPartQuestions` and `TestCoverageGateJudgment` (live). The live
+  judgment tier exists because the unit tests hand-feed the gate's JSON and structurally
+  cannot catch a prompt regression — the same blind spot that let the predecessor gate stay
+  green while answering wrongly. Verified 60/60 verdicts across 6 repeat runs.
+
+### Prompt Consolidation: Routing Rules Moved to Tool Descriptions (August 2026)
+- **`SYSTEM_PROMPT` (`conversation_manager.py`) cut roughly in half.** Its per-tool routing
+  bullets duplicated what `search_datasets`, `get_dataset_details`, `get_dataset_profile`, and
+  `reason_about_dataset_content` already say in their own descriptions — two authored copies of
+  one policy, with no shared source of truth. The tool description is the copy that stays: it's
+  where the agent reads it, and `get_dataset_details`' property list is generated from
+  `MANUAL_SCHEMA` so it can't drift from the live schema. `SYSTEM_PROMPT` now carries only the
+  knowledge tiers, the cross-tool boundaries no single description can own, and the response
+  contract.
+- **The three thin tool descriptions absorbed what moved.** `get_workflow_guidance`,
+  `get_educational_context`, and `search_portal_docs` were one-liners whose disambiguation logic
+  (scientific-method vs. portal-action "how do I X"; portal entity types vs. general science)
+  lived entirely in `SYSTEM_PROMPT`. That logic now sits in the descriptions, matching the other
+  five tools.
+- **⚠️ One deleted instruction turned out to be load-bearing for CODE and was restored.** The
+  "compose ONE self-contained question restating every accumulated constraint" rule is read by
+  `_continues_filter_chain()` and `_tool_filter_text()`, which detect a refinement turn by
+  checking whether the agent's composed question still carries the prior chain's subject terms.
+  Removing the instruction removes the behavior those two functions detect, so cross-turn
+  narrowing silently stops firing — the refinement runs over the whole catalog while the answer
+  still looks right, and `_cumulative_filter_text` stores a constraint-less question that
+  corrupts the chain for later turns. The unit tests do **not** catch this: they hand-feed
+  composed question strings and never exercise a real LLM composing one. The bullet is back in
+  `SYSTEM_PROMPT` with a `LOAD-BEARING, do not trim` comment naming both dependents. It also
+  now handles supersession ("above 0.3" then "below 0.25" replaces rather than ANDs), which the
+  original wording got wrong — blind AND-composition produces a contradiction that returns
+  nothing.
+- **`assistant.yaml` marked LEGACY** in-file. It was already documented as not-called-at-runtime
+  but read as live; the header comment now says so at the point of edit.
+- **Fixed: `MemorySaver` was documented but never implemented.** `create_react_agent` is called
+  with no checkpointer and `chat()` has no `session_id` — the docstring's usage example would
+  have raised `TypeError`. Corrected in `conversation_manager.py`'s module and class docstrings,
+  `docs/developer_guide/architecture.rst`, `CHANGELOG.md`, `Tasks.md`, and the agent-stack table
+  above. Real mechanism: caller-replayed `history=[...]` plus instance-level cross-turn state,
+  so isolation = one `ConversationManager` per session.
+
+### Content-Reasoning Gate Missed Non-"image" Artifact Nouns (August 2026)
+- **Fixed: `"both grayscale and segmented volumes"` did not fire `_needs_content_reasoning()`**
+  while the near-identical `"...segmented images"` did. The `both X and Y <noun>` pattern
+  hardcoded `images|scans|versions|forms|datasets`, so an equally relational question fell
+  through to Cypher and produced exactly the partial-answer overclaim the gate exists to
+  prevent — a plausible-looking list, with nothing signalling that the "both" half was never
+  checked.
+- The noun list is now `_IMAGE_ARTIFACT_NOUNS` (adds `volumes`, `stacks`, `tomograms`,
+  `reconstructions`, `segmentations`, `files`, `data`) — named and commented because it is the
+  part that needs extending as real phrasings turn up. It is also the pattern's **only** brake:
+  without a fixed noun list, `both X and Y` would match any two-item conjunction. Deliberately
+  over-inclusive, since a false positive costs one slower cited answer while a false negative
+  is a wrong answer presented as a verified one.
+
+### Follow-Up Turns Lost the Content-Reasoning Result Set (August 2026)
+- **Fixed: `reason_about_dataset_content` was not in `_DATASET_LISTING_TOOLS`**
+  (`conversation_manager.py`), so a content-reasoning turn was invisible to
+  `_track_dataset_listing`. Live symptom: "datasets where there are both raw and segmented
+  images" answered correctly (12 datasets), then "What are the lithologies of these?"
+  answered about a *different* set entirely. The turn didn't just fail to record its 12
+  results — it left the **stale** chain from several turns earlier ("datasets suitable for
+  training a segmentation model", 10 titles) in place looking current, so `_REFINEMENT_RE`
+  fired and refined a result set the user had moved on from, with nothing in the answer
+  revealing the substitution.
+  What makes a tool trackable is the **shape** of its output, not which relay path it takes:
+  content reasoning is self-contained rather than verbatim, but it renders the same
+  `- **Title** (DOI: ...)` bullets from graph records, so `_extract_dataset_mentions` parses
+  it unchanged. Any future tool that lists datasets must be added here too.
+- **Fixed: `_track_dataset_listing` could pair new filter text with an old result set.** It
+  updated `_cumulative_filter_text` unconditionally but `_last_dataset_mentions` only when a
+  turn parsed some, so a *fresh* listing turn naming nothing left the previous set attached to
+  a brand-new chain. A fresh turn with no mentions now clears them; a *refinement* turn still
+  keeps them ("of these, which are coal?" coming back empty doesn't change what "these" means).
+- **Fixed: the refinement dispatch fired with an empty `restrict_to_titles`.** `cypher_qa`
+  treats `[]` as *no restriction at all*, so it ran the compound question over the whole
+  catalog while logging a restricted search. Both the filter chain and a non-empty title list
+  are now required; otherwise the turn falls through to normal routing and logs which half
+  was missing.
+- Regression tests: `tests/assistant/test_conversation_manager.py`
+  (`TestContentReasoningIsTrackedAsADatasetListing`, `TestStaleListingIsNotLeftLookingCurrent`).
+
+### Content Reasoning Tool + `INPUT_FOR` Direction Fix (August 2026)
+- **New `reason_about_dataset_content` tool** (`tools.py`) — one general mechanism for any
+  question a literal field lookup can't settle. Precomputed `Dataset.factSheet`/`factSheetText`
+  + `factSheetEmbedding`/`datasetFactSheetFulltext` indexes (built by
+  `build_dataset_vector_index.py`), ranked by the *existing* `hybrid_search` RRF fusion
+  (extracted into a shared `_rrf_merge`), then one cited reasoning pass
+  (`src/prompts/corpus_reasoning.yaml`). Gated deterministically via
+  `_needs_content_reasoning()` in both `get_dataset_details` and `search_datasets`. See
+  §Content Reasoning above and `docs/user_guide/content_reasoning.rst`.
+- **Fixed: `INPUT_FOR` was documented and queried backwards.** The live graph has
+  `(DigitalDataset)-[:INPUT_FOR]->(Sample)` (child → parent, "was derived from"), not the
+  reverse. `get_dataset_profile()`'s Cypher, `MANUAL_SCHEMA` (which grounds all generated
+  Cypher), and `docs/neo4j_schema.md` all had it inverted, so every profile's organizational
+  structure section was silently empty and every scan was reported as having no sample link.
+  Verified against edge counts and `load_graph.py`. See the ⚠️ section above.
+- **Fixed: `get_dataset_profile()` query was pathologically slow.** Its four chained
+  `OPTIONAL MATCH`es cross-multiplied before `collect()` — measured at 28s on the largest live
+  dataset (961 sub-nodes) with only the `PART_OF` joins, and not completing within 300s once the
+  `INPUT_FOR` joins were restored. Now one small flat query per node/edge type, assembled in
+  Python: **0.8s** for that same dataset. The build script uses the same decomposition in bulk
+  (184 datasets in 1.3s).
+- Fact sheets are capped and truncated at every level, never silently — an uncapped pipeline
+  list took one live dataset's fact sheet to 129k characters before the cap was added.
+
 ### Schema Audit & Reference Doc (May 2026)
 - Added `scripts/audit_schema.py` — scans `data/metadata/*.json` to compute node counts,
   % non-null coverage, and distinct enum values for all 7 node labels. Run offline (no Neo4j
   required) or with `--neo4j` for live coverage verification.
-- Added `--verify` flag: cross-checks a loaded Neo4j graph for completeness (176 datasets),
+- Added `--verify` flag: cross-checks a loaded Neo4j graph for completeness (176 datasets at the
+  time; 184 as of August 2026 — the expected count is derived from `--folder`, not hardcoded),
   property correctness (title, doi, description, authors, publicationDate), sub-node counts,
   and relationship counts.
 - Generated `docs/neo4j_schema.md` — intern Cypher reference doc with full schema, coverage
   percentages, enum value lists, vector index info, starter Cypher queries, and a
   **Graceful Degradation Tiers** guide (always attempt queries; tier governs response messaging
   when results are empty).
-- Key finding: all imaging metadata fields (`imagingCenter`, `imagingEquipmentAndModel`, etc.)
-  are 0% in current data — assistant must not assume these exist.
+- Key finding: imaging metadata fields (`imagingCenter`, `imagingEquipmentAndModel`,
+  `imageFormat`, `dimensionality`, …) are far too sparse to filter on — measured at 1–11%
+  coverage as of the August 2026 regeneration (they read 0% in the original May run). A tiny
+  non-zero coverage is the more dangerous case: such a filter returns a few rows while dropping
+  the rest of the catalog, so it looks like it worked. The assistant must not assume these exist.
+  Instrument/modality questions belong to `reason_about_dataset_content`, which reads the
+  free-text descriptions where scanner names actually live.
+- The degradation-tier tables in `docs/neo4j_schema.md` are **computed** from the coverage
+  numbers, not hand-maintained — they used to be hardcoded and drifted into asserting 0% long
+  after the data changed.
 - `Tasks.md` updated: `load_graph.py` replaces the old notebook for data loading;
   `audit_schema.py --verify` is now the verification step.
 
@@ -627,7 +1018,7 @@ See `Tasks.md` §"Remaining Work Before Project Conclusion" for the full checkli
 ### General Assistant Skeleton (May 2026)
 - Created `src/assistant/` with working implementations ported from legacy `Chatbot/` folder
 - `conversation_manager.py` is the top-level orchestrator (renamed from `assistant.py` to avoid confusion with Intern B's educational work); `assistant.py` is a one-line re-export
-- Agent upgraded from legacy `AgentExecutor` (removed in langchain 1.x) to `langgraph.prebuilt.create_react_agent` + `MemorySaver`
+- Agent upgraded from legacy `AgentExecutor` (removed in langchain 1.x) to `langgraph.prebuilt.create_react_agent` (no checkpointer — see the agent-stack table above)
 - LLM/embeddings for assistant use `ChatOpenAI` + `OpenAIEmbeddings` from `langchain_openai` (provider-agnostic via `.env`; `langchain_sambanova` not required)
 - `graph_store.py` documents full Neo4j schema; Neo4j imports are lazy so `USE_NEO4J=false` works without the driver loading
 - `scripts/scrape_metadata.py` ported from `CurationTools/ScrapesMetadata.py`

@@ -1,7 +1,11 @@
-Quick Start
-===========
+Quick Start: Description Curator
+==================================
 
-Get up and running with Rocco!
+Get up and running with the Description Curator!
+
+.. note::
+
+   Looking for the General Assistant instead? See :doc:`quickstart_assistant`.
 
 Step 1: Install & Configure
 ----------------------------
@@ -24,7 +28,7 @@ Step 1: Install & Configure
 
 **Quick provider choices:**
 
-- **Gemini (free tier)**: Get a free key at https://studio.google.dev/gemini
+- **Gemini (free tier)**: Get a free key at https://aistudio.google.com/app/apikey
 - **Ollama (free, local)**: Follow the WSL2 setup instructions in the Configuration guide (no API key needed)
 - **Anthropic, OpenAI, DeepSeek, etc.**: All supported — see Configuration for full list
 
@@ -35,7 +39,8 @@ Step 2: Start the App
 
    streamlit run rocco_ui.py
 
-Your browser will automatically open to ``http://localhost:8501``.
+Your browser will automatically open to ``http://localhost:8501``. Select **"Description
+Curator"** from the page selector.
 
 Step 3: Enter a Dataset Description
 -------------------------------------
@@ -63,8 +68,8 @@ Click **"Evaluate Description"** to score your description against **10 research
      - Are the goals of the study clearly described?
    * - **Porous Media Type**
      - Is the type of porous media specified?
-   * - **Research Question**
-     - Does the description state the research question the data is helping to solve?
+   * - **Research Problem**
+     - Does the description state the research problem the data is helping to solve?
    * - **Reuse and Beneficiaries**
      - Does the description explain who would benefit from reusing this data and how?
    * - **Methodology**
@@ -101,7 +106,9 @@ Rocco suggests improvements to your description using **Retrieval-Augmented Gene
 
    .. tab:: With context documents
 
-      Click **"Upload Files"** and add one or more PDF or DOCX file with relevant background. These could be:
+      Click **"Upload Files"** and add one or more PDF files with relevant background (the
+      Streamlit app accepts PDF only; DOCX is supported when using the ingestion pipeline
+      programmatically — see :doc:`rag`). These could be:
 
       - Research papers and manuscripts
       - Technical protocols or standards
@@ -167,11 +174,10 @@ Tips & Best Practices
 **Try Different Models**
    Different LLM models have different strengths. Try changing the model in your ``.env`` file.
 
-
-
 What's Next?
 -------------
 
 - **Full configuration guide**: :doc:`configuration` — all LLM providers, models, and options
+- **General Assistant quick start**: :doc:`quickstart_assistant` — dataset discovery, domain Q&A, and more
 - **Under the hood**: :doc:`../developer_guide/architecture` — how Rocco works, extending it
 - **Contributing**: :doc:`../developer_guide/contributing` — report issues, contribute improvements

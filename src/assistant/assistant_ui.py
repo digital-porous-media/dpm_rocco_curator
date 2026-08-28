@@ -15,20 +15,29 @@ _DOI_RE = re.compile(r'DOI:\s*(10\.[^\s)]+)')
 
 _BARE_URL_RE = re.compile(r'(?<!\]\()(https?://\S+?)(?=[\s)]|$)')
 
+# Keep in sync with the labels the tools actually emit (grep for "source_label" and the
+# literal "[... match]" strings in tools.py / graph_store.py / literature_search.py /
+# portal_docs_retrieval.py). A label missing from here doesn't fail loudly — it just renders
+# as literal "[bracketed text]" in the chat, which is how `content reasoning` went unbadged.
 _SOURCE_LABEL_RE = re.compile(
-    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar|cypher match|portal docs)\]',
+    r'\[(graph match|hybrid match|semantic match|component match|paper match|semantic scholar'
+    r'|cypher match|portal docs|dataset profile|content reasoning)\]',
     re.IGNORECASE,
 )
 
 _LABEL_COLORS = {
-    "graph match":      "#1f77b4",
-    "hybrid match":     "#1f77b4",
-    "semantic match":   "#2ca02c",
-    "component match":  "#17becf",
-    "paper match":      "#9467bd",
-    "semantic scholar": "#9467bd",
-    "cypher match":     "#ff7f0e",
-    "portal docs":      "#d62728",
+    "graph match":       "#1f77b4",
+    "hybrid match":      "#1f77b4",
+    "semantic match":    "#2ca02c",
+    "component match":   "#17becf",
+    "paper match":       "#9467bd",
+    "semantic scholar":  "#9467bd",
+    "cypher match":      "#ff7f0e",
+    "portal docs":       "#d62728",
+    "dataset profile":   "#8c564b",
+    # Deliberately distinct from the grounded-match colors: this label marks a reasoned,
+    # explicitly-unverified candidate, not a database hit.
+    "content reasoning": "#7f7f7f",
 }
 
 
@@ -106,6 +115,15 @@ def render_assistant_tab() -> None:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = st.session_state.assistant_manager.chat(question, history=prior_history)
+            if not response or not response.strip():
+                # Belt-and-suspenders: ConversationManager.chat() should never return an
+                # empty string (see conversation_manager.py's _non_empty), but an empty
+                # assistant turn appended to history here would be replayed on every later
+                # call and tends to keep tripping the same failure — never let it through.
+                response = (
+                    "I wasn't able to put together a response for that — could you try "
+                    "rephrasing?"
+                )
             st.markdown(_render_response(response), unsafe_allow_html=True)
 
         st.session_state.assistant_messages.append({"role": "assistant", "content": response})

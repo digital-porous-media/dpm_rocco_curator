@@ -3,42 +3,43 @@ from __future__ import annotations
 Shared conversation manager for the General Assistant.
 
 Top-level orchestrator for the Rocco General Assistant. Wraps a LangGraph
-ReAct agent with in-memory per-session checkpointing. There is no hardcoded
-intent dispatcher — the LLM selects tools based on their descriptions and the
-system prompt below.
+ReAct agent, surrounded by deterministic gates and dispatch paths. There is no
+hardcoded intent dispatcher — the LLM selects tools based on their descriptions
+and the system prompt below.
 
-Intent → Tool Routing
----------------------
-The agent performs routing implicitly. The mapping is:
+Per-tool routing rules live in each tool's own description in tools.py, not in
+SYSTEM_PROMPT: that is where the agent reads them, and where they stay in sync
+with the live Neo4j schema. SYSTEM_PROMPT carries only the knowledge tiers,
+cross-tool boundaries, and the response contract.
 
-  Intent                  Primary tool(s)
-  ----------------------  -------------------------------------------------------
-  Dataset discovery       search_datasets        (semantic similarity, Neo4j vector index;
-                                                  purpose/suitability queries with no
-                                                  precise checkable property named)
-  Structured queries      get_dataset_details    (Cypher QA; any query naming a concrete
-                                                  property, numeric threshold/range, or
-                                                  multiple values/fields — even combined
-                                                  with a rock type or imaging method)
-  Portal how-to / schema  search_portal_docs     (dpm_docs markdown parsed into a heading
-                                                  tree at runtime, LLM-selected sections —
-                                                  see src/assistant/portal_docs_tree.py)
-  Domain Q&A              get_educational_context (workflows + global best practices)
-  Workflow guidance       get_workflow_guidance   (step-by-step DRP workflows + tutorial links)
-  Literature              search_literature       (Semantic Scholar API)
-  Vague / ambiguous       expand_query (internal) (called before search; NOT a LangChain tool)
+For which tool answers which kind of question, read the tool descriptions in tools.py —
+they are the routing signal the agent actually sees, and restating them here would create
+a third copy to keep in sync.
 
 Cross-intent queries (e.g. "explain relative permeability and find me datasets that measure
 it") trigger multiple tool calls in sequence. The agent synthesizes results into one response,
 preserving the source labels ([graph match], [semantic scholar], etc.) returned by each tool.
 
-Session isolation: each session_id maps to an independent MemorySaver thread. Memory resets
-on process restart — there is no persistent storage.
+Not all routing is the agent's. Three tools-unbound classifier gates (off-domain, tool-need,
+request-coverage) and several deterministic dispatch paths (multi-dataset comparison,
+cumulative-filter refinement) run around the agent and can bypass its tool selection entirely
+for a turn — see chat().
+
+A turn's response is assembled from segments (see Segment/_assemble_response), not returned as
+one string by whichever path won. That is what lets a single relayed tool answer coexist with an
+answer to the part of the message it didn't cover.
+
+Session isolation: there is no LangGraph checkpointer and chat() takes no session_id.
+Prior turns are replayed by the caller via chat(..., history=[...]), and cross-turn
+result-set state lives on the ConversationManager instance — so isolation means one
+instance per user session (assistant_ui.py caches it in st.session_state). Memory resets
+on process restart; there is no persistent storage. See ConversationManager's docstring.
 """
 
 import json
 import logging
 import re
+from dataclasses import dataclass
 
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import create_react_agent
@@ -67,7 +68,21 @@ _VERBATIM_TOOLS = {"search_datasets", "get_dataset_details"}
 # dumps instead of an answer. Its own LLM call (portal_docs.yaml) does that
 # synthesis and cites [portal docs] sources, so it's self-contained like
 # get_educational_context/get_workflow_guidance.
-_SELF_CONTAINED_TOOLS = {"get_workflow_guidance", "get_educational_context", "search_portal_docs"}
+# get_dataset_profile also belongs here, not in _VERBATIM_TOOLS: it must reason over its
+# fetched graph data (file-format/"how do I read this" guidance, reuse-suitability
+# judgments, a concise high-level synthesis for general "tell me more" questions) rather
+# than reproduce a fixed data shape verbatim — its own LLM call (dataset_profile.yaml) is
+# grounded in the real fetched profile and prepends a code-generated, never-retyped
+# [dataset profile] title/DOI header, same as the other self-contained tools' own citations.
+# reason_about_dataset_content belongs here for the same reason: it composes a fixed,
+# non-negotiable honesty framing plus a citation-checked shortlist whose titles/DOIs come
+# from graph records, never from the model. Letting the outer agent retype that would put
+# the framing sentence and the citations back in the model's hands — exactly the two
+# things the tool exists to guarantee in code.
+_SELF_CONTAINED_TOOLS = {
+    "get_workflow_guidance", "get_educational_context", "search_portal_docs", "get_dataset_profile",
+    "reason_about_dataset_content",
+}
 
 # Tags search_datasets prepends for the narrator's benefit only — never meant to
 # reach the user as literal bracketed text (see tools.py: rationale/weak-match tags).
@@ -146,7 +161,7 @@ def _generate_lead_in(user_input: str, tool_output: str) -> str:
     the LLM to add; a plain confident match uses _DEFAULT_LEAD_IN directly without an
     LLM call at all, since the model isn't reliably steerable away from inventing
     "no results" framing even when tool_output contains none (see history below)."""
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -154,11 +169,8 @@ def _generate_lead_in(user_input: str, tool_output: str) -> str:
             {"role": "system", "content": _WRAPPER_SYSTEM_PROMPT},
             {"role": "user", "content": f"User query: {user_input}\n\nTool context:\n{tool_output}"},
         ])
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        lead_in = (json.loads(raw.strip()).get("lead_in") or _DEFAULT_LEAD_IN).strip()
+        raw = strip_code_fences(response.content)
+        lead_in = (json.loads(raw).get("lead_in") or _DEFAULT_LEAD_IN).strip()
     except Exception as e:
         logger.warning("Lead-in generation failed (%s); using default.", e)
         return _DEFAULT_LEAD_IN
@@ -204,6 +216,59 @@ def _build_verbatim_response(user_input: str, tool_output: str) -> str:
 
     return "\n\n".join([lead_in, display_block, _VERIFICATION_DISCLAIMER])
 
+
+# --- Response assembly -----------------------------------------------------
+#
+# A turn's answer is a LIST of segments, not one string owned by whichever code path
+# won the race. Every early return in chat() used to assume it owned the entire
+# user-facing response, which made any part of the user's message that path didn't own
+# structurally unanswerable: a compound question ("what is porosity AND how do I
+# compute it from a microCT image") had its no-tool half written by the model and then
+# discarded when the tool's output was relayed verbatim. Reported live, Aug 2026.
+#
+# Two kinds, and the distinction IS the grounding guarantee:
+#   "verbatim"  — tool bytes. Spliced in untouched, NEVER passed through a model. This
+#                 is what keeps real DOIs/titles/notebook paths off the model's
+#                 retyping path (see _VERBATIM_TOOLS / _SELF_CONTAINED_TOOLS).
+#   "generated" — model prose: lead-ins, and answers to parts of the question no tool
+#                 covered. Produced ONLY by tools-unbound calls, so it cannot re-trigger
+#                 the native-tool-call 400 that the relay short-circuits exist to avoid.
+#
+# _build_verbatim_response above is this same pattern, arrived at once already for one
+# case (generated lead-in + verbatim block + fixed disclaimer). This generalizes it, so
+# a new case becomes a call site rather than another early return. The two-self-contained
+# -tool grounding hole below (`len(...) == 1` fails, so the generic synthesis retypes both
+# grounded answers) is the next one to convert, and needs no new machinery here.
+@dataclass
+class Segment:
+    """One piece of an assembled response.
+
+    `order` is the position of the request this segment answers within the user's
+    message, so a definition asked first reads first and the result is one answer
+    rather than two stapled together. Sorting is stable, so equal orders keep the
+    order they were appended in.
+    """
+
+    kind: str  # "verbatim" | "generated"
+    content: str
+    order: int = 0
+
+
+def _assemble_response(segments: list[Segment]) -> str:
+    """Join segments into the final response, in request order.
+
+    Empty or whitespace-only segments are dropped rather than left as a blank gap: a
+    generated segment legitimately comes back empty when its LLM call failed, and the
+    verbatim tool output — real, grounded data — must still reach the user in that case.
+    Guarantees a non-empty result for the same reason _non_empty does; an empty string
+    appended to the UI's history poisons every later turn's replayed context.
+    """
+    ordered = sorted(
+        [s for s in segments if s.content and s.content.strip()],
+        key=lambda s: s.order,
+    )
+    return _non_empty("\n\n".join(s.content.strip() for s in ordered))
+
 logger = logging.getLogger(__name__)
 
 # Llama-4-Maverick emits its native function-call tokens as plain text when
@@ -213,15 +278,19 @@ _TOOL_CALL_RE = re.compile(r'<\|python_start\|>.*?<\|python_end\|>', re.DOTALL)
 # Error substrings that indicate LiteLLM rejected the model's tool-call format.
 _TOOL_FORMAT_ERRORS = ("JSONDecodeError", "dict_type", "Invalid function calling output")
 
-# Maps each tool name to its primary string parameter key.
-# Used to reconstruct tool calls from the error's model_output field.
-_TOOL_PARAM_KEYS: dict[str, str] = {
-    "get_educational_context": "question",
-    "get_workflow_guidance": "goal",
-    "search_datasets": "query",
-    "get_dataset_details": "question",
-    "search_literature": "query",
-    "search_portal_docs": "question",
+# Maps each tool name to its required string parameter key(s), in call order.
+# Used to reconstruct tool calls from the error's model_output field. Most tools take
+# exactly one required param; get_dataset_profile takes two (dataset_reference, question) —
+# both extraction functions below iterate this list rather than assuming a single key.
+_TOOL_PARAM_KEYS: dict[str, list[str]] = {
+    "get_educational_context": ["question"],
+    "get_workflow_guidance": ["goal"],
+    "search_datasets": ["query"],
+    "get_dataset_details": ["question"],
+    "get_dataset_profile": ["dataset_reference", "question"],
+    "reason_about_dataset_content": ["question"],
+    "search_literature": ["query"],
+    "search_portal_docs": ["question"],
 }
 
 # Returned when a tool call was identified but produced nothing usable after a 400
@@ -231,6 +300,371 @@ _HONEST_TOOL_FAILURE_MSG = (
     "I wasn't able to complete that lookup due to an internal issue processing the "
     "request. Could you try rephrasing your question?"
 )
+
+
+def _non_empty(text: str | None, fallback: str = _HONEST_TOOL_FAILURE_MSG) -> str:
+    """Guarantee a non-empty, non-whitespace-only response string.
+
+    A leaked `<|python_start|>...<|python_end|>` block that is stripped down to nothing by
+    _clean_response (or a synthesis LLM call that returns an empty completion) must never
+    surface as a literal "" response: appending "" into the UI's session history poisons
+    every later turn's replayed context (see HANDOFF.md — this was the actual mechanism
+    behind "comparing two datasets silently returns nothing, and subsequent turns also
+    return nothing until a different tool is used")."""
+    return text if text and text.strip() else fallback
+
+
+# Dataset-listing tools whose rendered output includes an ordered list of "Title (DOI: ...)"
+# entries — used by _extract_dataset_mentions/_resolve_reference below to let a later
+# ordinal/name-only follow-up ("the first one", "the Gildehauser sandstone sample") resolve
+# deterministically instead of relying solely on the LLM re-deriving it from raw chat history.
+#
+# reason_about_dataset_content belongs here even though it is NOT a verbatim tool (it is
+# self-contained — see _SELF_CONTAINED_TOOLS): what makes a tool trackable is the SHAPE of
+# its output, not which relay path it takes. Its answer renders the same
+# "- **Title** (DOI: ...)" bullets as _format_dataset_rows, from graph records rather than
+# retyped by the model, so _extract_dataset_mentions parses it unchanged.
+#
+# Leaving it out was live-observed producing a wrong answer, not merely a missed one: a
+# content-reasoning turn ("datasets with both raw and segmented images", 12 results) went
+# completely untracked, so the very next turn's "What are the lithologies of these?" matched
+# _REFINEMENT_RE and refined the STALE listing still held from several turns earlier
+# ("datasets suitable for training a segmentation model"). "These" silently resolved to a
+# result set the user had already moved on from, with nothing in the answer to reveal the
+# substitution. An untracked dataset-listing turn doesn't just fail to update this state —
+# it leaves the previous turn's state in place looking current.
+_DATASET_LISTING_TOOLS = _VERBATIM_TOOLS | {"reason_about_dataset_content"}
+
+_DATASET_MENTION_PATTERNS = [
+    # search_datasets/hybrid_search: "[label] Title — matched via ... (DOI: xxx)"
+    re.compile(r'^\[[\w\s]+\]\s+(?P<title>.+?)(?:\s+—\s+matched via[^(\n]*)?\s*\(DOI:\s*(?P<doi>[^)]*)\)', re.MULTILINE),
+    # get_dataset_details / _format_dataset_rows: "- **Title** (DOI: xxx)"
+    re.compile(r'^-\s+\*\*(?P<title>.+?)\*\*\s*\(DOI:\s*(?P<doi>[^)]*)\)', re.MULTILINE),
+]
+
+
+def _extract_dataset_mentions(tool_output: str) -> list[dict]:
+    """Best-effort, ordered extraction of {"title", "doi"} pairs from a dataset-listing
+    tool's rendered text. Not a structured API — these tools return plain strings by design
+    (see _VERBATIM_TOOLS) — so this just parses the same "Title (DOI: xxx)" shapes a human
+    reader would use to identify which dataset is "the first one"."""
+    mentions: list[dict] = []
+    seen_titles: set[str] = set()
+    for pattern in _DATASET_MENTION_PATTERNS:
+        for m in pattern.finditer(tool_output):
+            title = m.group("title").strip()
+            doi_raw = m.group("doi").strip()
+            doi = doi_raw if doi_raw and doi_raw.lower() != "not available" else None
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                mentions.append({"title": title, "doi": doi})
+    return mentions
+
+
+# get_dataset_profile's own code-generated, never-retyped header (tools.py:
+# f"[dataset profile] {title} (DOI: {doi})") — parsed the same deterministic way as
+# _DATASET_MENTION_PATTERNS above so a later anaphoric comparison ("how does that
+# dataset compare with X") can resolve "that dataset" to whichever single dataset was
+# profiled most recently, the same way _resolve_reference resolves against a listing.
+_PROFILE_HEADER_RE = re.compile(r'^\[dataset profile\]\s+(?P<title>.+?)\s*\(DOI:\s*(?P<doi>[^)]*)\)', re.MULTILINE)
+
+
+def _extract_profiled_dataset(tool_output: str) -> dict | None:
+    """Parse the {"title", "doi"} of a single get_dataset_profile call from its header.
+    Returns None if the text doesn't start with a recognizable profile header (e.g. an
+    ambiguous-match or not-found response, which has no dataset to remember)."""
+    m = _PROFILE_HEADER_RE.search(tool_output)
+    if not m:
+        return None
+    title = m.group("title").strip()
+    doi_raw = m.group("doi").strip()
+    doi = doi_raw if doi_raw and doi_raw.lower() != "not available" else None
+    return {"title": title, "doi": doi} if title else None
+
+
+_ORDINAL_WORDS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+    "fifth": 4, "5th": 4,
+    "last": -1,
+}
+_ORDINAL_RE = re.compile(
+    r'\b(' + '|'.join(re.escape(w) for w in _ORDINAL_WORDS) + r')\b(?:\s+(?:one|dataset|result))?',
+    re.IGNORECASE,
+)
+
+
+def _title_mentioned(title: str, lowered_message: str) -> bool:
+    """True if `title` — or a distinguishing leading portion of it — appears in
+    `lowered_message` (already lowercased). Titles are often longer/more formal than how a
+    user refers to them conversationally (e.g. the user says "Leman Sandstone" for a mention
+    titled "Leman Sandstone SEM Images"), so a full-title-only substring check misses real
+    references. Falls back to the title's leading two words (or the whole title, if it's
+    shorter than that) as an anchor — long enough to avoid a single generic word like
+    "sandstone" alone matching everything, short enough to tolerate a truncated title."""
+    t = title.lower()
+    if t in lowered_message:
+        return True
+    words = t.split()
+    anchor_len = min(2, len(words))
+    if anchor_len == 0:
+        return False
+    return " ".join(words[:anchor_len]) in lowered_message
+
+
+def _resolve_reference(user_input: str, mentions: list[dict]) -> dict | None:
+    """Deterministically resolve an ordinal reference ("the first one", "the last result")
+    or an unambiguous dataset-title mention (see _title_mentioned) in `user_input` against
+    `mentions` (the most recent dataset-listing tool's parsed results this session). Returns
+    the matched {"title", "doi"} dict, or None if there's no confident match — in which case
+    chat() falls back to today's LLM-only resolution from replayed conversation history.
+
+    Deliberately conservative: an ordinal out of range, or a title mention matching more
+    than one prior mention, returns None rather than guessing — a missed deterministic
+    resolution just falls back to the existing (imperfect) behavior; a wrong guess would
+    silently point the user at the wrong dataset."""
+    if not mentions:
+        return None
+
+    m = _ORDINAL_RE.search(user_input)
+    if m:
+        idx = _ORDINAL_WORDS[m.group(1).lower()]
+        try:
+            return mentions[idx]
+        except IndexError:
+            pass
+
+    lowered = user_input.lower()
+    name_matches = [mn for mn in mentions if mn["title"] and _title_mentioned(mn["title"], lowered)]
+    if len(name_matches) == 1:
+        return name_matches[0]
+
+    return None
+
+
+# Matches a literal DOI typed directly in a user message (e.g. "compare X (DOI: 10.17612/...)
+# and Y (DOI: 10.17612/...)"). Stops before trailing sentence punctuation/closing paren so it
+# doesn't swallow a ")" or "." immediately following the DOI.
+_DOI_IN_TEXT_RE = re.compile(r'10\.\d{4,9}/[^\s,).]+', re.IGNORECASE)
+
+# Bare anaphoric references to "the dataset I was just told about" rather than a named
+# one — "that dataset", "this one", "the other dataset". Only meaningful alongside
+# last_profiled below; on its own it can't be resolved to anything.
+_DATASET_ANAPHORA_RE = re.compile(r'\b(that|this|the other) (dataset|one)\b', re.IGNORECASE)
+
+
+# The argument each dataset-listing tool carries its actual search text in.
+_FILTER_TEXT_ARG_KEYS = ("question", "query")
+
+
+def _tool_filter_text(tool_args: dict | None, fallback: str) -> str:
+    """The text that should become _cumulative_filter_text after a dataset-listing tool ran.
+
+    Prefer the tool's OWN argument over the raw user message. The two diverge exactly when it
+    matters: on a follow-up turn like "How about any below 0.25?", the raw message carries no
+    trace of the constraints established earlier, while the agent (following SYSTEM_PROMPT's
+    instruction to compose one self-contained question) actually calls the tool with
+    "sandstone datasets with porosity below 0.25". Storing the raw message discarded the
+    accumulated "sandstone" constraint, so the NEXT refinement composed its compound question
+    from a filter chain that had silently forgotten two turns of context — observed live.
+
+    Falls back to `fallback` (the user's message) when the call carries no usable text
+    argument, which keeps behavior unchanged for the deterministic dispatch paths that pass
+    their own composed text explicitly.
+    """
+    for key in _FILTER_TEXT_ARG_KEYS:
+        value = (tool_args or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+def _tool_args_by_call_id(messages: list) -> dict:
+    """Map tool_call_id -> args for every tool call requested in `messages`, so a ToolMessage
+    result can be traced back to the arguments it was produced from."""
+    args_by_id: dict = {}
+    for m in messages:
+        for call in getattr(m, "tool_calls", None) or []:
+            call_id = call.get("id")
+            if call_id:
+                args_by_id[call_id] = call.get("args") or {}
+    return args_by_id
+
+
+def _detect_comparison_references(
+    user_input: str, mentions: list[dict], last_profiled: dict | None = None
+) -> list[str] | None:
+    """Deterministically collect 2+ distinct dataset references named in ONE message —
+    e.g. "compare X (DOI: ...) and Y (DOI: ...)", "difference between the first and second",
+    "how do X and Y compare" (where X/Y are titles from a prior result list) — and return
+    them as resolved reference strings (DOI when available, else title), or None if fewer
+    than 2 are found.
+
+    This exists because getting the ReAct agent to reliably call get_dataset_profile twice
+    in one turn depends on three independent, individually-unreliable steps succeeding
+    together (the followup-tool-gate classifier, the model's own choice to emit a second
+    tool call, and — if a 400 forces manual recovery — both calls being parseable out of the
+    error text). Live testing showed this chain drops the second dataset often enough, even
+    when both DOIs are given explicitly, that it isn't viable as the sole mechanism. When
+    this function finds 2+ references, chat() dispatches get_dataset_profile for all of them
+    directly, bypassing the agent's own tool-selection for this turn entirely.
+
+    last_profiled: the {"title", "doi"} of whichever single dataset get_dataset_profile most
+    recently returned (see _extract_profiled_dataset), used to resolve a bare anaphoric
+    reference — "how does THAT DATASET compare with the downscaling-based one" — to the
+    dataset actually being talked about. Without this, "that dataset" matches none of the
+    explicit-reference checks below (it's not a DOI, ordinal, or title substring), so a
+    message naming one dataset explicitly plus one anaphoric reference was only ever
+    resolving to a single ref and silently falling through to the unreliable agent path
+    this function exists to bypass."""
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    for m in _DOI_IN_TEXT_RE.finditer(user_input):
+        doi = m.group(0)
+        if doi.lower() not in seen:
+            seen.add(doi.lower())
+            refs.append(doi)
+
+    for om in _ORDINAL_RE.finditer(user_input):
+        idx = _ORDINAL_WORDS[om.group(1).lower()]
+        try:
+            mn = mentions[idx]
+        except IndexError:
+            continue
+        ref = mn.get("doi") or mn.get("title")
+        if ref and ref.lower() not in seen:
+            seen.add(ref.lower())
+            refs.append(ref)
+
+    lowered = user_input.lower()
+    for mn in mentions:
+        title = mn.get("title")
+        if not title:
+            continue
+        doi = mn.get("doi")
+        if doi and doi.lower() in seen:
+            continue  # already captured via its literal DOI above
+        if title.lower() in seen:
+            continue
+        if _title_mentioned(title, lowered):
+            # Prefer the mention's known DOI over the bare title: get_dataset_profile
+            # resolves a DOI exactly, but a bare title only CONTAINS-matches, which goes
+            # ambiguous whenever another dataset's title contains this one as a substring
+            # (e.g. "Belgian Fieldstone" vs "DRP Visualization Challenge: Belgian
+            # Fieldstone") — exactly the ambiguity this deterministic path exists to avoid.
+            seen.add(title.lower())
+            if doi:
+                seen.add(doi.lower())
+            refs.append(doi or title)
+
+    if len(refs) == 1 and last_profiled and _DATASET_ANAPHORA_RE.search(user_input):
+        ref = last_profiled.get("doi") or last_profiled.get("title")
+        if ref and ref.lower() not in seen:
+            refs.append(ref)
+
+    return refs if len(refs) >= 2 else None
+
+
+# Matches a message that narrows/refines a previous dataset-listing result rather than
+# starting a fresh, unrelated search — "of these", "which of these", "any of those",
+# "now filter/narrow further", etc.
+_REFINEMENT_RE = re.compile(
+    r'\b(of (these|those)\b|which (of (these|those)|ones)\b|among (these|those)\b|'
+    r'from (these|those)\b|out of (these|those)\b|any of (these|those)\b|'
+    r'now (filter|narrow)|filter (further|again)|narrow (it |them )?(down|further))',
+    re.IGNORECASE,
+)
+
+
+# Elliptical follow-ups: a bare constraint carrying no subject of its own ("how about any
+# below 0.25?", "any with porosity under 0.2", "just the ones above 5 microns"). These refine
+# the current result set just as much as _REFINEMENT_RE's phrasings do, but they deliberately
+# do NOT take the same deterministic compound-question dispatch, because that path ANDs the
+# new text onto the entire prior chain. That is right for a genuine narrowing ("of these,
+# which are segmented") and wrong here, where the new constraint SUPERSEDES an earlier one on
+# the same property: "porosity above 0.3" AND "any below 0.25" composes to a contradiction and
+# returns nothing.
+#
+# The agent handles supersession correctly on its own — live-observed calling
+# get_dataset_details with "sandstone datasets with porosity below 0.25" after exactly that
+# exchange. What it does not do is keep the answer inside the previously listed set. So for
+# these phrasings the agent composes the question and chat() injects restrict_to_titles into
+# its call (see _with_result_set_restriction), combining the agent's phrasing with the
+# deterministic scope guarantee.
+#
+# "How about"/"what about" alone is NOT enough to match: it must be followed by a comparison
+# word. That is what keeps a topic change ("What about carbonate datasets?") — which names a
+# new subject and should search the whole catalog — out of this path.
+_ELLIPTICAL_REFINEMENT_RE = re.compile(
+    r'\b(?:how|what)\s+about\b[^?]*\b(?:below|above|under|over|less\s+than|greater\s+than|'
+    r'more\s+than|fewer\s+than|between|higher|lower|smaller|larger|finer|coarser)\b'
+    r'|^\s*(?:and\s+|or\s+)?any\s+(?:with|below|above|under|over|less|greater|more|fewer|'
+    r'smaller|larger|higher|lower|finer|coarser)\b'
+    r'|\b(?:just|only)\s+(?:the\s+)?(?:ones|those)\b'
+    r'|\bnarrow\s+(?:it|them|that|this)\b|\brestrict\b',
+    re.IGNORECASE,
+)
+
+
+# Words that carry no subject information, so they can't distinguish "still talking about
+# sandstone" from "now asking about carbonate". Comparison words and the generic
+# dataset/data nouns are deliberately included: the comparison is exactly what CHANGES
+# between refinement turns ("above 0.3" -> "below 0.25"), and every question in this domain
+# says "dataset".
+_CHAIN_STOPWORDS = frozenset("""
+a an the and or of for in on to with within from by as at any all some each every both
+are there is be been being was were do does did done has have had having
+find show give list get me my i you your we can could would please
+what which who whose that this these those it its them they how about when where why
+dataset datasets data datum set sets
+above below over under greater less than more fewer between higher lower smaller larger
+finer coarser most least equal exactly around approximately only just also still other
+containing contains include includes including using used based
+""".split())
+
+
+def _chain_terms(text: str) -> set[str]:
+    """The subject-bearing words of a query, normalized for comparison.
+
+    Numbers are dropped entirely (they are the part that changes between refinement turns),
+    as are stopwords and simple plurals.
+    """
+    words = re.findall(r"[a-zA-Z]+", (text or "").lower())
+    terms = set()
+    for w in words:
+        if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        if w and w not in _CHAIN_STOPWORDS and len(w) > 2:
+            terms.add(w)
+    return terms
+
+
+def _continues_filter_chain(new_question: str, prior_chain: str | None) -> bool:
+    """True if a freshly composed tool question still carries every subject term of the
+    filter chain built up so far — i.e. it narrows that chain rather than starting over.
+
+    This replaces trying to recognise refinement from the USER's phrasing, which failed
+    repeatedly: "of these", "which ones", "any below 0.25", "are there any with porosity >
+    0.3", "how about with porosity > 0.2" are all the same intent worded five ways, and each
+    new transcript brought a phrasing the pattern list didn't have — the growing-pattern-library
+    problem this codebase keeps rediscovering.
+
+    The agent's own composed question is a far better signal, and it is available on every
+    turn: live logs show it reliably restating the accumulated constraints ("sandstone datasets
+    with porosity > 0.2" two turns after the user last said "sandstone"). A genuine topic change
+    drops them instead ("carbonate datasets"), which is exactly what this detects.
+
+    Conservative by construction: it requires the prior chain's terms to SURVIVE, so a dropped
+    subject means no restriction and today's catalog-wide behavior — never a wrongly narrowed
+    answer.
+    """
+    prior_terms = _chain_terms(prior_chain)
+    if not prior_terms:
+        return False
+    return prior_terms.issubset(_chain_terms(new_question))
 
 
 # Trailing paragraphs that just restate bulleted dataset results in prose instead of
@@ -261,8 +695,47 @@ def _strip_recap_paragraph(text: str) -> str:
     return (head + ('\n\n' + tail if tail else '')).strip()
 
 
+# Chain-of-thought scaffolding this model sometimes emits as its user-facing answer:
+# a numbered "Step 1: ... Step 8: ..." reasoning trace followed by a "The final answer
+# is:" marker introducing the actual response. Both halves must be present to strip —
+# see _strip_reasoning_scaffold for why that conjunction is the safety guard.
+_STEP_SCAFFOLD_RE = re.compile(r'^\s*(?:\*\*|#{1,6}\s*)?Step\s+\d+\s*[:.]', re.MULTILINE | re.IGNORECASE)
+_FINAL_ANSWER_RE = re.compile(
+    r'^\s*(?:\*\*|#{1,6}\s*)?(?:The\s+)?final answer(?:\s+is)?\s*[:.]?\s*(?:\*\*)?\s*',
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _strip_reasoning_scaffold(text: str) -> str:
+    """Strip a leaked chain-of-thought scaffold, keeping only the model's own designated
+    final answer. Llama-4-Maverick intermittently answers a synthesis prompt by emitting
+    its reasoning verbatim ("Step 1: Identify... Step 8: ... The final answer is: <answer>")
+    instead of just the answer — live-observed on the multi-dataset comparison path.
+
+    Deliberately requires BOTH a "Step N:" scaffold AND a "final answer is:" marker before
+    removing anything. A legitimate answer can absolutely contain numbered steps — a
+    get_workflow_guidance response ("Step 1: Segment the image...") is exactly that shape —
+    but such an answer never also announces "The final answer is:". Requiring the
+    conjunction is what makes this safe to run over every response rather than only the
+    comparison path, so the same leak is caught wherever it surfaces.
+
+    This is a backstop, not the primary fix: the synthesis prompts also instruct the model
+    not to emit a scaffold. Consistent with this project's repeated finding that prompt-only
+    reliability fixes for this model are inconsistent, the guarantee lives in code."""
+    if not _STEP_SCAFFOLD_RE.search(text):
+        return text
+    matches = list(_FINAL_ANSWER_RE.finditer(text))
+    if not matches:
+        return text
+    answer = text[matches[-1].end():].strip()
+    if not answer:
+        return text
+    logger.warning("Stripped leaked chain-of-thought scaffold (%d chars -> %d chars)", len(text), len(answer))
+    return answer
+
+
 def _clean_response(text: str) -> str:
-    return _strip_recap_paragraph(_TOOL_CALL_RE.sub('', text).strip())
+    return _strip_recap_paragraph(_strip_reasoning_scaffold(_TOOL_CALL_RE.sub('', text).strip()))
 
 
 def _extract_tool_calls_from_text(text: str) -> list[dict]:
@@ -272,7 +745,7 @@ def _extract_tool_calls_from_text(text: str) -> list[dict]:
     400 error path.
     """
     calls: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
     python_call_re = re.compile(
         r'<\|python_start\|>\s*(\w+)\s*\(([^)]*)\)\s*<\|python_end\|>',
         re.DOTALL,
@@ -282,12 +755,18 @@ def _extract_tool_calls_from_text(text: str) -> list[dict]:
         tool_name = m.group(1)
         if tool_name not in _TOOL_PARAM_KEYS:
             continue
-        param_key = _TOOL_PARAM_KEYS[tool_name]
+        param_keys = _TOOL_PARAM_KEYS[tool_name]
         kwargs = dict(kwarg_re.findall(m.group(2)))
-        value = kwargs.get(param_key) or (next(iter(kwargs.values())) if kwargs else None)
-        if value and (tool_name, value) not in seen:
-            calls.append({"name": tool_name, "args": {param_key: value}})
-            seen.add((tool_name, value))
+        args = {key: kwargs[key] for key in param_keys if key in kwargs}
+        if not args and kwargs:
+            # None of the expected key names matched (e.g. the model used different
+            # names) — fall back to assigning whatever values were parsed, in order,
+            # to the tool's expected param keys.
+            args = dict(zip(param_keys, kwargs.values()))
+        dedupe_key = (tool_name, tuple(sorted(args.items())))
+        if args and dedupe_key not in seen:
+            calls.append({"name": tool_name, "args": args})
+            seen.add(dedupe_key)
     return calls
 
 
@@ -304,7 +783,7 @@ def _extract_tool_calls_from_error(err_str: str) -> list[dict]:
     3. JSON parameter key field: {"param_key": "value"} near the tool name
     """
     calls: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
 
     # Strategy 1: Llama native <|python_start|>fn(key="val")<|python_end|> format
     calls = _extract_tool_calls_from_text(err_str)
@@ -316,35 +795,85 @@ def _extract_tool_calls_from_error(err_str: str) -> list[dict]:
     # e.g. \\\\"value\\\\" — stripping all double-backslash pairs normalizes it.
     normalized = err_str.replace('\\\\', '')
 
-    for tool_name, param_key in _TOOL_PARAM_KEYS.items():
+    for tool_name, param_keys in _TOOL_PARAM_KEYS.items():
         if tool_name not in normalized:
             continue
-        idx = normalized.find(tool_name)
-        snippet = normalized[idx: idx + 500]
+        # Scan for EVERY occurrence of tool_name, not just the first — a comparison
+        # ("compare A and B") issues the same tool (get_dataset_profile) twice with
+        # different args, and a single `.find()` here used to only ever recover the
+        # first call, silently dropping the second dataset (see HANDOFF.md).
+        search_start = 0
+        while True:
+            idx = normalized.find(tool_name, search_start)
+            if idx == -1:
+                break
+            # Wide enough to span a multi-arg call's full JSON args blob (e.g.
+            # get_dataset_profile's two keys), not just a single-arg one.
+            snippet = normalized[idx: idx + 800]
+            search_start = idx + len(tool_name)
 
-        # Strategy 2: {"type":"string","value":"..."}
-        mv = re.search(r'"value":\s*"([^"]*)"', snippet)
-        if mv:
-            value = mv.group(1)
-            if value and (tool_name, value) not in seen:
-                calls.append({"name": tool_name, "args": {param_key: value}})
-                seen.add((tool_name, value))
-                continue
+            # Strategy 3: {"param_key": "value"} — direct JSON parameter key match, tried
+            # for every expected key so multi-arg tools can recover all of them.
+            args = {}
+            for key in param_keys:
+                mp = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]*)"', snippet)
+                if mp:
+                    args[key] = mp.group(1)
 
-        # Strategy 3: {"param_key": "value"} — direct JSON parameter key match
-        mp = re.search(rf'"{re.escape(param_key)}"\s*:\s*"([^"]*)"', snippet)
-        if mp:
-            value = mp.group(1)
-            if value and (tool_name, value) not in seen:
-                calls.append({"name": tool_name, "args": {param_key: value}})
-                seen.add((tool_name, value))
+            # Strategy 2: {"type":"string","value":"..."} only ever recovers one positional
+            # value, so it only applies as a fallback for single-param tools.
+            if not args and len(param_keys) == 1:
+                mv = re.search(r'"value":\s*"([^"]*)"', snippet)
+                if mv:
+                    args[param_keys[0]] = mv.group(1)
+
+            dedupe_key = (tool_name, tuple(sorted(args.items())))
+            if args and dedupe_key not in seen:
+                calls.append({"name": tool_name, "args": args})
+                seen.add(dedupe_key)
 
     return calls
 
-def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[dict]) -> str | None:
+_COMPARISON_SYNTHESIS_SYSTEM_PROMPT = """\
+You are given 2 or more already-complete, grounded dataset write-ups below — each one was \
+produced by its own dedicated lookup against the real portal graph, so every fact in them is \
+already verified; you do not need to re-derive or re-verify anything, only organize/compare \
+what's already there.
+
+- Preserve every recorded property or fact mentioned in EACH write-up below. Never say a \
+property, DOI, or detail "isn't provided," "isn't available," or "isn't mentioned" if it \
+appears anywhere in the write-ups below — that would be a wrong under-report of data you \
+were actually given; re-read both write-ups carefully before concluding something is missing.
+- Organize by dataset, then cover similarities and differences relevant to the user's actual \
+question — for a general "what's the difference" question, cover whatever properties both \
+write-ups actually contain (rock type, porosity, imaging, organizational structure, etc.), \
+not just the first difference you happen to notice.
+- Preserve any [dataset profile] source labels, DOIs, and LaTeX math verbatim.
+- If a property is genuinely absent from BOTH write-ups, it's fine to say so — but only after \
+checking both carefully, not as a default hedge.
+- Output ONLY the finished comparison, addressed to the researcher. Do not narrate your own \
+reasoning process, do not emit numbered "Step 1: / Step 2:" analysis stages, and do not \
+introduce your response with "The final answer is:" — the user sees your output verbatim, so \
+any such scaffolding reads as a malfunction. Write the comparison directly, using headings \
+and/or bullets to organize it.
+"""
+
+
+def _run_manual_dispatch(
+    tool_calls: list[dict],
+    user_input: str,
+    prior: list[dict],
+    uncovered: list[dict] | None = None,
+) -> str | None:
     """
     Execute tool_calls directly (bypassing LangGraph), then synthesize a response.
     Returns the synthesized string, or None if dispatch produced no results.
+
+    `uncovered` carries the coverage gate's verdict (see _uncovered_requests) for the
+    single-tool relay cases below: parts of the user's message this tool's answer won't
+    cover get answered separately and assembled alongside it, instead of being dropped
+    when the tool's output is relayed as the whole response. Defaults to None (relay
+    exactly as before) for the multi-call callers, which synthesize anyway.
     """
     from src.assistant.llm import get_chat_model
     from src.assistant.tools import build_langchain_tools
@@ -359,7 +888,7 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
                 res = fn.invoke(call["args"])
                 results.append(f"--- {call['name']} ---\n{res}")
                 raw_results.append((call["name"], res))
-                logger.info("Manual dispatch: %s(%s)", call["name"], call["args"])
+                logger.warning("Manual dispatch: %s(%s)", call["name"], call["args"])
             except Exception as te:
                 logger.warning("Tool %s failed in manual dispatch: %s", call["name"], te)
 
@@ -372,12 +901,44 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
     # citation rule) was silently dropping tutorial notebook references and inventing
     # DOIs — so for a single call to one of these tools, return its own output directly.
     if len(raw_results) == 1 and raw_results[0][0] in _SELF_CONTAINED_TOOLS:
-        return _clean_response(raw_results[0][1])
+        return _with_uncovered_segment(
+            _non_empty(_clean_response(raw_results[0][1]), fallback=_non_empty(raw_results[0][1])),
+            uncovered, user_input, prior,
+        )
 
     # Same verbatim-passthrough rationale as the normal ReAct path in chat(): don't let
     # a second LLM call retype search_datasets' real DOIs/descriptions from memory.
     if len(raw_results) == 1 and raw_results[0][0] in _VERBATIM_TOOLS:
-        return _build_verbatim_response(user_input, raw_results[0][1])
+        return _with_uncovered_segment(
+            _non_empty(_build_verbatim_response(user_input, raw_results[0][1])),
+            uncovered, user_input, prior,
+        )
+
+    # Multiple calls to the SAME self-contained tool (the dataset-comparison case: N>=2
+    # get_dataset_profile calls, one per dataset). Each raw result is already a complete,
+    # grounded write-up (dataset_profile.yaml's own honesty/tiered-knowledge synthesis
+    # already ran per dataset) — it does not need re-deriving, only presenting together.
+    # Live testing showed running this through the GENERIC synthesis path below (full
+    # SYSTEM_PROMPT + entire prior conversation history) actively hurt quality: it
+    # under-reported real recorded facts that were plainly present in the per-dataset
+    # write-ups just above it (e.g. claiming a property "isn't provided in the given
+    # context" for one dataset while it plainly was, a few lines up) — the wider context
+    # and full conversation history distracted the model from the two write-ups it was
+    # actually supposed to compare. Use a narrow, comparison-only prompt with NO prior
+    # history instead, whose only job is to organize/compare what's already there.
+    tool_names_used = {name for name, _ in raw_results}
+    if len(tool_names_used) == 1 and tool_names_used <= _SELF_CONTAINED_TOOLS:
+        combined = "\n\n---\n\n".join(res for _, res in raw_results)
+        try:
+            llm = get_chat_model()
+            compare_messages = [
+                {"role": "system", "content": _COMPARISON_SYNTHESIS_SYSTEM_PROMPT},
+                {"role": "user", "content": f"{user_input}\n\n{combined}"},
+            ]
+            return _non_empty(_clean_response(llm.invoke(compare_messages).content), fallback=_non_empty(combined))
+        except Exception as e:
+            logger.error("Comparison synthesis failed: %s; returning raw profiles", e)
+            return _non_empty(_clean_response(combined), fallback=_non_empty(combined))
 
     tool_output = "\n\n".join(results)
     try:
@@ -394,164 +955,128 @@ def _run_manual_dispatch(tool_calls: list[dict], user_input: str, prior: list[di
                 f"{tool_output}"
             )}]
         )
-        return _clean_response(llm.invoke(synth_messages).content)
+        return _non_empty(_clean_response(llm.invoke(synth_messages).content), fallback=_non_empty(tool_output))
     except Exception as e:
         # The tool call(s) already succeeded and produced real, grounded data (results
         # is non-empty here) — a failure in this polish-only synthesis step must not
         # cause that real data to be thrown away and replaced by an ungrounded guess.
         # Fall back to the raw tool output directly rather than returning None.
         logger.error("Synthesis after manual dispatch failed: %s; returning raw tool output", e)
-        return _clean_response(tool_output)
+        return _non_empty(_clean_response(tool_output), fallback=_non_empty(tool_output))
 
 
+# Deliberately short. Per-tool routing detail lives in each tool's own description
+# (tools.py), which is where the agent actually reads it and where it stays in sync with the
+# live schema; duplicating it here produced two copies that drifted. What stays here is only
+# what no single tool description can own: the knowledge tiers, cross-tool boundaries, and the
+# response/formatting contract.
+#
+# LOAD-BEARING, do not trim: the "Narrowing an earlier dataset listing" bullet is read by CODE,
+# not just by the agent. _continues_filter_chain() and _tool_filter_text() both detect a
+# refinement turn by checking whether the agent's composed question still carries the prior
+# chain's subject terms — which only happens if this instruction tells it to restate them.
+# Remove the bullet and both mechanisms silently stop firing: the refinement runs over the whole
+# catalog while the answer still looks right, and _cumulative_filter_text stores a
+# constraint-less question that corrupts the chain for later turns. The deterministic
+# _REFINEMENT_RE dispatch in chat() does NOT cover this — it bypasses the agent entirely and
+# only fires on phrasings that name the prior set ("of these"). This bullet is what covers
+# everything else.
 SYSTEM_PROMPT = """\
 You are Rocco, an expert research assistant for the Digital Porous Media (DPM) Portal. \
 You help researchers discover datasets, understand porous media workflows, and find relevant literature.
 
-## Knowledge tiers — follow these strictly
+## Knowledge tiers
 
-**Tier 0 — Conversation, brainstorming, and code assistance \
-(e.g. "hi", "thanks", "Hi, I'm Bernie", "can you help me think through my sampling design?", \
-"write a script to compute porosity from this CSV", "why is my segmentation pipeline crashing?")**
-Respond directly — no tool call is required for this tier. This covers greetings and small \
-talk (including self-introductions that happen to contain a name, e.g. "Hi, I'm Bernie" — a \
-name mentioned this way is NOT an author-lookup request and must never trigger \
-get_dataset_details), but also open-ended requests that don't map to a specific tool: \
-brainstorming research ideas, writing or debugging code for porous-media-related data work, \
-or talking through methodology. Keep greetings/small talk brief (a sentence or two); code and \
-brainstorming responses can be as long as the task genuinely needs. If the conversation surfaces a need for \
-an actual dataset lookup, workflow guide, or literature search, go ahead and call the relevant \
-tool per Tiers 1-3 below rather than answering from memory. If the request has no connection \
-to porous media, dataset/DRP research, or the kind of data/analysis work researchers do around \
-Rocco's datasets (e.g. general programming help or personal topics unrelated to the domain), \
-respond warmly but gently steer the conversation back — mention what you can help with (finding \
-datasets, DRP workflows, literature, domain science, portal how-to guidance/documentation, or \
-domain-related coding/analysis help) rather than refusing outright or acting as a general-purpose \
-assistant. Acknowledge the mismatch in one short sentence, then stop — do not go on to answer \
-the off-topic question(s), even partially, even to be helpful. This applies even if you know \
-the answer. (A dedicated gate ahead of this prompt already catches most off-domain requests \
-before they reach you — if you're seeing this instruction, treat it as the backstop, not the \
-primary defense.)
+**Tier 0 — Conversation, brainstorming, and code help.** Respond directly, no tool needed. \
+This covers greetings, small talk, self-introductions (a name mentioned this way, e.g. "Hi, I'm \
+Bernie", is never an author lookup), and open-ended requests with no specific tool match: \
+research brainstorming, writing/debugging porous-media-adjacent code, talking through \
+methodology. Keep greetings brief; let code/brainstorming answers run as long as the task needs. \
+If the conversation surfaces a real dataset/workflow/literature need, call the matching tool \
+instead of answering from memory. If the request has no connection to porous media, DRP \
+research, the portal, or the kind of data/analysis work researchers do here, acknowledge the \
+mismatch in one sentence, name what you can help with instead, and stop — do not go on to answer \
+the off-topic part even partially. (A gate ahead of this prompt already screens out most \
+off-domain requests; treat this as the backstop.)
 
-**Tier 1 — Dataset and portal facts (e.g. "How many sandstone datasets have φ > 0.2?")**
-Use tools only. Never assert a dataset property, count, or statistic that was not returned \
-by a tool. If a tool returns no results, tell the user honestly and suggest rephrasing.
+**Tier 1 — Dataset and portal facts.** Tools only. Never assert a dataset property, count, or \
+statistic a tool didn't return. If a tool finds nothing, say so and suggest rephrasing.
 
-**Tier 2 — Domain Q&A, workflows, and portal how-to \
-(e.g. "How do I compute relative permeability?", "How do I upload a dataset?")**
-Call the appropriate tool first (get_educational_context, get_workflow_guidance, or \
-search_portal_docs). If the tool context is sparse or missing, you may supplement with \
-general domain expertise, but preface that supplement with: \
+**Tier 2 — Domain Q&A, workflows, and portal how-to.** Call the matching tool first \
+(get_educational_context, get_workflow_guidance, or search_portal_docs). Only if that tool's \
+context is genuinely sparse, you may add general domain expertise, prefaced with: \
 "I don't have portal-specific data on this, but generally…"
 
-**Tier 3 — Foundational concepts (e.g. "What is porosity?", "Explain Darcy's law")**
-Answer directly and completely. No tool calls needed, no disclaimers.
+**Tier 3 — Foundational concepts** (e.g. "What is porosity?"). Answer directly and completely, \
+no tool, no disclaimer.
 
 ## Tool selection
 
-The rules below apply only to Tiers 1-3. Tier 0 conversation/brainstorming/code-help \
-input does not require any tool from this list, though a tool may still be called mid-turn \
-if the conversation surfaces a genuine dataset/workflow/literature need.
+Each tool's own description states exactly what it covers and what it doesn't — treat it as the \
+authoritative routing signal, including any property or phrasing not repeated here.
 
-- "How to X", "How do I X", "what are the steps to X" for a **scientific/analysis \
-method** (compute relative permeability, segment an image, run a simulation \
-conceptually/computationally, extract a pore network) → get_workflow_guidance (always \
-first; call search_datasets afterward only if the user also wants datasets). Do NOT \
-use get_workflow_guidance for a **portal action** (upload, download, copy, cite, \
-manage collaborators, request publication) or for **operating a specific tool the \
-portal documents** (e.g. running an LBPM simulation through the portal's LBPM \
-interface, using the portal's Jupyter tools) — those route to search_portal_docs \
-below, never to get_workflow_guidance, even when phrased as "how do I run/use X".
-- **Any query that names a concrete, checkable dataset/sample property — a numeric \
-threshold or range (porosity above/below/between X, grain size less than X), a specific \
-metadata value or set of values (rock type, segmented status, voxel resolution), a named \
-person explicitly as the subject of a dataset/author search (e.g. "datasets by Jane \
-Doe", "who has published data on sandstone permeability" — maps to the authors field; a \
-name mentioned incidentally, such as someone introducing themselves — "Hi, I'm Bernie" — \
-is Tier 0, not this case), or a combination of these — → get_dataset_details, even if it \
-also mentions a rock type or imaging method.** \
-The full list of checkable properties is in get_dataset_details' own tool description \
-(derived from the live schema — do not rely on this list of examples being exhaustive; \
-if a query names ANY property in that tool's description, including one not called out \
-here by name, route there). search_datasets can only match one value per field and \
-cannot express numeric comparisons at all, so it silently drops these constraints; \
-get_dataset_details generates real Cypher and handles any number/combination of them \
-correctly.
-- Dataset discovery by topic, suitability, or purpose with no precise checkable \
-property named (e.g. "datasets suitable for LBM simulation", "something good for a \
-teaching demo") → search_datasets. (search_datasets also attempts a structured lookup \
-internally first as a safety net for property-shaped queries that reach it anyway, but \
-routing there directly is still preferred.)
-- Portal *actions* and navigation ("how do I upload/download/copy/cite a dataset", \
-"how do I add collaborators", "how do I request publication") and metadata schema \
-reference — ANY question about the definition, purpose, or difference between the \
-DPM Portal's own entity types (Dataset, Sample, Digital Dataset, Analysis Dataset — \
-e.g. "what fields does a Sample need", "difference between Dataset and Sample", \
-"difference between a Digital Dataset and an Analysis Dataset", "what is a Digital \
-Dataset") → search_portal_docs, NEVER get_educational_context or get_workflow_guidance. \
-These are portal-specific schema terms with real documented definitions, not general \
-science concepts — answering them without search_portal_docs produces wrong, made-up \
-definitions, and falling back to "I don't have portal-specific data on this, but \
-generally…" is the WRONG response here since search_portal_docs reliably has this data; \
-only use that fallback phrasing when search_portal_docs was actually called and its \
-result was genuinely sparse. Pass the user's question to it verbatim/in full — do not \
-shorten it to a keyword phrase; the tool does semantic retrieval and full sentence \
-context retrieves better results than a compressed keyword query.
-- Porous media science Q&A and best practices → get_educational_context
-- Finding papers or publications → search_literature
+A few distinctions no single tool description can carry alone:
 
-For cross-intent queries (e.g. "explain X and find me datasets that measure it"), \
-call multiple tools and synthesize the results into a single coherent response.
+- **Narrowing an earlier dataset listing** ("of these, which are segmented?", "now filter by X", \
+"how about any below 0.25?") — search_datasets and get_dataset_details are both stateless per \
+call: each sees only the string passed that call, with no memory of an earlier turn. Compose ONE \
+self-contained question carrying every constraint accumulated so far plus the new one \
+("segmented sandstone datasets with porosity between 0.2 and 0.25"), never the new clause on its \
+own — a bare clause searches the whole catalog instead of narrowing the set the user is working \
+through. Where the new constraint replaces an earlier one on the same property, state the \
+replacement rather than both (porosity "above 0.3" then "below 0.25" is a supersession, not a \
+range).
+- "How do I compute/derive/run X" for a **scientific or analysis method** (permeability, \
+segmentation, a simulation, pore-network extraction) → get_workflow_guidance. The same phrasing \
+for a **portal action** (upload, download, cite, manage collaborators) or **operating a portal \
+tool** (the LBPM interface, the portal's Jupyter tools) → search_portal_docs instead, even \
+though both are phrased "how do I X."
+- A question about the definition of, or difference between, the portal's own entity types \
+(Dataset, Sample, Digital Dataset, Analysis Dataset) is portal-schema reference, not general \
+science — always search_portal_docs, never get_educational_context or get_workflow_guidance, \
+even when it reads like "What is X?"
+
+When one message asks for more than one thing, answer every part of it. Where the parts need \
+different tools ("explain X and find datasets that measure it"), call each tool and synthesize \
+one coherent response. Where one part needs a tool and another needs none ("what is porosity and \
+how do I compute it from a microCT image" — a Tier 3 definition alongside a Tier 2 workflow), \
+answer the no-tool part yourself in the same response; never drop it just because the other part \
+came from a tool.
 
 ## Response formatting
 
-- Write answers as direct prose. Never structure an answer as a numbered derivation \
-("Step 1: ...", "Step 2: ...") and never end with a "The final answer is..." line — \
-those are leftover patterns from math-solving output and do not fit conversational Q&A. \
-Just answer the question directly, using headers/bullets only where they genuinely aid \
+- Direct prose. Never a numbered derivation ("Step 1: ...") or a "The final answer is..." line — \
+those are math-solving leftovers, not conversational Q&A. Use headers/bullets only where they aid \
 readability.
-- Relay source labels from tool output exactly as returned: [graph match], [semantic match], \
-[semantic scholar], [cypher match], [component match], [hybrid match], [portal docs]. Do not \
-strip or rename them.
-- When presenting dataset search results, always include the DOI for each entry. \
-The tool output includes it as "DOI: xxx" — preserve it verbatim in your response.
-- Always use LaTeX delimiters for mathematical expressions: inline `$...$`, block `$$...$$` \
-(e.g. $\\phi = V_{pore} / V_{total}$, $$k = \\frac{Q \\mu L}{A \\Delta P}$$). Do not use \
-plain-text math notation. Preserve any LaTeX already present in tool output verbatim — never flatten it.
-- Use markdown headers and bullet lists for multi-part answers.
-- Do not editorialize or evaluate tool output — report it with light formatting only.
-- Dataset-search results follow this shape: one short lead-in sentence (e.g. "Here are \
-the datasets matching your query:"), then a header (e.g. "Datasets:"), then one bullet \
-per result. Each bullet must keep the summary sentence that follows the DOI in the \
-tool output, not just the title and DOI — do not compress a result down to a bare \
-title/DOI line. After the bullets, one short closing sentence is allowed if it adds \
-real information (e.g. a shared trait or a key difference across the results) — but \
-never a sentence that just restates or re-describes results already listed above; when \
-in doubt, omit it.
+- Relay source labels exactly as returned: [graph match], [semantic match], [semantic scholar], \
+[cypher match], [component match], [hybrid match], [portal docs], [dataset profile], [content \
+reasoning]. Never strip or rename them.
+- Always include each dataset's DOI, preserved verbatim from "DOI: xxx" in tool output.
+- Always use LaTeX delimiters for math: inline `$...$`, block `$$...$$` \
+(e.g. $\\phi = V_{pore} / V_{total}$, $$k = \\frac{Q \\mu L}{A \\Delta P}$$). Never plain-text \
+math notation. Preserve LaTeX already present in tool output verbatim.
+- Dataset-search results: one lead-in sentence, a header, one bullet per result — keep the \
+description sentence that follows the DOI, not just title/DOI. An optional closing sentence is \
+allowed only if it adds real information beyond the bullets; when in doubt, omit it.
+- Report tool output; don't editorialize or evaluate it beyond light formatting.
 
 ## Suitability query synthesis
 
-search_datasets only includes a `[search reasoning: ...]` tag when the query is a \
-genuine suitability/purpose query whose properties aren't stated directly (e.g. \
-"suitable for LBM", "good for a teaching demo") — plain property queries (e.g. "coal \
-samples", "sandstone datasets", "segmented micro-CT images") never get this tag. So:
+search_datasets tags a `[search reasoning: ...]` result only for a genuine suitability/purpose \
+query with no properties stated directly (e.g. "suitable for LBM", "good for a teaching demo") — \
+plain property queries never get this tag.
 
-- **If the tag is present**: present the results first, then synthesize the reasoning \
-naturally (never reproduce it verbatim) — 1–2 sentences on what the task requires, \
-drawing on Tier 2 domain knowledge, plus a brief per-result fit note. If the reasoning \
-itself flags that the purpose maps to qualities outside the schema, skip the fit notes \
-and instead ask what specific properties matter most (segmented image, rock type, \
-resolution, simulation outputs, etc.).
-- **If the tag is absent**: present the results using the standard shape from Response \
-formatting above (lead-in sentence, header, full bullets, optional short closing \
-sentence). No reasoning preamble, no suitability fit notes, no clarifying question.
+- **If present**: show results first, then synthesize the reasoning naturally (never reproduce \
+it verbatim) — 1–2 sentences on what the task needs plus a brief per-result fit note. If the \
+reasoning itself flags the purpose as outside the schema, skip the fit notes and ask which \
+specific properties matter most instead.
+- **If absent**: use the standard result shape above — no reasoning preamble, no fit notes, no \
+clarifying question.
 
-If search_datasets output includes a `[weak match: ...]` tag, state plainly, near the \
-top, that no results directly matched the topic and that the closest available results \
-are shown instead — do not silently present them as if they were relevant, and do not \
-invent a reason they might be relevant.
+A `[weak match: ...]` tag means say so plainly near the top — no results directly matched, these \
+are the closest available — never present them as if they were relevant.
 
-Never skip presenting the results. Never ask for clarification before showing results.
+Never skip presenting results. Never ask for clarification before showing them.
 """
 
 
@@ -614,7 +1139,7 @@ def _classify_off_domain(user_input: str, prior: list[dict]) -> bool:
     block a real research question, the strictly worse failure mode for a broad
     research-assistant domain.
     """
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -623,11 +1148,8 @@ def _classify_off_domain(user_input: str, prior: list[dict]) -> bool:
             + prior[-6:]
             + [{"role": "user", "content": user_input}]
         )
-        raw = llm.invoke(messages).content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        route = str(json.loads(raw.strip()).get("route", "in_domain")).strip().lower()
+        raw = strip_code_fences(llm.invoke(messages).content)
+        route = str(json.loads(raw).get("route", "in_domain")).strip().lower()
         return route == "off_domain"
     except Exception as e:
         logger.warning("Off-domain gate failed (%s); defaulting to in-domain.", e)
@@ -709,7 +1231,7 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
     costs one wasted lookup, while a wrong "direct" guess would silently skip a real
     dataset/literature/workflow request — the more expensive mistake of the two.
     """
-    from src.assistant.llm import get_chat_model
+    from src.assistant.llm import get_chat_model, strip_code_fences
 
     try:
         llm = get_chat_model()
@@ -718,72 +1240,360 @@ def _classify_needs_tool(user_input: str, prior: list[dict]) -> bool:
             + prior[-6:]
             + [{"role": "user", "content": user_input}]
         )
-        raw = llm.invoke(messages).content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        route = str(json.loads(raw.strip()).get("route", "tool")).strip().lower()
+        raw = strip_code_fences(llm.invoke(messages).content)
+        route = str(json.loads(raw).get("route", "tool")).strip().lower()
         return route != "direct"
     except Exception as e:
         logger.warning("Tool-need gate failed (%s); defaulting to tool-bound agent.", e)
         return True
 
 
-_FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT = """\
-You are checking whether a single tool's answer is enough to fully address a user's
-question, or whether the question also needs a DIFFERENT kind of lookup beyond what
-that one tool already covers (e.g. it also explicitly asks to find/search datasets,
-find papers/literature, or look up a specific dataset property/count).
+_UNCOVERED_REQUEST_GATE_SYSTEM_PROMPT = """\
+You decompose a user's question into the distinct things it asks for, then report which \
+of them will be answered by the tool that was already called.
 
-You will be given the user's original question and which tool was already called.
+The tool already called is {{TOOL_NAME}}, with these arguments:
+
+<tool_arguments>
+{{TOOL_ARGUMENTS}}
+</tool_arguments>
+
+This is its full description:
+
+<tool_description>
+{{TOOL_DESCRIPTION}}
+</tool_description>
+
+First split the message into every distinct thing the user wants to walk away knowing. A \
+definition, a procedure, a dataset lookup, and a literature search are each distinct. Split \
+generously: a request wrongly split is harmless, because coverage is judged next and two \
+requests the tool covers both of give the same result as one.
+
+Then judge each request in TWO steps. A request is covered only if it passes both; failing \
+either one makes it uncovered.
+
+**Step 1 — is it in scope for this tool at all?** Judge against the description, not what you \
+assume from the tool's name.
+- A tool that explains concepts and methods is in scope for both "what is X" and "how is X \
+measured".
+- A tool that returns step-by-step procedural guidance is NOT in scope for "what is X" — a \
+procedure is not a definition, even when it is a procedure for measuring the thing being defined.
+- If the description limits the tool's scope (for example, to a single dataset per call), a \
+request beyond that limit is out of scope.
+
+**Step 2 — do the arguments actually ask for it?** Read the argument VALUES above literally, as \
+the only thing the tool will receive. If a request's subject matter is absent from those values, \
+the tool will never see that request, so it is NOT covered — no matter how squarely the \
+description puts it in scope. A caller that trimmed a two-part question down to one part fails \
+this step on the trimmed-away part. Do not credit the tool for a request the arguments don't \
+mention.
+
+A request counts as uncovered whether or not answering it needs a tool. A foundational \
+definition you would answer from your own knowledge ("what is porosity", "explain Darcy's \
+law") is still uncovered when the called tool's answer won't contain it: that answer is \
+relayed to the user on its own, so anything outside it is lost.
+
+For EVERY request — covered or not — also report needs_lookup: true when a tool ought to \
+answer it (a dataset property or count, a catalog search, portal documentation, published \
+literature, or step-by-step workflow/method guidance — the portal has verified tutorials for \
+those, so answering from memory would lose them). false ONLY for a foundational concept or \
+definition that is stable textbook knowledge ("what is porosity", "explain Darcy's law").
+
+And for every request, report argument_evidence: the exact substring of the argument VALUES \
+above that asks for this request. Leave it as an empty string when nothing in the arguments \
+asks for it. Do not paraphrase and do not quote the user's original question here — only text \
+that literally appears in the arguments counts, because the arguments are all the tool receives.
 
 Respond with a JSON object only, no markdown fences:
-{"needs_followup": true} or {"needs_followup": false}
-
-Examples:
-- question: "How do I compute relative permeability?", tool_called: "get_workflow_guidance" -> {"needs_followup": false}
-- question: "How do I compute relative permeability, and can you also find datasets that measure it?", tool_called: "get_workflow_guidance" -> {"needs_followup": true}
-- question: "What is porosity, and are there any recent papers on it?", tool_called: "get_educational_context" -> {"needs_followup": true}
-- question: "How do I upload a dataset to the portal?", tool_called: "search_portal_docs" -> {"needs_followup": false}
+{"requests": [{"asks_for": "<short paraphrase>", "covered": true|false, \
+"needs_lookup": true|false, "argument_evidence": "<exact substring, or empty>"}]}
 """
 
 
-def _needs_followup_tool_call(user_input: str, tool_name: str) -> bool:
-    """A cheap, tools-unbound gate (same 400-proof pattern as _classify_needs_tool),
-    checked only when chat()'s single-tool-call short-circuit (see Fix 1 in
-    HANDOFF.md's 400-error-recovery section) would otherwise fire.
+# Both malformed shapes below were observed live from this model on the coverage gate,
+# at roughly 1-in-3 across repeated runs of the same input, with correct JUDGMENT in every
+# case — the verdict was right and the envelope was unparseable. Because json.loads
+# failing means the gate returns "nothing uncovered", a format slip silently became a
+# dropped half: the fail-open direction, and invisible in the answer.
+#
+# strip_code_fences only unwraps a response that STARTS with a fence, which is the right
+# call for its other callers; this adds the two recoveries specific to a JSON-object
+# response, and is deliberately scoped to this gate rather than retrofitted onto the
+# off-domain/tool-need/lead-in gates, which share the same fail-open shape but whose live
+# behavior is out of scope to shift here.
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
-    Live-verified this model's first ReAct turn requests tools SEQUENTIALLY, not in
-    one parallel tool_calls list, for genuine cross-intent phrasing ("compute relative
-    permeability, and also find datasets that measure it" -> a single
-    get_workflow_guidance call on the first turn, with search_datasets only decided on
-    a later turn after seeing that answer) — so short-circuiting on "exactly one tool
-    call" alone silently drops that follow-up call. This gate catches that case before
-    committing to the short-circuit.
 
-    Defaults to False (short-circuit proceeds) on any parse/call failure: the
-    short-circuit exists to fix a confirmed, reported 400-error bug (LaTeX-heavy
-    self-contained answers sometimes get mis-detected as malformed tool calls on the
-    graph's second turn) — an uncertain case should not reintroduce that risk. The cost
-    of a wrong "no follow-up needed" guess is a dropped second tool call, not a
-    fabricated or ungrounded answer.
+def _parse_json_object(raw: str) -> dict | None:
+    """Best-effort parse of a JSON object out of an LLM response. None if nothing parses.
+
+    Recovers from the two shapes seen live: a trailing comma before a closing brace or
+    bracket, and reasoning prose preceding a fenced block ("Given the analysis, the JSON
+    response should be: ```json{...}```").
+
+    The brace-span recovery is tried ONLY after the response fails to parse as JSON
+    outright. Otherwise a valid but wrong-shaped response — a bare array — would have an
+    inner object scraped out of it and returned as an envelope, and the caller's
+    `.get("requests")` would come back empty while the log claimed a clean parse.
+    """
+    text = (raw or "").strip()
+    for candidate in (text, _TRAILING_COMMA_RE.sub(r"\1", text)):
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        # Parsed cleanly, so the model's intended shape is known: accept an object,
+        # reject anything else rather than digging a nested object out of it.
+        return parsed if isinstance(parsed, dict) else None
+
+    # Nothing parsed as JSON at all — now it is worth skipping any leading prose.
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        span = text[start:end + 1]
+        for candidate in (span, _TRAILING_COMMA_RE.sub(r"\1", span)):
+            try:
+                parsed = json.loads(candidate)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return None
+
+
+def _normalize_ws(text: str) -> str:
+    """Lowercased, whitespace-collapsed form, for substring comparison between a model's
+    quoted evidence and the text it claims to be quoting."""
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _tool_description(tool_name: str) -> str:
+    """The live description string the agent itself reads for `tool_name`.
+
+    Injected into the coverage gate's prompt rather than restated inside it, so tools.py
+    stays the single source of truth for what each tool covers — same reason the per-tool
+    routing rules moved out of SYSTEM_PROMPT. A gate carrying its own hand-written copy of
+    each tool's scope is a second copy that drifts, and this one would drift silently:
+    nothing downstream reveals that coverage was judged against a stale description.
+    """
+    for t in build_langchain_tools():
+        if t.name == tool_name:
+            return (t.description or "").strip()
+    return ""
+
+
+def _uncovered_requests(user_input: str, tool_name: str, tool_args: dict | None = None) -> list[dict]:
+    """The parts of `user_input` that `tool_name`'s own answer will NOT cover.
+
+    Returns ``[{"asks_for": str, "needs_lookup": bool}, ...]``; empty means the one tool
+    covers the whole message. Checked wherever chat() is about to relay a single tool's
+    output as the entire response (the pre-emptive short-circuit, the post-graph relay,
+    and the 400-recovery dispatch).
+
+    The two kinds of uncovered request have OPPOSITE handling, which is why needs_lookup
+    is reported and not just a count:
+
+    - ``needs_lookup=True`` — chat() must NOT short-circuit. Let the full graph run so the
+      agent gets its chance to call the second tool. Answering this part from model
+      knowledge instead would fabricate exactly the dataset/portal facts the lookup was
+      supposed to supply, which is the worst failure mode available here.
+    - ``needs_lookup=False`` — safe to short-circuit. The part is answered by a
+      tools-unbound call (_answer_uncovered) and assembled alongside the tool's verbatim
+      output, so the tool bytes stay untouched.
+
+    Coverage is judged against the tool's ARGUMENTS as well as its description, because the
+    live failure mode turned out to be an argument, not a routing choice: the agent sent the
+    whole compound question to get_educational_context — which covers both halves — but narrowed
+    the argument to "What is porosity?", so the compute half was dropped by a tool that would
+    have answered it. Judging on tool_name alone reported "nothing uncovered" and was right
+    about the tool and wrong about the turn.
+
+    Asked as a decomposition rather than a yes/no verdict deliberately. The predecessor
+    gate asked "does this need a follow-up?" and every one of its examples paired a tool
+    with a SECOND TOOL, so a half needing no tool at all fell outside everything the
+    examples taught and the gate answered false — the live-reported bug where "What is
+    porosity and how do I compute it from a microCT image?" returned only the workflow
+    half. Enumerating the requests and marking coverage makes the hard boundary
+    ("what is X, and how is it measured?" — one request, covered) fall out of the same
+    rule as the easy cases instead of needing an example to carve it out, and it hands
+    the caller the uncovered part's text, which a boolean cannot.
+
+    Defaults to [] (relay proceeds) on any parse/call failure, preserving the predecessor's
+    rationale: the short-circuit exists to fix a confirmed 400-error bug, and an uncertain
+    case should not reintroduce that risk. The cost of a wrong "nothing uncovered" is a
+    dropped part, not a fabricated answer.
+    """
+    from src.assistant.llm import get_chat_model, strip_code_fences
+
+    system = (
+        _UNCOVERED_REQUEST_GATE_SYSTEM_PROMPT
+        .replace("{{TOOL_NAME}}", tool_name)
+        .replace(
+            "{{TOOL_ARGUMENTS}}",
+            json.dumps(tool_args, ensure_ascii=False) if tool_args
+            # No args recorded (an older caller, or a recovery path that couldn't parse
+            # them): Step 2 has nothing to check, so say so rather than showing "{}",
+            # which reads as "the tool was asked nothing" and fails every request.
+            else "(not recorded — judge on the description alone, skip step 2)",
+        )
+        .replace("{{TOOL_DESCRIPTION}}", _tool_description(tool_name) or "(unavailable)")
+    )
+    try:
+        llm = get_chat_model()
+        raw = strip_code_fences(llm.invoke([
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"question: {user_input!r}"},
+        ]).content)
+    except Exception as e:
+        logger.warning("Coverage gate call failed (%s); relaying the single tool answer.", e)
+        return []
+
+    parsed = _parse_json_object(raw)
+    if parsed is None:
+        logger.warning(
+            "Coverage gate returned unparseable output; relaying the single tool answer. Raw: %r",
+            raw[:400],
+        )
+        return []
+    requests = parsed.get("requests") or []
+
+    args_recorded = bool(tool_args)
+    # All argument values as one normalized haystack, for verifying the model's claimed
+    # step-2 evidence against what the tool is ACTUALLY being asked.
+    arg_text = _normalize_ws(" ".join(str(v) for v in (tool_args or {}).values()))
+    uncovered = []
+    for r in requests:
+        if not isinstance(r, dict):
+            continue
+        asks = (r.get("asks_for") or "").strip()
+        if not asks:
+            continue
+        # `covered` defaults True: a malformed entry should not spuriously report an
+        # uncovered part and pull an extra LLM call into a single-intent turn.
+        covered = r.get("covered", True)
+        evidence = (r.get("argument_evidence") or "").strip()
+        # Step 2, verified in code rather than trusted to the prompt. Across several
+        # prompt revisions this model marked a request "covered" on the strength of the
+        # tool DESCRIPTION and skipped the argument check entirely, so a question the
+        # caller had trimmed down still reported full coverage. Asking it to supply the
+        # supporting argument text did not fix that on its own either — it quoted the
+        # USER'S question instead (live, 3/3 runs: evidence "how do I compute it from a
+        # microCT image" against arguments {"question": "What is porosity?"}), which is
+        # precisely the text that isn't there.
+        #
+        # So the model proposes the evidence and code checks it actually occurs in the
+        # argument values. That turns a judgment the model kept getting wrong into a
+        # substring test that cannot be wrong. Same shape as
+        # reason_about_dataset_content's citation guard, which drops a candidate whose
+        # title wasn't in the shortlist actually sent.
+        #
+        # Can only move a verdict from covered to uncovered, never the reverse, so the
+        # worst case is a redundant extra answer rather than a dropped part. Skipped
+        # when no arguments were recorded — there is then nothing to find evidence in.
+        if covered and args_recorded and _normalize_ws(evidence) not in arg_text:
+            logger.warning(
+                "Coverage claimed for %r but its evidence %r is not in the arguments; "
+                "treating as uncovered.",
+                asks, evidence,
+            )
+            covered = False
+        if not covered:
+            uncovered.append({"asks_for": asks, "needs_lookup": bool(r.get("needs_lookup"))})
+    # Logged whichever way it goes — this gate has a history of failing silently in a way
+    # that only shows up as a subtly incomplete answer, so the decomposition it based its
+    # verdict on is worth having in the log.
+    logger.warning(
+        "Coverage gate for %s: %d request(s), %d uncovered %r",
+        tool_name, len(requests), len(uncovered), [u["asks_for"] for u in uncovered],
+    )
+    return uncovered
+
+
+def _needs_followup_lookup(uncovered: list[dict]) -> bool:
+    """True when some uncovered request needs a real lookup — the case where chat() must
+    let the full graph run so the agent can make that second tool call, rather than
+    short-circuiting and answering from model knowledge."""
+    return any(r.get("needs_lookup") for r in uncovered)
+
+
+_UNCOVERED_ANSWER_NOTICE = (
+    "[This response has NO tool access and covers ONLY the part(s) of the user's message "
+    "listed below. Another part of the same message was answered by a tool, and that "
+    "answer is appended directly beneath your text — so do not answer it, do not "
+    "summarize it, do not refer to it as coming up, and do not end with a transition "
+    "sentence. Write only the answer to the listed part(s), as if it opens the response. "
+    "Never state a dataset title, DOI, count, or portal-specific property: you have "
+    "retrieved nothing, so anything of that kind here is fabricated.]"
+)
+
+
+def _answer_uncovered(parts: list[dict], user_input: str, prior: list[dict]) -> str:
+    """Answer the parts of a message that a relayed tool answer won't cover — the
+    "generated" segment of an assembled response.
+
+    Tools-unbound, same 400-proof pattern as _answer_direct, and only ever called for
+    parts the coverage gate marked needs_lookup=False, so it is never the thing standing
+    in for a real lookup.
+
+    Returns "" on failure. The tool's own output is real, grounded data and must still
+    reach the user, so a failure here degrades to the old behavior (one part answered)
+    rather than losing the turn — _assemble_response drops the empty segment.
     """
     from src.assistant.llm import get_chat_model
 
+    asks = "\n".join(f"- {p['asks_for']}" for p in parts if p.get("asks_for"))
+    if not asks:
+        return ""
     try:
         llm = get_chat_model()
-        messages = [
-            {"role": "system", "content": _FOLLOWUP_TOOL_GATE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"question: {user_input!r}, tool_called: {tool_name!r}"},
-        ]
-        raw = llm.invoke(messages).content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```", 2)[1]
-            raw = raw[len("json"):] if raw.startswith("json") else raw
-        return bool(json.loads(raw.strip()).get("needs_followup", False))
+        messages = (
+            [{"role": "system", "content": SYSTEM_PROMPT},
+             {"role": "system", "content": _UNCOVERED_ANSWER_NOTICE}]
+            + prior
+            + [{"role": "user", "content": (
+                f"{user_input}\n\n[Answer ONLY these part(s) of the message above:\n{asks}\n]"
+            )}]
+        )
+        return _clean_response(llm.invoke(messages).content)
     except Exception as e:
-        logger.warning("Follow-up tool gate failed (%s); proceeding with short-circuit.", e)
-        return False
+        logger.warning("Uncovered-part answer failed (%s); relaying the tool output alone.", e)
+        return ""
+
+
+def _recovered_call_coverage(tool_calls: list[dict], user_input: str) -> list[dict]:
+    """Coverage verdict for a tool call recovered from a 400 error or leaked text.
+
+    Only meaningful for a single recovered relay call — that is the case whose output
+    becomes the whole response. Two or more recovered calls go through synthesis, which
+    already sees the user's full question, so there is nothing to assemble.
+    """
+    if len(tool_calls) != 1 or tool_calls[0]["name"] not in (_SELF_CONTAINED_TOOLS | _VERBATIM_TOOLS):
+        return []
+    return _uncovered_requests(user_input, tool_calls[0]["name"], tool_calls[0].get("args") or {})
+
+
+def _with_uncovered_segment(
+    relayed: str, uncovered: list[dict] | None, user_input: str, prior: list[dict]
+) -> str:
+    """Assemble a relayed tool answer together with an answer to whatever parts of the
+    message it didn't cover. With nothing uncovered this returns the tool's own output
+    byte-for-byte — the single-segment case, i.e. every turn that behaved correctly before.
+
+    The generated part leads because the shape that prompted this is a definition asked
+    ahead of a method ("what is porosity and how do I compute it"). Segment.order is the
+    hook if a future case needs true request-position ordering; no call site changes.
+    """
+    parts = [p for p in (uncovered or []) if not p.get("needs_lookup")]
+    if not parts:
+        return relayed
+    logger.warning(
+        "Assembling %d uncovered request(s) ahead of the relayed tool answer: %r",
+        len(parts), [p.get("asks_for") for p in parts],
+    )
+    return _assemble_response([
+        Segment(kind="generated", content=_answer_uncovered(parts, user_input, prior), order=0),
+        Segment(kind="verbatim", content=relayed, order=1),
+    ])
+
 
 
 _NO_TOOL_ACCESS_NOTICE = (
@@ -829,25 +1639,49 @@ def _answer_direct(user_input: str, prior: list[dict]) -> str:
 
 
 class ConversationManager:
-    """
-    Wraps a LangGraph ReAct agent with per-session memory.
+    """Wraps a LangGraph ReAct agent, plus the gates and cross-turn state around it.
 
     The agent is built once at construction time from the registered tools in
-    build_langchain_tools() and the SYSTEM_PROMPT above. Routing is implicit:
-    the LLM reads tool descriptions and the system prompt to decide which tool(s)
-    to invoke for each user message. There is no separate intent-classification
-    step inside this class — the assistant.yaml classifier is a standalone
-    component used for testing and offline analysis only.
+    build_langchain_tools() and the SYSTEM_PROMPT above. Routing is implicit: the LLM reads
+    tool descriptions to decide which tool(s) to invoke. There is no intent-classification
+    step — the assistant.yaml classifier is legacy and is not called at runtime.
 
-    Session management: each session_id gets an independent conversation thread
-    via LangGraph's MemorySaver. Threads are isolated in memory and do not
-    persist across process restarts.
+    **Session management.** There is no LangGraph checkpointer, and chat() takes no
+    session_id. Conversation memory has two parts:
 
-    Usage:
+    - *Prior turns, replayed by the caller.* ``chat(..., history=[...])`` receives the
+      user/assistant message pairs and prepends them per call. The UI layer owns that list
+      (``assistant_ui.py``'s ``st.session_state.assistant_messages``), which keeps tool-call
+      internals out of the replay and avoids backend format errors.
+    - *Cross-turn result-set state, held on the instance.* ``_last_dataset_mentions``,
+      ``_cumulative_filter_text``, and ``_last_profiled_dataset`` (see ``__init__``).
+
+    Isolation therefore means holding ONE ConversationManager per user session;
+    ``assistant_ui.py`` caches it in ``st.session_state.assistant_manager``. Two sessions
+    sharing an instance would share the second part. Nothing survives a process restart.
+
+    Usage::
+
         manager = ConversationManager()
-        response = manager.chat("Find sandstone datasets with porosity > 0.2", session_id="abc123")
-        follow_up = manager.chat("Which of those have micro-CT images?", session_id="abc123")
+        response = manager.chat("Find sandstone datasets with porosity > 0.2")
+        follow_up = manager.chat(
+            "Which of those have micro-CT images?",
+            history=[
+                {"role": "user", "content": "Find sandstone datasets with porosity > 0.2"},
+                {"role": "assistant", "content": response},
+            ],
+        )
     """
+
+    # Class-level fallbacks for _last_dataset_mentions/_cumulative_filter_text: __init__
+    # always sets fresh instance attributes for real usage, but several existing tests
+    # construct a manager via object.__new__(ConversationManager) (bypassing __init__
+    # entirely) to avoid building the real agent — these class attributes keep chat()
+    # working for those instances too. Never mutated in place (always rebound via
+    # `self._x = ...`), so this shared list/None is never actually written into.
+    _last_dataset_mentions: list[dict] = []
+    _cumulative_filter_text: str | None = None
+    _last_profiled_dataset: dict | None = None
 
     def __init__(self):
         from src.assistant.llm import get_chat_model
@@ -857,6 +1691,126 @@ class ConversationManager:
             build_langchain_tools(),
             prompt=SYSTEM_PROMPT,
         )
+
+        # Ordered {"title", "doi"} mentions from the most recent search_datasets/
+        # get_dataset_details result this instance has seen — instance-scoped (one
+        # ConversationManager per session per assistant_ui.py's caching), used by
+        # _resolve_reference to deterministically resolve a later ordinal/name-only
+        # follow-up ("the first one", "the Gildehauser sandstone sample") without
+        # relying solely on the LLM re-deriving it from replayed chat history.
+        self._last_dataset_mentions: list[dict] = []
+
+        # The full cumulative constraint text behind the CURRENT dataset-listing result
+        # chain, e.g. "segmented sandstone datasets" after turn 1, then "segmented
+        # sandstone datasets AND of these, porosity between 0.2 and 0.25" after a turn-2
+        # refinement. Used by the deterministic refinement dispatch in chat() — a
+        # SYSTEM_PROMPT instruction asking the agent to restate all prior constraints
+        # itself was live-tested and found unreliable (see HANDOFF.md), so this is composed
+        # in code instead. None until the first dataset-listing result of a session/chain.
+        self._cumulative_filter_text: str | None = None
+
+        # The {"title", "doi"} of whichever single dataset get_dataset_profile most
+        # recently returned — used by _detect_comparison_references to resolve a bare
+        # anaphoric follow-up ("how does THAT DATASET compare with X") the same way
+        # _last_dataset_mentions resolves ordinal/name references against a listing.
+        # None until the first get_dataset_profile result of a session.
+        self._last_profiled_dataset: dict | None = None
+
+    def _track_dataset_listing(
+        self,
+        tool_name: str,
+        tool_output: str,
+        base_text: str,
+        refinement_text: str | None = None,
+    ) -> None:
+        """Update _last_dataset_mentions/_cumulative_filter_text from a
+        search_datasets/get_dataset_details result, or _last_profiled_dataset from a
+        get_dataset_profile result, regardless of which of chat()'s several return paths
+        produced it (the single-tool-call short-circuit, the deterministic refinement/
+        comparison dispatches, or the normal end-of-stream path all call this) — every
+        path must keep this state in sync or later ordinal/name-reference, refinement, or
+        anaphoric-comparison detection silently stops working depending on which path a
+        given turn happened to take. No-op for any other tool."""
+        if tool_name == "get_dataset_profile":
+            profiled = _extract_profiled_dataset(tool_output)
+            if profiled:
+                self._last_profiled_dataset = profiled
+                logger.warning("_track_dataset_listing(tool=get_dataset_profile): last profiled dataset now %r", profiled)
+            return
+        if tool_name not in _DATASET_LISTING_TOOLS:
+            return
+        mentions = _extract_dataset_mentions(tool_output)
+        if mentions:
+            self._last_dataset_mentions = mentions
+        elif refinement_text is None:
+            # A FRESH listing turn that named no datasets — a "no results" answer, or an
+            # output shape _extract_dataset_mentions can't parse. Holding on to the previous
+            # turn's mentions here would pair them with THIS turn's brand-new filter text,
+            # so a later "of these" would narrow a set unrelated to the chain it is being
+            # ANDed onto — the same wrong-set substitution described at
+            # _DATASET_LISTING_TOOLS, reached a different way. Clear it: chat()'s refinement
+            # dispatch requires a non-empty listing, so the follow-up falls through to
+            # normal routing instead of silently refining the wrong set.
+            #
+            # A refinement turn (refinement_text is not None) is the one case where holding
+            # on IS right: "of these, which are coal?" coming back empty doesn't change what
+            # "these" refers to, so the user can still narrow the same set a different way.
+            self._last_dataset_mentions = []
+        self._cumulative_filter_text = refinement_text if refinement_text is not None else base_text
+        logger.warning(
+            "_track_dataset_listing(tool=%s): %d mentions parsed; _cumulative_filter_text now %r",
+            tool_name, len(mentions), self._cumulative_filter_text,
+        )
+
+    def _with_result_set_restriction(
+        self, tool_name: str, tool_args: dict, user_input: str
+    ) -> dict:
+        """Add restrict_to_titles to a get_dataset_details call that is an elliptical
+        refinement of the datasets already listed this session.
+
+        Closes the gap between the two existing mechanisms. The deterministic refinement
+        dispatch (see _REFINEMENT_RE in chat()) both composes the question AND restricts the
+        scope, but only fires for phrasings that name the prior set ("of these", "which
+        ones"). A bare constraint like "how about any below 0.25?" names nothing, so it fell
+        through to the agent — which composed a good self-contained question but searched the
+        entire catalog, silently leaving the result set the user was working through.
+
+        Here the agent keeps ownership of the question (it supersedes a replaced constraint
+        correctly, which blind AND-composition cannot) and this adds the scope guarantee
+        on top.
+
+        A turn counts as a refinement when EITHER signal fires:
+          1. the agent's composed question still carries every subject term of the filter
+             chain so far (see _continues_filter_chain) — the primary, phrasing-independent
+             signal, and
+          2. the user's message is an elliptical bare constraint (_ELLIPTICAL_REFINEMENT_RE),
+             which covers the case where the agent drops the subject from its question.
+
+        Deliberately narrow otherwise: only get_dataset_details (the only dataset tool that
+        accepts the parameter), only when a prior listing exists, and never overriding a
+        restriction the caller already set.
+        """
+        if tool_name != "get_dataset_details" or tool_args.get("restrict_to_titles"):
+            return tool_args
+        if not self._last_dataset_mentions:
+            return tool_args
+
+        question = tool_args.get("question") or ""
+        continues = _continues_filter_chain(question, self._cumulative_filter_text)
+        elliptical = bool(_ELLIPTICAL_REFINEMENT_RE.search(user_input))
+        if not (continues or elliptical):
+            return tool_args
+
+        titles = [m["title"] for m in self._last_dataset_mentions if m.get("title")]
+        if not titles:
+            return tool_args
+        logger.warning(
+            "Refinement of the current result set (continues_chain=%s elliptical=%s) — "
+            "restricting to the %d previously listed dataset(s); prior chain %r, "
+            "agent's question %r",
+            continues, elliptical, len(titles), self._cumulative_filter_text, question,
+        )
+        return {**tool_args, "restrict_to_titles": titles}
 
     def chat(self, user_input: str, history: list[dict] | None = None) -> str:
         """
@@ -883,6 +1837,90 @@ class ConversationManager:
         if _classify_off_domain(user_input, prior):
             return _OFF_DOMAIN_STEER_BACK_MSG
 
+        # Deterministic multi-dataset comparison dispatch: if this one message names 2+
+        # distinct datasets (explicit DOIs, ordinals against the last result list, or
+        # matched titles from it), fetch all of their profiles directly and synthesize the
+        # comparison — bypassing the ReAct agent's own tool-selection for this turn. See
+        # _detect_comparison_references docstring: relying on the agent to reliably choose
+        # to call get_dataset_profile once per dataset in the same turn was live-tested to
+        # drop the second dataset often enough (even with both DOIs given explicitly) that
+        # it isn't viable as the sole mechanism. Falls through to the normal path below if
+        # fewer than 2 references are found, or if dispatch produces nothing usable.
+        comparison_refs = _detect_comparison_references(
+            user_input, self._last_dataset_mentions, self._last_profiled_dataset
+        )
+        if comparison_refs:
+            dispatched = _run_manual_dispatch(
+                [
+                    {"name": "get_dataset_profile", "args": {"dataset_reference": ref, "question": user_input}}
+                    for ref in comparison_refs
+                ],
+                user_input,
+                prior,
+            )
+            if dispatched is not None:
+                return dispatched
+
+        # Deterministic cumulative-filter refinement dispatch: get_dataset_details and
+        # search_datasets are both STATELESS per call — each only ever sees the exact
+        # question/query string passed that call, with no memory of an earlier turn's
+        # constraints. A SYSTEM_PROMPT instruction asking the agent to compose the full
+        # cumulative question itself (all prior constraints plus the new one) was live-
+        # tested and found unreliable: the agent kept passing just the new constraint in
+        # isolation, silently dropping earlier filters and searching the whole catalog
+        # instead of narrowing the prior result set. When this message looks like a
+        # refinement ("of these", "which of these", ...) of an existing filter chain,
+        # compose the compound question in code and dispatch get_dataset_details directly,
+        # bypassing the agent's own argument-construction for this turn entirely.
+        #
+        # The compound question alone is NOT sufficient, even though it reads like it
+        # should be: live testing showed the Cypher-generation LLM re-derives every prior
+        # constraint from scratch from that text each turn, over the whole graph, rather
+        # than narrowing the actual previous result set — and it isn't even consistent
+        # about it (the identical "sandstone" constraint, reworded into two compound
+        # questions, produced two different WHERE clauses covering different rows). So
+        # restrict_to_titles is passed alongside it — a deterministic, code-level
+        # narrowing to the previous turn's actual listed titles that the regenerated
+        # Cypher's own (possibly drifting) filtering can't bypass.
+        #
+        # Both pieces of state are required, not just the filter text: restrict_to_titles is
+        # the half that actually guarantees the narrowing, and cypher_qa treats an EMPTY list
+        # as "no restriction at all" — so dispatching without titles would run the compound
+        # question over the whole catalog while the log claimed a restricted search.
+        restrict_to_titles = [m["title"] for m in self._last_dataset_mentions if m.get("title")]
+        if self._cumulative_filter_text and restrict_to_titles and _REFINEMENT_RE.search(user_input):
+            compound_question = f"{self._cumulative_filter_text} AND {user_input}"
+            logger.warning(
+                "Refinement dispatch: get_dataset_details(question=%r, restrict_to_titles=%r)",
+                compound_question, restrict_to_titles,
+            )
+            dispatched = _run_manual_dispatch(
+                [{
+                    "name": "get_dataset_details",
+                    "args": {"question": compound_question, "restrict_to_titles": restrict_to_titles},
+                }],
+                compound_question,
+                prior,
+            )
+            if dispatched is not None:
+                self._track_dataset_listing(
+                    "get_dataset_details", dispatched, user_input, refinement_text=compound_question
+                )
+                return dispatched
+        elif _REFINEMENT_RE.search(user_input):
+            # Looked like a refinement, but one of the two required pieces of state is
+            # missing — no active filter chain, or no listed datasets to narrow (the very
+            # first message of a session, a previous turn that returned nothing, or
+            # ConversationManager instance/session state reset between turns). Both are
+            # logged individually so a live report of "refinement isn't working" can be
+            # traced to which half was absent, rather than only telling us the dispatch
+            # path wasn't reached.
+            logger.warning(
+                "Refinement phrase detected but not dispatched (filter_chain=%r, "
+                "listed_datasets=%d) — falling through to normal routing for: %r",
+                self._cumulative_filter_text, len(restrict_to_titles), user_input,
+            )
+
         # Tool-need gate: a separate, tools-unbound call that decides whether this turn
         # needs the tool-bound ReAct agent at all. See _classify_needs_tool docstring —
         # this exists because the tool-bound agent below is what exposes the model to
@@ -891,7 +1929,23 @@ class ConversationManager:
         if not _classify_needs_tool(user_input, prior):
             return _answer_direct(user_input, prior)
 
-        messages = prior + [{"role": "user", "content": user_input}]
+        # Deterministic reference-resolution assist: if this message is an ordinal
+        # ("the first one") or names exactly one title from the last dataset-listing
+        # result this instance has seen, tell the agent explicitly which dataset that
+        # is rather than relying solely on it re-deriving the reference from replayed
+        # chat history (see _resolve_reference docstring / HANDOFF.md — this was
+        # unreliable in practice for get_dataset_profile follow-ups). No match leaves
+        # user_input untouched, so behavior is unchanged when resolution doesn't apply.
+        resolved = _resolve_reference(user_input, self._last_dataset_mentions)
+        effective_user_input = user_input
+        if resolved:
+            doi_note = f', DOI {resolved["doi"]}' if resolved.get("doi") else ""
+            effective_user_input = (
+                f'{user_input}\n\n(Resolved reference: the dataset being referred to is '
+                f'"{resolved["title"]}"{doi_note}.)'
+            )
+
+        messages = prior + [{"role": "user", "content": effective_user_input}]
         try:
             # Stream instead of a single .invoke() so a single self-contained/verbatim
             # tool call can be dispatched and returned WITHOUT ever letting the graph
@@ -916,17 +1970,44 @@ class ConversationManager:
             last_first = new_after_first[-1] if new_after_first else None
             first_turn_tool_calls = getattr(last_first, "tool_calls", None) or []
 
-            if (
-                len(first_turn_tool_calls) == 1
+            # One relayed tool call is about to become the whole response, so ask what
+            # parts of the message that answer won't cover. Computed ONCE per turn and
+            # reused by the post-graph relay below, so no turn pays for this gate twice.
+            single_relay_call = (
+                first_turn_tool_calls[0]
+                if len(first_turn_tool_calls) == 1
                 and first_turn_tool_calls[0]["name"] in (_SELF_CONTAINED_TOOLS | _VERBATIM_TOOLS)
-                and not _needs_followup_tool_call(user_input, first_turn_tool_calls[0]["name"])
-            ):
+                else None
+            )
+            uncovered = (
+                _uncovered_requests(
+                    user_input, single_relay_call["name"], single_relay_call.get("args") or {}
+                )
+                if single_relay_call else []
+            )
+
+            # An uncovered part that needs a LOOKUP still has to suppress the
+            # short-circuit and let the graph run for its second tool call — only a
+            # no-lookup part (a definition) can be answered alongside the relay.
+            if single_relay_call and not _needs_followup_lookup(uncovered):
+                first_tool_name = single_relay_call["name"]
+                # The agent composes the question; this adds the "stay inside the datasets
+                # already listed" guarantee for an elliptical follow-up that the
+                # deterministic refinement dispatch above doesn't recognise.
+                first_tool_args = self._with_result_set_restriction(
+                    first_tool_name, dict(single_relay_call.get("args") or {}), user_input
+                )
                 dispatched = _run_manual_dispatch(
-                    [{"name": first_turn_tool_calls[0]["name"], "args": first_turn_tool_calls[0]["args"]}],
-                    user_input,
+                    [{"name": first_tool_name, "args": first_tool_args}],
+                    effective_user_input,
                     prior,
+                    uncovered=uncovered,
                 )
                 if dispatched is not None:
+                    self._track_dataset_listing(
+                        first_tool_name, dispatched,
+                        _tool_filter_text(first_tool_args, effective_user_input),
+                    )
                     return dispatched
                 # The tool itself failed inside manual dispatch — fall through to the
                 # normal graph execution below (which has its own per-tool error
@@ -936,8 +2017,9 @@ class ConversationManager:
                 # its answer, THEN decide to also call tool B) would otherwise have
                 # that second call silently dropped by this single-tool-call check —
                 # live-verified this model requests cross-intent tools sequentially,
-                # not in one parallel tool_calls list, so _needs_followup_tool_call
-                # above is the actual guard against that, not the tool_calls count.
+                # not in one parallel tool_calls list, so the coverage gate's
+                # needs_lookup verdict above is the actual guard against that, not the
+                # tool_calls count.
 
             result = first_model_step
             for step in stream:
@@ -948,12 +2030,35 @@ class ConversationManager:
             # tool's data from memory, which is where dropped/hallucinated DOIs and
             # descriptions come from. Splice the tool's real output in verbatim instead.
             new_messages = result["messages"][len(messages):]
+
+            # Refresh the deterministic reference-resolution/refinement cache from any
+            # search_datasets/get_dataset_details result produced this turn — a later
+            # follow-up ("tell me about the first one", "of these, which are segmented")
+            # resolves/refines against this. Also refreshes _last_profiled_dataset from any
+            # get_dataset_profile result, for a later anaphoric comparison follow-up ("how
+            # does that dataset compare with X"). Left unchanged for tools that produced
+            # neither, so a get_dataset_profile turn doesn't wipe out the prior listing and
+            # vice versa.
+            tool_args_by_id = _tool_args_by_call_id(new_messages)
+            for m in new_messages:
+                if isinstance(m, ToolMessage) and getattr(m, "name", None) in (_DATASET_LISTING_TOOLS | {"get_dataset_profile"}):
+                    self._track_dataset_listing(
+                        m.name, m.content,
+                        _tool_filter_text(
+                            tool_args_by_id.get(getattr(m, "tool_call_id", None)),
+                            effective_user_input,
+                        ),
+                    )
+
             verbatim_tool_msgs = [
                 m for m in new_messages
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in _VERBATIM_TOOLS
             ]
             if len(verbatim_tool_msgs) == 1:
-                return _build_verbatim_response(user_input, verbatim_tool_msgs[0].content)
+                return _with_uncovered_segment(
+                    _non_empty(_build_verbatim_response(effective_user_input, verbatim_tool_msgs[0].content)),
+                    uncovered, effective_user_input, prior,
+                )
 
             # Same rationale for tools that already return a complete, grounded answer —
             # skip the outer agent's own retelling of it.
@@ -961,8 +2066,16 @@ class ConversationManager:
                 m for m in new_messages
                 if isinstance(m, ToolMessage) and getattr(m, "name", None) in _SELF_CONTAINED_TOOLS
             ]
+            # Same assembly as the pre-emptive path. Note what this deliberately does
+            # NOT paper over: if the gate reported a needs_lookup part above (so the graph
+            # ran) and the agent then still made only this one call, that part stays
+            # unanswered — _with_uncovered_segment only ever fills no-lookup parts, and
+            # inventing the lookup's data here is the failure this whole file guards against.
             if len(self_contained_tool_msgs) == 1 and not verbatim_tool_msgs:
-                return _clean_response(self_contained_tool_msgs[0].content)
+                return _with_uncovered_segment(
+                    _non_empty(_clean_response(self_contained_tool_msgs[0].content)),
+                    uncovered, effective_user_input, prior,
+                )
 
             raw = result["messages"][-1].content
             # Llama-4-Maverick sometimes emits tool-call syntax as plain text that
@@ -972,10 +2085,18 @@ class ConversationManager:
                 logger.warning("Tool call leaked into final response; dispatching manually.")
                 tool_calls = _extract_tool_calls_from_text(raw)
                 if tool_calls:
-                    dispatched = _run_manual_dispatch(tool_calls, user_input, prior)
-                    if dispatched:
+                    dispatched = _run_manual_dispatch(
+                        tool_calls, effective_user_input, prior,
+                        uncovered=_recovered_call_coverage(tool_calls, user_input),
+                    )
+                    if dispatched is not None:
+                        for tc in tool_calls:
+                            self._track_dataset_listing(
+                                tc["name"], dispatched,
+                                _tool_filter_text(tc.get("args"), effective_user_input),
+                            )
                         return dispatched
-            return _clean_response(raw)
+            return _non_empty(_clean_response(raw))
         except Exception as e:
             err_str = str(e)
             # Llama-4-Maverick uses a non-OpenAI tool-call format that LiteLLM rejects
@@ -985,8 +2106,21 @@ class ConversationManager:
                 logger.warning("Tool-call format mismatch (400); attempting manual dispatch.")
                 tool_calls = _extract_tool_calls_from_error(err_str)
                 if tool_calls:
-                    dispatched = _run_manual_dispatch(tool_calls, user_input, prior)
-                    if dispatched:
+                    # The coverage gate never ran for this turn: the 400 fired from the
+                    # graph's own relay turn, before or instead of the short-circuit that
+                    # normally consults it. Without checking here, a correctly-detected
+                    # multi-part turn still collapses to the one recovered call's output —
+                    # this is the exact path in the reported "it ignored half my question".
+                    dispatched = _run_manual_dispatch(
+                        tool_calls, effective_user_input, prior,
+                        uncovered=_recovered_call_coverage(tool_calls, user_input),
+                    )
+                    if dispatched is not None:
+                        for tc in tool_calls:
+                            self._track_dataset_listing(
+                                tc["name"], dispatched,
+                                _tool_filter_text(tc.get("args"), effective_user_input),
+                            )
                         return dispatched
                     # A tool call WAS identified and dispatch was attempted — real,
                     # grounded tool output may or may not exist depending on whether the

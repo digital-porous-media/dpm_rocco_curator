@@ -5,22 +5,20 @@ Ported from CurationTools/JsonToNeo4jwKeywords.ipynb. Supports both a full
 rebuild (clear + reload) and an incremental upsert (merge existing datasets,
 refresh sub-nodes, preserve embeddings on unchanged nodes).
 
-Embeddings and LLM keywords are NOT generated here; run
-scripts/build_dataset_vector_index.py after loading to populate
-descriptionEmbedding on each Dataset node.
+Embeddings, fact sheets, LLM keywords, and every vector/fulltext index are NOT
+created here — run scripts/build_dataset_vector_index.py after loading. It owns
+index creation because a vector index needs the embedding dimension, which is
+only known once the embedding endpoint has actually been called.
 
 Usage:
     # Full rebuild (default)
     python scripts/load_graph.py --mode rebuild
 
-    # Incremental upsert (preserves descriptionEmbedding on unchanged nodes)
+    # Incremental upsert (preserves derived properties on unchanged nodes)
     python scripts/load_graph.py --mode upsert
 
     # Single file (useful for testing)
     python scripts/load_graph.py --file data/metadata/DRP-1.json
-
-    # Skip vector index creation (e.g. before embeddings are ready)
-    python scripts/load_graph.py --mode rebuild --skip-index
 """
 
 from __future__ import annotations
@@ -156,11 +154,11 @@ class GraphLoader:
     # Public API
     # ------------------------------------------------------------------
 
-    def load_directory(self, folder: str | Path, mode: str = "rebuild", skip_index: bool = False) -> None:
+    def load_directory(self, folder: str | Path, mode: str = "rebuild") -> None:
         """Load all JSON files in *folder*.
 
         mode='rebuild' clears the graph first.
-        mode='upsert'  merges each dataset, preserving descriptionEmbedding.
+        mode='upsert'  merges each dataset, preserving derived properties.
         """
         folder = Path(folder)
         files = sorted(p for p in folder.iterdir() if p.suffix == ".json")
@@ -185,9 +183,8 @@ class GraphLoader:
         print(f"\nLoaded {success}/{len(files)} files.")
         if failed:
             print(f"Failed: {[name for name, _ in failed]}")
-
-        if not skip_index:
-            self.create_vector_index()
+        print("Next: python scripts/build_dataset_vector_index.py  "
+              "(embeddings, fact sheets, and all vector/fulltext indexes)")
 
     def load_file(self, path: str | Path, mode: str = "upsert") -> None:
         """Load a single metadata JSON file."""
@@ -212,14 +209,6 @@ class GraphLoader:
     def clear(self) -> None:
         with self._driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
-
-    def create_vector_index(self) -> None:
-        with self._driver.session() as session:
-            session.run("""
-                CREATE VECTOR INDEX `datasetDescription` IF NOT EXISTS
-                FOR (n:Dataset) ON (n.descriptionEmbedding)
-            """)
-        print("Vector index 'datasetDescription' ready.")
 
     # ------------------------------------------------------------------
     # Internal: Dataset node
@@ -248,7 +237,9 @@ class GraphLoader:
     def _upsert_dataset_node(tx, metadata, root_key, root_id, dataset_number):
         v = metadata["nodes"][root_key]["value"]
         authors = _author_names(metadata["nodes"], root_key)
-        # MERGE on identifier so descriptionEmbedding / llmKeywords are not overwritten
+        # MERGE on identifier so the derived properties written by
+        # build_dataset_vector_index.py (datasetEmbedding, factSheet*, llmKeywords)
+        # survive an upsert instead of being wiped and needing a full re-embed.
         tx.run("""
             MERGE (d:Dataset {identifier: $identifier})
             SET d.title            = $title,
@@ -482,8 +473,6 @@ def main():
                         help="Directory of metadata JSON files (default: data/metadata/)")
     parser.add_argument("--file", default=None,
                         help="Load a single JSON file instead of a directory")
-    parser.add_argument("--skip-index", action="store_true",
-                        help="Skip creating the vector index (useful before embeddings are ready)")
     args = parser.parse_args()
 
     loader = GraphLoader()
@@ -491,11 +480,9 @@ def main():
         if args.file:
             print(f"Loading single file: {args.file}  [mode={args.mode}]")
             loader.load_file(args.file, mode=args.mode)
-            if not args.skip_index:
-                loader.create_vector_index()
         else:
             print(f"Loading directory: {args.folder}  [mode={args.mode}]")
-            loader.load_directory(args.folder, mode=args.mode, skip_index=args.skip_index)
+            loader.load_directory(args.folder, mode=args.mode)
     finally:
         loader.close()
 

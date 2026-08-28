@@ -175,23 +175,6 @@ class TestComponentSearch:
         assert isinstance(results, list)
 
 
-@pytest.mark.search_layer
-class TestCombinedSearch:
-    """
-    Coverage for GraphStore.search_datasets() — the low-level method that combines
-    vector similarity and metadata filters in a single Cypher query (see CLAUDE.md
-    Search Architecture). Distinct from the search_datasets *tool* in tools.py, which
-    uses hybrid_search() + component_search() instead.
-    """
-
-    def test_search_datasets_combined_structural(self, mock_graph_store):
-        fake_embedding = [0.0] * 8
-        results = mock_graph_store.search_datasets(
-            fake_embedding, filters={"porousMediaType": "sandstone"}, k=5
-        )
-        assert isinstance(results, list)
-
-
 # ---------------------------------------------------------------------------
 # M — metadata_filter
 # ---------------------------------------------------------------------------
@@ -703,3 +686,223 @@ class TestLiteratureSearch:
 
         assert response is not None
         assert "no papers found" in response.lower()
+
+
+# ---------------------------------------------------------------------------
+# P — dataset detail follow-up / profile / comparison
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.tool_layer
+class TestDatasetProfile:
+    """P-1/P-2: single-dataset detail follow-ups and multi-dataset comparisons,
+    routed through get_dataset_profile per HANDOFF.md's "Dataset Detail Follow-Up
+    Queries" feature."""
+
+    def test_p0_mocked_smoke(self, mock_graph_store):
+        """Mocked/tool_layer smoke test: the tool doesn't raise against the
+        USE_NEO4J=false mock_graph_store fixture, and degrades to an honest
+        not-found message rather than an exception."""
+        from unittest.mock import patch
+        from src.assistant.tools import get_dataset_profile
+
+        with patch("src.assistant.tools._graph_store", mock_graph_store):
+            response = _run_tool(
+                get_dataset_profile, "Bentheimer Sandstone", "tell me more about this dataset"
+            )
+
+        assert response is not None
+        assert "no dataset was found" in response.lower()
+
+    def test_p1_search_then_tell_me_more_live(self, conversation_manager):
+        """P-1: a search turn followed by "tell me more about the first one" must
+        return a fuller [dataset profile] answer, not a repeat of the search
+        result's title/DOI/one-line-summary shape."""
+        first = conversation_manager.chat("Show me sandstone datasets")
+        history = [
+            {"role": "user", "content": "Show me sandstone datasets"},
+            {"role": "assistant", "content": first},
+        ]
+        second = conversation_manager.chat("Tell me more about the first one", history=history)
+
+        assert second is not None
+        lower = second.lower()
+        has_profile = "[dataset profile]" in lower
+        has_gap = any(p in lower for p in ["no dataset was found", "which one did you mean"])
+        assert has_profile or has_gap, f"Expected a profile answer or an honest gap.\nGot: {second[:300]}"
+
+    def test_p2_compare_two_datasets_live(self, conversation_manager):
+        """P-2: a comparison request naming two datasets must profile both (via
+        two get_dataset_profile calls) and synthesize a comparison, not just
+        answer about one of them."""
+        response = conversation_manager.chat(
+            "Compare Bentheimer Sandstone and Estaillades Carbonate for two-phase flow simulation."
+        )
+
+        assert response is not None
+        lower = response.lower()
+        mentions_both = "bentheimer" in lower and "estaillades" in lower
+        has_gap = any(p in lower for p in ["no dataset was found", "which one did you mean"])
+        assert mentions_both or has_gap, f"Expected both datasets addressed or an honest gap.\nGot: {response[:300]}"
+
+
+# ---------------------------------------------------------------------------
+# Q. Multi-part questions (live)
+#
+# Coverage gap this closes: the suite's existing "compound-looking" queries
+# ("What does formation factor mean and how does it relate to tortuosity?",
+# "difference between absolute and relative permeability") are each a SINGLE
+# request one tool covers whole — useful negative controls, but they never
+# exercise a message whose parts need different handling. That gap is why the
+# dropped-half bug reached live hand-testing instead of CI.
+# ---------------------------------------------------------------------------
+
+
+class TestMultiPartQuestions:
+    """A message asking for two things must come back with both."""
+
+    def test_q1_definition_plus_workflow_live(self, conversation_manager):
+        """Q-1: the reported failure, verbatim. A Tier 3 definition ("what is
+        porosity") alongside a Tier 2 workflow ("how do I compute it from a microCT
+        image"). One tool call plus a no-tool half — the shape that used to relay only
+        the workflow answer and silently discard the definition the model had already
+        written."""
+        response = conversation_manager.chat(
+            "What is porosity and how do I compute it from a microCT image?"
+        )
+
+        assert response is not None
+        lower = response.lower()
+        # The definition half: a ratio/fraction of void to total volume.
+        defines_porosity = any(
+            t in lower for t in ["void", "pore volume", "fraction", "ratio"]
+        )
+        # The workflow half: segmentation then voxel counting.
+        gives_workflow = "segment" in lower and any(
+            t in lower for t in ["voxel", "count", "threshold"]
+        )
+        assert defines_porosity, f"Definition half missing.\nGot: {response[:600]}"
+        assert gives_workflow, f"Workflow half missing.\nGot: {response[:600]}"
+
+    @pytest.mark.xfail(
+        strict=False,
+        reason=(
+            "Known-open: the two-tool grounding hole. Both tools DO get dispatched (verified "
+            "live in the logs — get_workflow_guidance then search_datasets), but two results "
+            "fall past the single-tool relay checks into the generic synthesis path, which "
+            "asks the model to 'preserve DOIs verbatim' — a prompt-level plea this project has "
+            "repeatedly found unreliable for this model. Observed dropping the dataset rows and "
+            "their source labels entirely. The fix is converting that path to "
+            "_assemble_response (one segment per tool result), which needs no new machinery, "
+            "only a behavior change to the comparison/cross-intent output shape — deliberately "
+            "not bundled into the dropped-half fix."
+        ),
+    )
+    def test_q2_workflow_plus_dataset_search_live(self, conversation_manager):
+        """Q-2: the other multi-part shape — both halves need a LOOKUP, so the second
+        must arrive as a real tool call, never from model knowledge. Asserts a source
+        label is present, since a fabricated dataset list wouldn't carry one."""
+        response = conversation_manager.chat(
+            "How do I compute permeability, and can you also find datasets that measure it?"
+        )
+
+        assert response is not None
+        lower = response.lower()
+        assert "permeability" in lower
+        labels = ["[graph match]", "[semantic match]", "[hybrid match]",
+                  "[cypher match]", "[component match]", "[content reasoning]"]
+        has_dataset_answer = any(l in lower for l in labels)
+        has_gap = any(p in lower for p in ["no datasets found", "found no matching"])
+        assert has_dataset_answer or has_gap, (
+            f"Dataset half must come from a tool (source label) or say so honestly.\n"
+            f"Got: {response[:600]}"
+        )
+
+    def test_q3_single_request_is_not_split_live(self, conversation_manager):
+        """Q-3: negative control. "What is X, and how is it measured?" reads compound
+        but is ONE request get_educational_context covers whole — the coverage gate must
+        not manufacture an uncovered part and pull in a redundant second answer."""
+        response = conversation_manager.chat(
+            "What is capillary pressure, and how is it measured?"
+        )
+
+        assert response is not None
+        lower = response.lower()
+        assert "capillary pressure" in lower
+        # A spurious split shows up as the SAME ground being covered twice in two
+        # separately-composed blocks, so look for a restated definitional opener rather
+        # than for phrase frequency (a single coherent answer says "capillary pressure
+        # is ..." several times in ordinary prose).
+        openers = re.findall(r"capillary pressure \(?\$?p_?c?\$?\)? is (?:the|a) ", lower)
+        assert len(openers) <= 1, (
+            f"Definition appears to have been composed twice.\nGot: {response[:800]}"
+        )
+
+
+class TestCoverageGateJudgment:
+    """The coverage gate's own judgment, with a real LLM.
+
+    The unit tests hand-feed its JSON, so they verify plumbing and cannot catch a prompt
+    regression — the same blind spot that let the predecessor gate answer "no follow-up
+    needed" on a compound question while its tests stayed green. These call the real
+    model. Failures here are prompt failures, not code failures.
+
+    Every case carries realistic ARGUMENTS, because coverage depends on them: the live
+    failure was a tool whose description covered both halves of a question being called
+    with an argument naming only one. Judging on the tool name alone was right about the
+    tool and wrong about the turn.
+    """
+
+    # (question, tool, args, expect_uncovered_no_lookup, expect_uncovered_lookup)
+    CASES = [
+        # Single intent, argument intact — nothing uncovered.
+        ("How do I compute relative permeability?", "get_workflow_guidance",
+         {"goal": "compute relative permeability"}, False, False),
+        # Reads compound, is one request; get_educational_context covers concepts AND
+        # methods and the argument is intact. Negative control against over-splitting.
+        ("What is capillary pressure, and how is it measured?", "get_educational_context",
+         {"question": "What is capillary pressure, and how is it measured?"}, False, False),
+        ("How do I upload a dataset to the portal?", "search_portal_docs",
+         {"question": "How do I upload a dataset to the portal?"}, False, False),
+        ("Tell me more about this dataset", "get_dataset_profile",
+         {"dataset_reference": "Bentheimer Sandstone", "question": "Tell me more"}, False, False),
+        # The reported bug: a Tier 3 definition alongside a Tier 2 workflow. Out of scope
+        # for a procedural tool (step 1), so the definition is uncovered and needs no lookup.
+        ("What is porosity and how do I compute it from a microCT image?", "get_workflow_guidance",
+         {"goal": "compute porosity from a microCT image"}, True, False),
+        # In scope but not in the argument (step 2): the compute half was trimmed away.
+        ("What is porosity and how do I compute it from a microCT image?", "get_educational_context",
+         {"question": "What is porosity?"}, False, True),
+        # Same question, full argument — the tool covers both halves, nothing uncovered.
+        ("What is porosity and how do I compute it from a microCT image?", "get_educational_context",
+         {"question": "What is porosity and how do I compute it from a microCT image?"},
+         False, False),
+        # Second half needs a real lookup: must suppress the relay short-circuit.
+        ("How do I compute relative permeability, and can you also find datasets that measure it?",
+         "get_workflow_guidance", {"goal": "compute relative permeability"}, False, True),
+        ("What is porosity, and are there any recent papers on it?", "get_educational_context",
+         {"question": "What is porosity?"}, False, True),
+        ("Compare Dataset A and Dataset B for two-phase flow simulation", "get_dataset_profile",
+         {"dataset_reference": "Dataset A", "question": "two-phase flow suitability"}, False, True),
+    ]
+
+    @pytest.mark.parametrize(
+        "question,tool_called,tool_args,expect_no_lookup,expect_lookup",
+        CASES,
+        ids=[f"{c[1]}:{c[0][:34]}:{list(c[2].values())[0][:26]}" for c in CASES],
+    )
+    def test_coverage_verdict(
+        self, chat_model, question, tool_called, tool_args, expect_no_lookup, expect_lookup
+    ):
+        from src.assistant.conversation_manager import _uncovered_requests
+
+        uncovered = _uncovered_requests(question, tool_called, tool_args)
+        no_lookup = [u for u in uncovered if not u["needs_lookup"]]
+        lookup = [u for u in uncovered if u["needs_lookup"]]
+
+        assert bool(no_lookup) == expect_no_lookup, (
+            f"no-lookup uncovered: expected {expect_no_lookup}, got {no_lookup!r}"
+        )
+        assert bool(lookup) == expect_lookup, (
+            f"needs-lookup uncovered: expected {expect_lookup}, got {lookup!r}"
+        )

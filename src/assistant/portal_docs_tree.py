@@ -158,7 +158,6 @@ def parse_markdown_tree(path: Path, rel_path: str) -> list[DocNode]:
 
     roots: list[DocNode] = []
     stack: list[tuple[int, DocNode, list[str]]] = []  # (level, node, [rel_path])
-    node_paths: dict[int, list[str]] = {}
 
     for i, (level, title, _start, _match_start) in enumerate(headings):
         while stack and stack[-1][0] >= level:
@@ -186,7 +185,6 @@ def parse_markdown_tree(path: Path, rel_path: str) -> list[DocNode]:
             roots.append(node)
 
         stack.append((level, node, slug_path))
-        node_paths[i] = slug_path
 
     # Leading content before the very first heading (rare — dpm_docs pages start
     # with their H1 — but handle it rather than silently dropping it).

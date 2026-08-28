@@ -10,7 +10,7 @@ Scans data/metadata/*.json to compute:
 Optionally queries a live Neo4j instance (--neo4j) to verify coverage
 matches what was actually loaded into the graph.
 
-Use --verify to cross-check that all 176 datasets are present in Neo4j
+Use --verify to cross-check that every dataset in --folder is present in Neo4j
 with correct property values, sub-node counts, and relationship counts.
 
 Usage:
@@ -169,14 +169,21 @@ def audit_json(folder: Path) -> dict[str, NodeStats]:
         digital_pattern = re.compile(r"drp\.project\.digital_dataset")
         analysis_pattern = re.compile(r"drp\.project\.analysis_dataset")
 
+        # Bucket labels below are written in *Neo4j edge* direction, which is the
+        # REVERSE of the JSON link direction: a link's `source` is the parent and its
+        # `target` is the child, and _establish_connection writes
+        # `MERGE (source)<-[:INPUT_FOR]-(target)` — i.e. child → parent. Labelling
+        # these in JSON-link direction (as this did) reads as the graph direction and
+        # is exactly the inversion documented in docs/neo4j_schema.md's INPUT_FOR
+        # warning. The match conditions are unchanged; only the labels are.
         for link in links:
             src, tgt = link.get("source", ""), link.get("target", "")
             if "NODE_ROOT" in src:
                 rel_counts["PART_OF: * → Dataset"] += 1
             elif sample_pattern.search(src) and digital_pattern.search(tgt):
-                rel_counts["INPUT_FOR: Sample → DigitalDataset"] += 1
+                rel_counts["INPUT_FOR: DigitalDataset → Sample"] += 1
             elif digital_pattern.search(src) and analysis_pattern.search(tgt):
-                rel_counts["INPUT_FOR: DigitalDataset → AnalysisDataset"] += 1
+                rel_counts["INPUT_FOR: AnalysisDataset → DigitalDataset"] += 1
             else:
                 rel_counts["INPUT_FOR (other)"] += 1
 
@@ -205,7 +212,13 @@ def audit_neo4j() -> dict[str, dict[str, float]]:
         ("Dataset", "title", "title"), ("Dataset", "description", "description"),
         ("Dataset", "doi", "doi"), ("Dataset", "authors", "authors"),
         ("Dataset", "license", "license"), ("Dataset", "publicationDate", "publicationDate"),
-        ("Dataset", "descriptionEmbedding", "descriptionEmbedding"),
+        # Derived properties written by build_dataset_vector_index.py, not by
+        # load_graph.py. `datasetEmbedding` is the real property name — an earlier
+        # `descriptionEmbedding` was audited here for a long time and always read 0%,
+        # because nothing has ever written it.
+        ("Dataset", "datasetEmbedding", "datasetEmbedding"),
+        ("Dataset", "factSheetEmbedding", "factSheetEmbedding"),
+        ("Dataset", "factSheetText", "factSheetText"),
 
         ("Sample", "name", "title"), ("Sample", "porousMediaType", "porousMediaType"),
         ("Sample", "porosity", "porosity"), ("Sample", "source", "source"),
@@ -300,8 +313,8 @@ def verify_neo4j(folder: Path, stats: dict[str, NodeStats]) -> dict:
     rel_counts = stats.get("_rel_counts", {})
     expected_rel_part_of = sum(stats[label].total for label in _PART_OF_NODE_TYPES)
     expected_rel_input_for = (
-        rel_counts.get("INPUT_FOR: Sample → DigitalDataset", 0)
-        + rel_counts.get("INPUT_FOR: DigitalDataset → AnalysisDataset", 0)
+        rel_counts.get("INPUT_FOR: DigitalDataset → Sample", 0)
+        + rel_counts.get("INPUT_FOR: AnalysisDataset → DigitalDataset", 0)
         + rel_counts.get("INPUT_FOR (other)", 0)
     )
 
@@ -559,7 +572,10 @@ def build_markdown(stats: dict[str, NodeStats], neo4j: dict | None = None) -> st
                 ("authors", "string", "authors", "Concatenated `First Last` names"),
                 ("license", "string", "license", None),
                 ("publicationDate", "string", "publicationDate", None),
-                ("descriptionEmbedding", "float[]", None, "Set by `build_dataset_vector_index.py`. Used for semantic search."),
+                ("datasetEmbedding", "float[]", None, "Derived. Set by `build_dataset_vector_index.py`. Aggregated dataset-level vector for semantic search."),
+                ("factSheetEmbedding", "float[]", None, "Derived. Set by `build_dataset_vector_index.py`. Vector over the fact sheet, for `rank_fact_sheets()`."),
+                ("factSheet", "string", None, "Derived. JSON fact sheet — edge-preserving summary. See \"Fact sheets\" below."),
+                ("factSheetText", "string", None, "Derived. Rendered prose form of `factSheet`; BM25-indexed and read by the reasoning pass."),
                 ("llmKeywords", "string[]", None, "Planned; not yet populated."),
             ],
             "label": "Dataset",
@@ -703,21 +719,66 @@ def build_markdown(stats: dict[str, NodeStats], neo4j: dict | None = None) -> st
               "| `PART_OF` | `RelatedPublication → Dataset` | Publication linked to this project |",
               "| `PART_OF` | `RelatedSoftware → Dataset` | Software linked to this project |",
               "| `PART_OF` | `RelatedDataset → Dataset` | External dataset linked to this project |",
-              "| `INPUT_FOR` | `Sample → DigitalDataset` | Sample was imaged to produce this digital dataset |",
-              "| `INPUT_FOR` | `DigitalDataset → AnalysisDataset` | Image data was input for this analysis |",
+              "| `INPUT_FOR` | `DigitalDataset → Sample` | This scan was produced by imaging that sample (1,893 edges) |",
+              "| `INPUT_FOR` | `AnalysisDataset → DigitalDataset` | This analysis was computed from that image data (983 edges) |",
+              "| `INPUT_FOR` | `AnalysisDataset → Sample` | This analysis was computed straight from that sample, no intermediate scan (55 edges) |",
               ""]
 
-    # ------------------------------------------------------------------ vector index
+    # The single most common way a generated/hand-written query silently returns
+    # nothing. Keep this warning in the generated doc, not just in a code comment.
     lines += [
-        "## Vector Index",
+        "> ⚠️ **`INPUT_FOR` points CHILD → PARENT**, i.e. \"was derived from\" — the *same* direction as",
+        "> `PART_OF`, despite what the name suggests. A scan points **at** the sample it came from; an",
+        "> analysis points **at** the scan it came from. This is what `scripts/load_graph.py`'s",
+        "> `_establish_connection` writes (`MERGE (s)<-[:INPUT_FOR]-(t)`, where `s` is the parent in the",
+        "> DRP metadata's `links` list), and it is verified against the live graph by the edge counts",
+        "> above. Writing the pattern the intuitive way round —",
+        "> `(s:Sample)-[:INPUT_FOR]->(dd:DigitalDataset)` — matches **zero rows and fails silently**.",
+        "> To find the scans taken of a given sample:",
+        ">",
+        "> ```cypher",
+        "> MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)",
+        "> RETURN s.title, collect(dd.title)",
+        "> ```",
         "",
-        "| Field | Value |",
-        "|---|---|",
-        "| Name | `datasetDescription` |",
-        "| Node label | `Dataset` |",
-        "| Property | `descriptionEmbedding` |",
-        "| Dimensions | 4096 (E5-Mistral-7B-Instruct) |",
-        "| Built by | `scripts/build_dataset_vector_index.py` |",
+    ]
+
+    # ------------------------------------------------------------------ indexes
+    lines += [
+        "## Vector and Fulltext Indexes",
+        "",
+        "| Name | Node label | Property | Purpose |",
+        "|---|---|---|---|",
+        "| `datasetEmbedding` | `Dataset` | `datasetEmbedding` | Dataset-level semantic search (`GraphStore.search`) |",
+        "| `componentEmbedding` | `DatasetComponent` | `componentEmbedding` | Per-sub-node semantic search (`GraphStore.component_search`) |",
+        "| `factSheetEmbedding` | `Dataset` | `factSheetEmbedding` | Fact-sheet semantic search (`GraphStore.rank_fact_sheets`) |",
+        "| `datasetDescriptionFulltext` | `Dataset` | `title`, `description` | BM25 half of `GraphStore.hybrid_search` |",
+        "| `datasetFactSheetFulltext` | `Dataset` | `factSheetText` | BM25 half of `GraphStore.rank_fact_sheets` |",
+        "",
+        "All three vector indexes are 4096-dimensional (E5-Mistral-7B-Instruct); all five are built",
+        "by `scripts/build_dataset_vector_index.py`. `DatasetComponent` is a secondary label added",
+        "to `Sample`/`DigitalDataset`/`AnalysisDataset` nodes at embed time — `load_graph.py` does",
+        "not set it.",
+        "",
+        "### Derived (non-source) `Dataset` properties",
+        "",
+        "`datasetEmbedding`, `factSheetEmbedding`, `factSheet` (a JSON string), and `factSheetText` are",
+        "**computed from** the published DRP metadata by the index builder. The published metadata",
+        "itself — `title`, `description`, `doi`, `authors`, and all sub-node properties — is never",
+        "modified. Never `RETURN` a whole node (`RETURN d`) that carries one of these: a 4096-float",
+        "vector reaching an LLM context has already caused a production context-window failure. Use a",
+        "map projection instead:",
+        "`RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null}`.",
+        "",
+        "### Fact sheets",
+        "",
+        "`Dataset.factSheet` / `Dataset.factSheetText` hold a precomputed, edge-preserving summary of",
+        "each dataset — its description, its sub-nodes with their key properties, and, critically, which",
+        "`DigitalDataset` belongs to which `Sample`. This is the raw material the assistant's",
+        "`reason_about_dataset_content` tool reasons over for questions no single literal field can",
+        "answer (\"paired tomographic and segmented images\", \"the same sample at different",
+        "resolutions\"). Fact sheets cache raw material only, never a verdict — whether a dataset",
+        "satisfies a given relationship is judged live, per query.",
         "",
     ]
 
@@ -748,14 +809,25 @@ def build_markdown(stats: dict[str, NodeStats], neo4j: dict | None = None) -> st
         "```",
         "",
         "### Full graph for one dataset",
+        "",
+        "Note the map projection: `d` carries `datasetEmbedding`/`factSheetEmbedding`/`factSheetText`,",
+        "so a bare `RETURN d` dumps a 4096-float vector and the whole fact sheet into the result.",
+        "",
         "```cypher",
         "MATCH (n)-[:PART_OF]->(d:Dataset {datasetNumber: 1})",
-        "RETURN d, n",
+        "RETURN d{.*, datasetEmbedding: null, factSheetEmbedding: null, factSheetText: null},",
+        "       n{.*, componentEmbedding: null}",
         "```",
         "",
-        "### Semantic search (requires descriptionEmbedding populated)",
+        "### Find the scans taken of each sample (INPUT_FOR is child → parent)",
         "```cypher",
-        "CALL db.index.vector.queryNodes('datasetDescription', 5, $embedding)",
+        "MATCH (dd:DigitalDataset)-[:INPUT_FOR]->(s:Sample)-[:PART_OF]->(d:Dataset)",
+        "RETURN d.title, s.title, collect(dd.title) AS scans",
+        "```",
+        "",
+        "### Semantic search (requires datasetEmbedding populated)",
+        "```cypher",
+        "CALL db.index.vector.queryNodes('datasetEmbedding', 5, $embedding)",
         "YIELD node, score",
         "RETURN node.title, node.datasetNumber, score",
         "```",
@@ -787,23 +859,57 @@ def build_markdown(stats: dict[str, NodeStats], neo4j: dict | None = None) -> st
     ]
 
     # ------------------------------------------------------------------ graceful degradation
+    # Tier membership is COMPUTED from the same coverage numbers as the tables above.
+    # These three tables used to be hardcoded, and drifted badly: they still claimed all
+    # DigitalDataset imaging fields were 0% long after several had real (if sparse) data,
+    # which is the opposite of the error the tiers exist to prevent.
+    tiers: dict[int, list[tuple[str, str, float]]] = {1: [], 2: [], 3: []}
+    for section_label, meta in node_sections.items():
+        s = stats[section_label]
+        seen: set[str] = set()
+        for neo_prop, _ptype, raw_field, _notes in meta["fields"]:
+            if not raw_field or raw_field not in s.fields or neo_prop in seen:
+                continue
+            seen.add(neo_prop)
+            pct = s.coverage(raw_field)
+            tier = 1 if pct >= 90 else (2 if pct >= 50 else 3)
+            tiers[tier].append((section_label, neo_prop, pct))
+
+    def _tier_rows(tier: int) -> list[str]:
+        rows = []
+        for section_label in node_sections:
+            entries = [(p, pct) for lbl, p, pct in tiers[tier] if lbl == section_label]
+            if not entries:
+                continue
+            fields = ", ".join(f"`{p}`" for p, _ in entries)
+            # Compare the *rounded* strings, not the raw floats — 99.95 and 100.0 both
+            # render "100" and would otherwise print as a "100–100%" range.
+            lo = f"{min(pct for _, pct in entries):.0f}"
+            hi = f"{max(pct for _, pct in entries):.0f}"
+            cov = f"{lo}%" if lo == hi else f"{lo}–{hi}%"
+            rows.append(f"| {section_label} | {fields} | {cov} |")
+        return rows or ["| — | *(none at this coverage level)* | — |"]
+
     lines += [
         "## Graceful Degradation Tiers",
         "",
         "The assistant should **always attempt a query** regardless of field coverage. "
-        "These tiers govern how the assistant communicates when results come back empty.",
+        "These tiers govern how the assistant communicates when results come back empty. "
+        "Tier membership below is computed from the coverage numbers above, so it stays "
+        "in step with the data rather than being maintained by hand.",
+        "",
+        "Properties with no coverage figure (`identifier`, `datasetNumber`, the derived "
+        "embedding/fact-sheet properties, and combined fields like `voxelDimensions`) are "
+        "omitted — they are either always present or not directly queryable.",
         "",
         "### Tier 1 — High confidence (≥90% coverage)",
         "",
         "If a query on these fields returns no results, it is a genuine miss.",
         'Report confidently: *"No datasets match your criteria."*',
         "",
-        "| Node | Fields |",
-        "|---|---|",
-        "| Dataset | `title`, `description`, `authors`, `publicationDate`, `doi` |",
-        "| Sample | `porousMediaType`, `source` |",
-        "| DigitalDataset | `segmented` |",
-        "| AnalysisDataset | `type`, `segmented` |",
+        "| Node | Fields | Coverage |",
+        "|---|---|---|",
+        *_tier_rows(1),
         "",
         "### Tier 2 — Low confidence on empty results (50–89% coverage)",
         "",
@@ -813,10 +919,7 @@ def build_markdown(stats: dict[str, NodeStats], neo4j: dict | None = None) -> st
         "",
         "| Node | Fields | Coverage |",
         "|---|---|---|",
-        "| Sample | `location` | 89.8% |",
-        "| DigitalDataset | `voxelDimensions` | 63–69% |",
-        "| RelatedPublication | `abstract` | 68% |",
-        "| RelatedPublication | `link` | 97.4% |",
+        *_tier_rows(2),
         "",
         "### Tier 3 — Very sparse; always note sparsity (<50% coverage)",
         "",
@@ -825,14 +928,14 @@ def build_markdown(stats: dict[str, NodeStats], neo4j: dict | None = None) -> st
         "For 0% fields, be explicit: "
         "*\"This field is not present in the current portal metadata.\"*",
         "",
+        "A non-zero but tiny percentage is **not** permission to treat the field as "
+        "available: a 4%-populated field answers the question for 4% of the catalog and "
+        "silently drops the rest, so a query filtering on one needs the sparsity caveat "
+        "even when it does return rows.",
+        "",
         "| Node | Fields | Coverage |",
         "|---|---|---|",
-        "| Sample | `porosity` | 26.7% |",
-        "| Sample | `geographicOrigin` | 16.5% |",
-        "| Sample | `grainSizeAvg/Min/Max` | ~15% |",
-        "| Sample | `grainSizeUnits` | 0% |",
-        "| Sample | `collectionMethod`, `onshoreOffshore`, `depth`, `waterDepth`, `procedure`, `equipment`, `algorithmDescription` | 0% |",
-        "| DigitalDataset | `imagingCenter`, `imagingEquipmentAndModel`, `imageFormat`, `imageDimensions`, `imageByteOrder`, `dimensionality` | 0% |",
+        *_tier_rows(3),
         "",
     ]
 

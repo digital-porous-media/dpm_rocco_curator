@@ -2,7 +2,8 @@ from __future__ import annotations
 """
 Semantic Scholar API wrapper for live literature search.
 
-Used as fallback when publication FAISS confidence < 0.75.
+Called directly by the search_literature tool, and internally as a fallback by
+get_educational_context/get_workflow_guidance when no portal tutorial matches.
 If SEMANTIC_SCHOLAR_API_KEY is set in the environment, requests are authenticated;
 otherwise unauthenticated requests are used (shared rate limit, fine for dev).
 

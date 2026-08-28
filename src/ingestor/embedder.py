@@ -1,29 +1,9 @@
 from typing import List, Optional, Dict, Any
-from abc import ABC, abstractmethod
 from langchain_core.embeddings import Embeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 
 
-class BaseEmbedder(ABC):
-    """Base class for all embedders"""
-    
-    @abstractmethod
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of documents"""
-        pass
-    
-    @abstractmethod
-    def embed_query(self, text: str) -> List[float]:
-        """Embed a single query"""
-        pass
-    
-    @abstractmethod
-    def get_embeddings(self) -> Embeddings:
-        """Get the underlying LangChain Embeddings object"""
-        pass
-
-
-class DocumentEmbedder(BaseEmbedder):
+class DocumentEmbedder:
     """Embeddings wrapper for the curator RAG pipeline.
 
     Accepts a pre-built LangChain ``Embeddings`` object via the ``embeddings``

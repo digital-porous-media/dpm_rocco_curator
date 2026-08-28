@@ -55,17 +55,23 @@ Embedding
 
 **Class:** ``src.ingestor.embedder.DocumentEmbedder``
 
-Chunks are embedded using `BAAI/bge-large-en-v1.5 <https://huggingface.co/BAAI/bge-large-en-v1.5>`_
-via ``langchain-huggingface``. This model produces 1024-dimensional dense vectors normalised to unit
-length, which makes cosine similarity equivalent to dot-product similarity.
+The active embedding model depends on your configured ``LLM_PROVIDER`` — see
+:doc:`configuration`'s "Embedding Model Overrides" table for the full provider-to-model mapping.
+``DocumentEmbedder`` accepts a pre-built LangChain ``Embeddings`` object (what the Streamlit app
+passes it, built by ``src.llm.embeddings.get_embeddings()``); the app never uses the class's
+constructor default.
 
-The model runs on CPU by default. To use a GPU, pass ``model_kwargs={"device": "cuda"}`` to
-``DocumentEmbedder``.
+When no ``Embeddings`` object is injected, ``DocumentEmbedder`` falls back to local
+`BAAI/bge-large-en-v1.5 <https://huggingface.co/BAAI/bge-large-en-v1.5>`_ via
+``langchain-huggingface`` — the same model used for the Ollama/HuggingFace/Anthropic/DeepSeek
+providers, since none of those expose an embedding API. This model produces 1024-dimensional dense
+vectors normalised to unit length, which makes cosine similarity equivalent to dot-product
+similarity, and runs on CPU by default (pass ``model_kwargs={"device": "cuda"}`` for GPU).
 
 .. note::
 
-   The embedding model is downloaded from HuggingFace on first use (~1.3 GB). Subsequent runs use
-   the local cache.
+   A locally-run embedding model is downloaded from HuggingFace on first use (~1.3 GB).
+   Subsequent runs use the local cache.
 
 Vector Store
 ------------
@@ -131,7 +137,7 @@ Running Without the UI
 
    # Ingest documents
    chunks = ingestor.ingest(["paper.pdf", "protocol.docx"])
-   vsm.add_documents(chunks)
+   vsm.create_from_documents(chunks)  # first build; use add_documents() to append later
 
    # Save the index to reuse later
    vsm.save("my_faiss_index/")

@@ -235,45 +235,6 @@ class TestSendPrompt:
 
 
 # ---------------------------------------------------------------------------
-# list_models
-# ---------------------------------------------------------------------------
-
-class TestListModels:
-    def test_list_models_returns_ids(self, monkeypatch):
-        monkeypatch.setenv("LLM_PROVIDER", "openai")
-        monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.delenv("LLM_BASE_URL", raising=False)
-
-        model_a = MagicMock()
-        model_a.id = "gpt-4o"
-        model_b = MagicMock()
-        model_b.id = "gpt-4o-mini"
-
-        mock_instance = MagicMock()
-        mock_instance.models.list.return_value = MagicMock(data=[model_a, model_b])
-
-        with patch("openai.OpenAI", return_value=mock_instance):
-            client = LLMClient()
-            models = client.list_models()
-
-        assert models == ["gpt-4o", "gpt-4o-mini"]
-
-    def test_list_models_returns_empty_on_error(self, monkeypatch):
-        monkeypatch.setenv("LLM_PROVIDER", "openai")
-        monkeypatch.setenv("LLM_API_KEY", "test-key")
-        monkeypatch.delenv("LLM_BASE_URL", raising=False)
-
-        mock_instance = MagicMock()
-        mock_instance.models.list.side_effect = Exception("Unauthorized")
-
-        with patch("openai.OpenAI", return_value=mock_instance):
-            client = LLMClient()
-            models = client.list_models()
-
-        assert models == []
-
-
-# ---------------------------------------------------------------------------
 # RoccoClient
 # ---------------------------------------------------------------------------
 

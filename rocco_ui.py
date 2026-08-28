@@ -4,7 +4,6 @@ import os
 import json
 from pathlib import Path
 import uuid
-from datetime import datetime
 
 from src.llm.client import RoccoClient
 from src.evaluator.evaluator import DescriptionEvaluator
@@ -18,14 +17,12 @@ from src.assistant.assistant_ui import render_assistant_tab
 
 # Suppress transformers library warnings about optional vision model imports
 import logging
+
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
-# --- Constants and Page Config ---
-ROCCO_AVATAR = "assets/rocco_avatar.jpg"
-USER_AVATAR = "assets/user_avatar.jpg"
-
-st.set_page_config(page_title="Rocco - DPM Curator", layout="wide")
-st.title("Rocco - Your Digital Porous Media AI Curator")
+# --- Page Config ---
+st.set_page_config(page_title="Rocco - DPM Research Assistant", layout="wide")
+st.title("Rocco - Your Digital Porous Media AI Assistant")
 
 # --- Display LLM Configuration ---
 load_dotenv()
@@ -42,6 +39,62 @@ def get_session_id():
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
     return st.session_state.session_id
+
+
+def _history_pairs(history):
+    """Group a flat conversation history into (user_turn, assistant_turn) pairs.
+
+    An assistant turn with no preceding user turn (the initial enhancement, which runs
+    on uploaded documents alone) pairs with None.
+    """
+    pairs = []
+    i = 0
+    while i < len(history):
+        if history[i]["role"] == "user" and i + 1 < len(history):
+            pairs.append((history[i], history[i + 1]))
+            i += 2
+        else:
+            pairs.append((None, history[i]))
+            i += 1
+    return pairs
+
+
+def _selected_prior_turns():
+    """The prior turns the user has left checked in the "Manage Context" panel, as the
+    history_override list for the next enhance() call.
+
+    Read from session_state rather than accumulated while the panel renders: the panel
+    is laid out full-width *below* the enhance controls, so on the rerun that performs
+    an enhancement its widgets have not executed yet. Building the list during that
+    later render meant enhance() always received an empty override — and since an empty
+    list is not None, build_prompt() read it as "an explicit empty history" and dropped
+    the editor's own conversation_history too, silently discarding all multi-turn
+    context. Streamlit retains each widget's value in session_state under its key across
+    reruns, so the last-rendered selection is available here.
+
+    An empty return is meaningful and must stay distinct from None: it means the user
+    unchecked every turn, and build_prompt() is expected to suppress history in that case.
+    """
+    selected = []
+    for turn_idx, (user_turn, asst_turn) in enumerate(
+        _history_pairs(st.session_state.conversation_history)
+    ):
+        if not st.session_state.get(f"ctx_include_{turn_idx}", True):
+            continue
+        if user_turn:
+            selected.append({
+                "role": "user",
+                "content": st.session_state.context_manager_edits.get(
+                    turn_idx, user_turn["content"]
+                ),
+            })
+        if asst_turn:
+            selected.append({
+                "role": "assistant",
+                "content": asst_turn["content"],
+                "rationale": asst_turn.get("rationale", ""),
+            })
+    return selected
 
 
 # --- Session State Initialization ---
@@ -97,13 +150,11 @@ def load_resources():
         chunk_size=500, chunk_overlap=100, separators=["\n\n", "\n", ".", " ", ""]
     )
     screener = ContentScreener(model=client)
-    return rubric, examples, client, grader, editor, embedder, ingestor, screener
+    return grader, editor, embedder, ingestor, screener
 
 
 if api_key or provider == "ollama":
-    rubric, examples, client, grader, editor, embedder, ingestor, screener = (
-        load_resources()
-    )
+    grader, editor, embedder, ingestor, screener = load_resources()
     if st.session_state.vector_store_manager:
         editor.vector_store_manager = st.session_state.vector_store_manager
 else:
@@ -112,6 +163,7 @@ else:
         "See .env.example for configuration details and supported LLM providers."
     )
     st.stop()
+
 
 def render_curator_tab():
     st.header("Dataset Description")
@@ -130,7 +182,6 @@ def render_curator_tab():
 
     # --- Workflow Logic ---
     if evaluate_button and description_text:
-
         # Clear previous enhancement state when starting a new evaluation
         st.session_state.original_description = None
         st.session_state.enhanced_description = None
@@ -172,11 +223,12 @@ def render_curator_tab():
                 disabled=False,
                 help="You can edit Rocco's suggested description before finalizing.",
                 on_change=lambda: st.session_state.update(
-                    {"edited_enhanced_description": st.session_state.enhanced_desc_editable}
+                    {
+                        "edited_enhanced_description": st.session_state.enhanced_desc_editable
+                    }
                 ),
             )
             st.session_state.edited_enhanced_description = edited_text
-            # st.text_area("Enhanced", value=st.session_state.enhanced_description, height=300, key="enhanced_desc_readonly", disabled=True)
 
         # --- Action buttons for the new description ---
         accept_col, reject_col = st.columns(2)
@@ -195,7 +247,9 @@ def render_curator_tab():
                 st.rerun()
         with reject_col:
             if st.button("❌ Keep Original Version", use_container_width=True):
-                st.session_state.description_text = st.session_state.original_description
+                st.session_state.description_text = (
+                    st.session_state.original_description
+                )
                 st.session_state.original_description = None
                 st.session_state.enhanced_description = None
                 st.session_state.enhanced_description_obj = None
@@ -227,7 +281,9 @@ def render_curator_tab():
                     citations = st.session_state.enhanced_description_obj.citation
                     if citations:
                         for i, citation in enumerate(citations, 1):
-                            with st.expander(f"Citation {i}: {citation.statement[:50]}..."):
+                            with st.expander(
+                                f"Citation {i}: {citation.statement[:50]}..."
+                            ):
                                 st.write(f"**Statement:** {citation.statement}")
                                 st.write(f"**Source:** {citation.source}")
                                 if citation.doc_title:
@@ -235,7 +291,9 @@ def render_curator_tab():
                                     if citation.page is not None:
                                         loc_parts.append(f"p. {citation.page + 1}")
                                     if citation.chunk_index is not None:
-                                        loc_parts.append(f"chunk {citation.chunk_index}")
+                                        loc_parts.append(
+                                            f"chunk {citation.chunk_index}"
+                                        )
                                     st.write(f"**Document:** {', '.join(loc_parts)}")
                                 st.write(f"**Quote:** _{citation.quote}_")
                     else:
@@ -247,7 +305,7 @@ def render_curator_tab():
 
     # Display evaluation results and enhancement tools if an evaluation is present
     if st.session_state.evaluation:
-        selected_history = []
+        selected_history = _selected_prior_turns()
 
         eval_col, enhance_col = st.columns(2)
 
@@ -256,7 +314,9 @@ def render_curator_tab():
                 st.header("Evaluation Results")
                 st.write("Here is Rocco's evaluation of your current description:")
                 # Display evaluation results formatted for Streamlit
-                st.metric("Total Score", f"{st.session_state.evaluation.total_score}/10")
+                st.metric(
+                    "Total Score", f"{st.session_state.evaluation.total_score}/10"
+                )
                 st.subheader("Rubric Breakdown")
                 for item in st.session_state.evaluation.rubric_breakdown:
                     if item.score < 1.0:
@@ -269,10 +329,6 @@ def render_curator_tab():
                             f"✅ **{item.criterion}** - Score: {item.score}/1.0"
                         ):
                             st.write(item.explanation)
-                    # with st.expander(f"**{item.criterion}** - Score: {item.score}/1.0"):
-                    #     st.write(item.explanation)
-                # grader.print_evaluation_result(st.session_state.evaluation)
-                # st.json(st.session_state.evaluation.model_dump())
 
         with enhance_col:
             with st.container(border=True):
@@ -369,7 +425,9 @@ def render_curator_tab():
                 # Handle flagged feedback review
                 if (
                     st.session_state.get("pending_enhancement")
-                    and st.session_state.get("screening_result", {}).get("recommendation")
+                    and st.session_state.get("screening_result", {}).get(
+                        "recommendation"
+                    )
                     == "flag_for_review"
                 ):
                     with st.expander("⚠️ Feedback flagged for review", expanded=True):
@@ -433,16 +491,20 @@ def render_curator_tab():
                             )
                             # Append the new turn to conversation history
                             if st.session_state.user_feedback:
-                                st.session_state.conversation_history.append({
-                                    "role": "user",
-                                    "content": st.session_state.user_feedback,
-                                })
-                            st.session_state.conversation_history.append({
-                                "role": "assistant",
-                                "content": enhanced_description_obj.suggested_text,
-                                "rationale": enhanced_description_obj.rationale,
-                                "context_used": enhanced_description_obj.context_used,
-                            })
+                                st.session_state.conversation_history.append(
+                                    {
+                                        "role": "user",
+                                        "content": st.session_state.user_feedback,
+                                    }
+                                )
+                            st.session_state.conversation_history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": enhanced_description_obj.suggested_text,
+                                    "rationale": enhanced_description_obj.rationale,
+                                    "context_used": enhanced_description_obj.context_used,
+                                }
+                            )
                             st.session_state.user_feedback = ""  # Clear feedback
                             st.session_state.skip_screening = False  # Reset flagging
                             st.session_state.pending_enhancement = False
@@ -457,21 +519,16 @@ def render_curator_tab():
                         st.warning("Provide context to enable enhancement.")
 
         # --- Full-width Context Manager (outside columns, below eval+enhance) ---
-        if st.session_state.conversation_history and not st.session_state.enhanced_description:
+        if (
+            st.session_state.conversation_history
+            and not st.session_state.enhanced_description
+        ):
             st.divider()
             with st.expander("📋 Manage Context (Prior Turns)", expanded=False):
-                st.caption("Select which prior turns to include in the next enhancement. Uncheck to exclude, edit feedback inline.")
-                history = st.session_state.conversation_history
-                # Group into (user_turn, assistant_turn) pairs
-                pairs = []
-                i = 0
-                while i < len(history):
-                    if history[i]["role"] == "user" and i + 1 < len(history):
-                        pairs.append((history[i], history[i + 1]))
-                        i += 2
-                    else:
-                        pairs.append((None, history[i]))
-                        i += 1
+                st.caption(
+                    "Select which prior turns to include in the next enhancement. Uncheck to exclude, edit feedback inline."
+                )
+                pairs = _history_pairs(st.session_state.conversation_history)
 
                 # Clear history button
                 col_clear, col_space = st.columns([1, 4])
@@ -479,13 +536,26 @@ def render_curator_tab():
                     if st.button("Clear history", key="ctx_clear", type="secondary"):
                         st.session_state.conversation_history = []
                         st.session_state.context_manager_edits = {}
+                        # Drop the per-turn checkbox state too, or a turn unchecked
+                        # before the clear would still read as excluded once history
+                        # grows back into that index.
+                        for key in [
+                            k for k in st.session_state if k.startswith("ctx_include_")
+                        ]:
+                            del st.session_state[key]
                         st.rerun()
 
+                # The checkbox values are read back in _selected_prior_turns() on the
+                # next rerun, via their session_state keys — nothing is accumulated here.
                 for turn_idx, (user_turn, asst_turn) in enumerate(pairs):
                     col_check, col_card = st.columns([0.05, 0.95])
                     with col_check:
-                        include = st.checkbox("", value=True, key=f"ctx_include_{turn_idx}",
-                                              label_visibility="collapsed")
+                        st.checkbox(
+                            "",
+                            value=True,
+                            key=f"ctx_include_{turn_idx}",
+                            label_visibility="collapsed",
+                        )
                     with col_card:
                         label = f"Turn {turn_idx + 1}"
                         if user_turn:
@@ -495,12 +565,16 @@ def render_curator_tab():
                                 st.markdown("**Feedback given:**")
                                 edited = st.text_area(
                                     "Edit feedback",
-                                    value=st.session_state.context_manager_edits.get(turn_idx, user_turn["content"]),
+                                    value=st.session_state.context_manager_edits.get(
+                                        turn_idx, user_turn["content"]
+                                    ),
                                     key=f"ctx_edit_{turn_idx}",
                                     height=80,
                                     label_visibility="collapsed",
                                 )
-                                st.session_state.context_manager_edits[turn_idx] = edited
+                                st.session_state.context_manager_edits[turn_idx] = (
+                                    edited
+                                )
                             if asst_turn:
                                 # Show context chunks used
                                 chunks = asst_turn.get("context_used", [])
@@ -509,24 +583,20 @@ def render_curator_tab():
                                     for chunk in chunks:
                                         title = chunk.get("doc_title", "unknown")
                                         page = chunk.get("page")
-                                        loc = f"*{title}*" + (f", p. {page + 1}" if page is not None else "")
-                                        st.caption(f"↳ {loc} — {chunk.get('snippet', '')[:80]}...")
+                                        loc = f"*{title}*" + (
+                                            f", p. {page + 1}"
+                                            if page is not None
+                                            else ""
+                                        )
+                                        st.caption(
+                                            f"↳ {loc} — {chunk.get('snippet', '')[:80]}..."
+                                        )
                                 # Show result preview
-                                snippet = asst_turn["content"][:200] + ("..." if len(asst_turn["content"]) > 200 else "")
+                                snippet = asst_turn["content"][:200] + (
+                                    "..." if len(asst_turn["content"]) > 200 else ""
+                                )
                                 st.markdown("**Result preview:**")
                                 st.text(snippet)
-                    if include:
-                        if user_turn:
-                            selected_history.append({
-                                "role": "user",
-                                "content": st.session_state.context_manager_edits.get(turn_idx, user_turn["content"]),
-                            })
-                        if asst_turn:
-                            selected_history.append({
-                                "role": "assistant",
-                                "content": asst_turn["content"],
-                                "rationale": asst_turn.get("rationale", ""),
-                            })
 
     elif not st.session_state.enhanced_description:
         st.info("Click 'Evaluate Description' to get started.")
