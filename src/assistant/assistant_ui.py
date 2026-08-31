@@ -1,9 +1,12 @@
-"""
-Streamlit UI for the General Assistant tab.
+"""Streamlit UI for the General Assistant page.
 
-Integrated into rocco_ui.py as a new tab during Week 6 (Bernie owns that integration).
-All session state keys are prefixed with "assistant_" to avoid collisions with the
-curator tab keys (which Bernie prefixes with "curator_" in the same Week 6 pass).
+Rendered by ``rocco_ui.py`` when you select the General Assistant from the page
+selector.
+
+Every session state key this module sets is prefixed with ``assistant_``. The
+curator's keys in ``rocco_ui.py`` are unprefixed, so that prefix is the only
+thing preventing a collision between the two pages. Never add an unprefixed
+session key here.
 """
 
 import re

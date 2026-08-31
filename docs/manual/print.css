@@ -1,0 +1,455 @@
+/* ==========================================================================
+   Rocco Reference Manual — print stylesheet
+   Applied by scripts/build_manual.py when WeasyPrint renders the single-page
+   HTML that Sphinx's singlehtml builder produces.
+
+   Heading levels in singlehtml output:
+     h1  the manual title           (cover page)
+     h2  parts, front matter, appendices
+     h3  chapters inside a part
+     h4+ sections within a chapter
+   ========================================================================== */
+
+/* -- Fonts ---------------------------------------------------------------- */
+
+@font-face { font-family: Roboto; font-weight: 400; font-style: normal;
+             src: url(fonts/Roboto-Regular.ttf); }
+@font-face { font-family: Roboto; font-weight: 500; font-style: normal;
+             src: url(fonts/Roboto-Medium.ttf); }
+@font-face { font-family: Roboto; font-weight: 700; font-style: normal;
+             src: url(fonts/Roboto-Bold.ttf); }
+@font-face { font-family: Roboto; font-weight: 400; font-style: italic;
+             src: url(fonts/Roboto-Italic.ttf); }
+@font-face { font-family: Roboto; font-weight: 700; font-style: italic;
+             src: url(fonts/Roboto-BoldItalic.ttf); }
+@font-face { font-family: "Roboto Mono"; font-weight: 400;
+             src: url(fonts/RobotoMono-Regular.ttf); }
+@font-face { font-family: "Roboto Mono"; font-weight: 700;
+             src: url(fonts/RobotoMono-Bold.ttf); }
+
+:root {
+  --brand: #1a6b8a;          /* matches the documentation website */
+  --ink: #1f2328;
+  --muted: #5a636e;
+  --rule: #d3d8de;
+  --code-bg: #f5f7f9;
+  --note-bg: #eef4f7;
+  --warn-bg: #fdf3e7;
+}
+
+/* -- Page geometry -------------------------------------------------------- */
+
+@page {
+  size: Letter;
+  margin: 22mm 20mm 20mm 20mm;
+
+  @bottom-center {
+    content: counter(page);
+    font-family: Roboto, sans-serif;
+    font-size: 8.5pt;
+    color: var(--muted);
+    margin-top: 4mm;
+  }
+}
+
+/* Mirrored binding margin, folio and running head on the outer edge. */
+@page :left {
+  margin-left: 20mm; margin-right: 26mm;
+  @top-left {
+    content: string(booktitle);
+    font-family: Roboto, sans-serif; font-size: 8pt; font-weight: 500;
+    color: var(--muted); letter-spacing: 0.02em;
+    border-bottom: 0.4pt solid var(--rule); width: 100%; margin-bottom: 5mm;
+  }
+  @bottom-center { content: none; }
+  @bottom-left { content: counter(page);
+    font-family: Roboto, sans-serif; font-size: 8.5pt; color: var(--muted); }
+}
+
+@page :right {
+  margin-left: 26mm; margin-right: 20mm;
+  @top-right {
+    content: string(chaptitle);
+    font-family: Roboto, sans-serif; font-size: 8pt; font-weight: 500;
+    color: var(--muted); letter-spacing: 0.02em; text-align: right;
+    border-bottom: 0.4pt solid var(--rule); width: 100%; margin-bottom: 5mm;
+  }
+  @bottom-center { content: none; }
+  @bottom-right { content: counter(page);
+    font-family: Roboto, sans-serif; font-size: 8.5pt; color: var(--muted); }
+}
+
+/* The cover carries no running head and no folio. The :left and :right rules
+   above set those boxes, so the named page has to override both explicitly. */
+@page cover, cover:left, cover:right, cover:first {
+  margin: 58mm 22mm 22mm 22mm;
+  @top-left { content: none; border: 0; }
+  @top-right { content: none; border: 0; }
+  @top-center { content: none; border: 0; }
+  @bottom-left { content: none; }
+  @bottom-right { content: none; }
+  @bottom-center { content: none; }
+}
+
+/* A page deliberately left blank to force a recto chapter opening. */
+@page :blank {
+  @top-left { content: none; } @top-right { content: none; }
+  @bottom-left { content: none; } @bottom-right { content: none; }
+}
+
+/* -- Base typography ------------------------------------------------------ */
+
+html { font-family: Roboto, "DejaVu Sans", sans-serif; font-size: 10.5pt;
+       line-height: 1.5; color: var(--ink); hyphens: auto; }
+body { margin: 0; }
+
+p { margin: 0 0 0.7em 0; orphans: 3; widows: 3; text-align: justify; }
+
+a { color: var(--brand); text-decoration: none; }
+
+/* Sphinx renders each page title and section as a nested <section>. */
+section { break-inside: auto; }
+
+/* -- Cover ---------------------------------------------------------------- */
+
+/* In singlehtml the whole manual is one <section> inside div.body, so the cover
+   is styled from the h1 and the container that follows it. Matching the h1 also
+   puts it on the named cover page, which keeps the title and the cover block on
+   one sheet: a page-name change mid-flow forces a break. */
+div.body > section > h1 {
+  page: cover;
+  break-after: avoid;
+  font-size: 34pt;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+  color: var(--brand);
+  margin: 0 0 6mm 0;
+  border-bottom: 2.5pt solid var(--brand);
+  padding-bottom: 6mm;
+  string-set: booktitle "Rocco Reference Manual", chaptitle "Rocco Reference Manual";
+}
+
+.cover { page: cover; break-after: page; }
+.cover-subtitle { font-size: 15pt; font-weight: 400; color: var(--muted);
+                  margin-bottom: 60mm; line-height: 1.35; }
+.cover-meta { font-size: 10.5pt; line-height: 1.9; color: var(--ink); }
+.cover-meta strong { font-weight: 700; }
+
+/* -- Table of contents ---------------------------------------------------- */
+
+p.rubric#manual-contents,
+.rubric {
+  font-size: 22pt; font-weight: 700; color: var(--brand);
+  margin: 0 0 8mm 0; padding-bottom: 3mm;
+  border-bottom: 1pt solid var(--rule);
+  break-after: avoid;
+}
+
+/* NOTE: do NOT reset the page counter here. `counter-reset: page` makes every
+   target-counter() lookup in the table of contents resolve against the reset
+   value, so all entries print the same number. The cover is left unnumbered by
+   suppressing the margin boxes on @page cover instead. */
+
+/* In singlehtml, div.toctree-wrapper contains the included documents themselves,
+   not a link list — so it must stay unstyled. The table of contents below is the
+   one generated by scripts/build_manual.py into .manual-toc. */
+
+.manual-toc { break-after: page; }
+.manual-toc ul { list-style: none; margin: 0; padding: 0; }
+.manual-toc > ul > li { margin: 2.4mm 0 0 0; }
+.manual-toc > ul > li > a { font-weight: 700; font-size: 11pt; color: var(--ink); }
+
+.manual-toc ul ul { margin: 0 0 0 7mm; }
+.manual-toc ul ul > li { margin: 1.2mm 0 0 0; }
+.manual-toc ul ul > li > a { font-weight: 400; font-size: 9.8pt; color: var(--ink); }
+
+.manual-toc ul ul ul { margin-left: 6mm; }
+.manual-toc ul ul ul > li { margin: 0.5mm 0 0 0; }
+.manual-toc ul ul ul > li > a { font-size: 8.8pt; color: var(--muted); }
+
+/* Each entry runs to a leader of dots and the page its target lands on.
+   target-counter is resolved by WeasyPrint after pagination. */
+.manual-toc a { display: block; }
+.manual-toc a::after {
+  content: " " leader(".") " " target-counter(attr(href), page);
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* -- Parts ---------------------------------------------------------------- */
+
+/* A part opens on a right-hand page and occupies it alone. */
+section[id^="part-"] > h2 {
+  break-before: right;
+  font-size: 30pt;
+  font-weight: 700;
+  color: var(--brand);
+  line-height: 1.15;
+  margin: 65mm 0 0 0;
+  padding-top: 8mm;
+  border-top: 2.5pt solid var(--brand);
+  string-set: booktitle content(), chaptitle content();
+  bookmark-level: 1;
+  bookmark-label: content();
+}
+/* The part's introductory paragraphs sit on the part page, under the title.
+   The first chapter still opens a fresh recto via the h3 rule below. */
+section[id^="part-"] > h2 + p { break-before: avoid; margin-top: 6mm;
+                                font-size: 11pt; color: var(--muted); }
+
+/* "Part I" already numbers the part, so the toctree's section number is
+   redundant here. Chapters keep theirs ("1.1", "1.2"). */
+section[id^="part-"] > h2 > .section-number { display: none; }
+
+/* -- Chapters ------------------------------------------------------------- */
+
+/* Front matter and appendices are chapter-like: they open a page but do not
+   claim a whole one. */
+#preface > h2,
+#repository-map > h2,
+section[id^="appendix-"] > h2 {
+  break-before: right;
+  font-size: 22pt; font-weight: 700; color: var(--brand);
+  margin: 0 0 7mm 0; padding-bottom: 3mm;
+  border-bottom: 1pt solid var(--rule);
+  line-height: 1.2;
+  string-set: booktitle content(), chaptitle content();
+  bookmark-level: 1;
+  bookmark-label: content();
+}
+
+/* h3 is ambiguous in this document: inside a part it is a chapter, but inside
+   the preface, the repository map, or an appendix it is an ordinary section.
+   The generic rule styles it as a section; the part-scoped rule below promotes
+   it to a chapter. Without this split, every short front-matter section forced
+   its own right-hand page. */
+h3 {
+  break-after: avoid;
+  font-size: 13.5pt; font-weight: 700; color: var(--ink);
+  margin: 8mm 0 2.5mm 0; line-height: 1.25;
+  bookmark-level: 2; bookmark-label: content();
+}
+
+section[id^="part-"] h3 {
+  break-before: right;
+  break-after: avoid;
+  font-size: 20pt; font-weight: 700; color: var(--brand);
+  margin: 0 0 7mm 0; padding-bottom: 3mm;
+  border-bottom: 1pt solid var(--rule);
+  line-height: 1.2;
+  string-set: chaptitle content();
+  bookmark-level: 2;
+  bookmark-label: content();
+}
+
+/* Correspondingly, h4 is a section inside a part but a sub-section elsewhere. */
+h4 {
+  break-after: avoid;
+  font-size: 13.5pt; font-weight: 700; color: var(--ink);
+  margin: 8mm 0 2.5mm 0; line-height: 1.25;
+  bookmark-level: 3; bookmark-label: content();
+}
+
+h5 {
+  break-after: avoid;
+  font-size: 11.5pt; font-weight: 500; color: var(--ink);
+  margin: 6mm 0 2mm 0;
+  bookmark-level: 4; bookmark-label: content();
+}
+
+h6 {
+  break-after: avoid;
+  font-size: 10.5pt; font-weight: 700; color: var(--muted);
+  margin: 5mm 0 1.5mm 0; text-transform: uppercase; letter-spacing: 0.04em;
+  bookmark-level: 5; bookmark-label: content();
+}
+
+/* Sphinx's per-heading permalink anchors are meaningless on paper. */
+a.headerlink { display: none; }
+
+/* Section numbers rendered by the :numbered: toctree. */
+.section-number { color: var(--muted); font-weight: 500; }
+
+/* -- Code ----------------------------------------------------------------- */
+
+code, tt, pre, .literal {
+  font-family: "Roboto Mono", "DejaVu Sans Mono", monospace;
+}
+
+code, .literal {
+  font-size: 0.87em;
+  background: var(--code-bg);
+  padding: 0.5pt 2pt;
+  border-radius: 2pt;
+  word-break: break-word;
+}
+
+div.highlight, pre {
+  background: var(--code-bg);
+  border: 0.5pt solid var(--rule);
+  border-left: 2pt solid var(--brand);
+  border-radius: 2pt;
+  padding: 3mm 3.5mm;
+  margin: 0 0 4mm 0;
+  font-size: 8.4pt;
+  line-height: 1.42;
+  /* Long lines must wrap: a printed page cannot scroll sideways. */
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  /* Deliberately NOT `break-inside: avoid`. Appendix C reproduces whole prompt
+     files, and refusing to break them pushed multi-page blocks to the next page
+     and left most of the previous one empty. Orphan and widow control keeps a
+     break from stranding a single line. */
+  break-inside: auto;
+  orphans: 3;
+  widows: 3;
+}
+div.highlight pre { border: 0; padding: 0; margin: 0; background: transparent; }
+div.highlight code, pre code { background: transparent; padding: 0; font-size: inherit; }
+
+/* A literal block that follows a heading stays with it. */
+h4 + div.highlight, h5 + div.highlight, h6 + div.highlight { break-before: avoid; }
+
+/* -- Tables --------------------------------------------------------------- */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 5mm 0;
+  font-size: 9pt;
+  break-inside: auto;
+}
+table caption { caption-side: top; text-align: left; font-weight: 700;
+                font-size: 9.5pt; margin-bottom: 1.5mm; }
+th, td {
+  border: 0.4pt solid var(--rule);
+  padding: 1.6mm 2.2mm;
+  text-align: left;
+  vertical-align: top;
+  hyphens: auto;
+}
+thead th {
+  background: var(--note-bg);
+  font-weight: 700;
+  border-bottom: 1pt solid var(--brand);
+}
+thead { display: table-header-group; }   /* repeat headers across page breaks */
+tr { break-inside: avoid; }
+table p { margin: 0 0 0.35em 0; text-align: left; }
+table p:last-child { margin-bottom: 0; }
+
+/* -- Figures and images --------------------------------------------------- */
+
+img { max-width: 100%; height: auto; }
+
+figure, div.figure, .figure {
+  break-inside: avoid;
+  margin: 5mm 0;
+  text-align: center;
+}
+/* Sphinx wraps the image in an inline <a>, which shrink-wraps and leaves a
+   percentage width resolving against less than the text block. Making the link
+   a block restores the full measure; the directive's own inline width (for
+   example :width: 70% on the uploader) still wins over the rule below. */
+figure a.image-reference, div.figure a.image-reference { display: block; }
+
+figure img, div.figure img {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border: 0.4pt solid var(--rule);
+  border-radius: 2pt;
+}
+figcaption, .caption, p.caption {
+  font-size: 8.8pt;
+  color: var(--muted);
+  margin-top: 2mm;
+  text-align: center;
+  font-style: italic;
+}
+/* Graphviz diagrams are rendered at 200 dpi and are often wide. */
+.graphviz img { max-width: 100%; border: 0; }
+
+/* -- Admonitions ---------------------------------------------------------- */
+
+.admonition {
+  break-inside: avoid;
+  margin: 4mm 0;
+  padding: 2.5mm 3.5mm;
+  background: var(--note-bg);
+  border-left: 2.5pt solid var(--brand);
+  border-radius: 2pt;
+  font-size: 9.6pt;
+}
+.admonition > .admonition-title {
+  font-weight: 700;
+  margin: 0 0 1.5mm 0;
+  color: var(--brand);
+}
+.admonition p:last-child { margin-bottom: 0; }
+
+.admonition.warning, .admonition.caution, .admonition.danger, .admonition.attention {
+  background: var(--warn-bg);
+  border-left-color: #c2761b;
+}
+.admonition.warning > .admonition-title,
+.admonition.caution > .admonition-title,
+.admonition.danger > .admonition-title,
+.admonition.attention > .admonition-title { color: #a35f10; }
+
+/* -- Lists and definition lists ------------------------------------------- */
+
+ul, ol { margin: 0 0 0.7em 0; padding-left: 6mm; }
+li { margin-bottom: 0.25em; }
+li > p { margin-bottom: 0.3em; }
+
+dl { margin: 0 0 0.8em 0; }
+dt { font-weight: 700; margin-top: 0.5em; }
+dd { margin-left: 6mm; margin-bottom: 0.4em; }
+
+/* Autodoc signatures in Appendix A. */
+dl.py > dt, dl.class > dt, dl.function > dt, dl.method > dt, dl.attribute > dt,
+dl.py.class > dt, dl.py.method > dt, dl.py.function > dt, dl.py.attribute > dt,
+dl.py.data > dt, dl.py.exception > dt, dl.py.property > dt {
+  font-family: "Roboto Mono", monospace;
+  font-size: 8.8pt;
+  font-weight: 700;
+  background: var(--code-bg);
+  border-left: 2pt solid var(--brand);
+  padding: 1.5mm 2.5mm;
+  margin-top: 3.5mm;
+  break-after: avoid;
+  break-inside: avoid;
+  word-break: break-word;
+}
+dl.py > dd { margin-left: 4mm; font-size: 9.6pt; }
+dl.py .property, dl.py .sig-paren, dl.py .k, dl.py .o { font-weight: 400; }
+em.property { font-style: normal; color: var(--muted); }
+
+/* -- Miscellaneous -------------------------------------------------------- */
+
+blockquote {
+  margin: 3mm 0 3mm 5mm;
+  padding-left: 4mm;
+  border-left: 2pt solid var(--rule);
+  color: var(--muted);
+}
+
+hr, .docutils.container > hr { border: 0; border-top: 0.5pt solid var(--rule); margin: 6mm 0; }
+
+/* Field lists (":Parameters:" style blocks) */
+.field-list > dt { font-weight: 700; }
+
+/* Theme navigation chrome. */
+div.related, div.sphinxsidebar, div.footer, .genindex-jumpbox { display: none; }
+
+/* Sphinx artifacts with no meaning on paper. */
+.sphinx-tabs-tab, .sphinx-tabs .sphinx-tabs-panel { border: 0; }
+.copybtn, .sd-tab-set > input, button { display: none; }
+
+/* sphinx-design cards degrade to plain bordered blocks. */
+.sd-card { border: 0.5pt solid var(--rule); border-radius: 2pt;
+           padding: 3mm; margin-bottom: 3mm; break-inside: avoid; }
+.sd-card-title { font-weight: 700; color: var(--brand); }

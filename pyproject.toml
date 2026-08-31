@@ -78,6 +78,13 @@ docs = [
     "sphinx-autobuild>=2024.2.4",
     "sphinx-tabs>=3.4.1",
 ]
+manual = [
+    # Single-PDF reference manual (scripts/build_manual.py). Layered on top of the
+    # `docs` extra, which supplies Sphinx itself.
+    "weasyprint>=66",       # HTML -> PDF with CSS Paged Media support
+    "pypdf>=4.0",           # PDF metadata and the post-render secret scan
+    "playwright>=1.44",     # drives the app for scripts/capture_screenshots.py
+]
 dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",

@@ -1,7 +1,7 @@
 """
 Audit the DRP Neo4j graph schema from local metadata JSON files.
 
-Scans data/metadata/*.json to compute:
+Scans ``data/metadata/*.json`` to compute:
   - Node counts per label
   - % non-null coverage for every property
   - Distinct values for low-cardinality enum fields

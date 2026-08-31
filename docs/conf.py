@@ -22,7 +22,11 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# "manual" holds the print-only sources for the single-PDF reference manual
+# (built by scripts/build_manual.py against a staged copy). They are not part
+# of the website: leaving them in produced orphan pages, duplicate autodoc
+# entries, and unresolvable literalinclude paths.
+exclude_patterns = ["_build", "manual", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
 html_static_path = ["_static"]
